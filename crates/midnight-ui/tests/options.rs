@@ -27,7 +27,7 @@ const PAGES: [(&str, i32); 10] = [
 fn page_control(topic: i32) -> (&'static str, AccessibleRole) {
     match topic {
         0 => ("Show hidden files", AccessibleRole::Checkbox),
-        1 => ("Theme", AccessibleRole::Combobox),
+        1 => ("Dark theme", AccessibleRole::Combobox),
         3 => ("Search commands", AccessibleRole::TextInput),
         4 => ("Editor rules", AccessibleRole::List),
         5 => ("Rescan all plugins", AccessibleRole::Button),
@@ -172,17 +172,15 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
         "Byte-size checkbox must work"
     );
     ui.options_topic(1);
-    click_popup(&ui.window, "Theme", AccessibleRole::Combobox);
-    // Alphabetic display order, independent of the persisted Dark theme ID.
-    for _ in 0..4 {
-        key(&ui.window, Key::DownArrow);
-    }
+    click_popup(&ui.window, "Dark theme", AccessibleRole::Combobox);
+    // Carbon Black follows Blue in the alphabetical dark list.
+    key(&ui.window, Key::DownArrow);
     key(&ui.window, Key::Return);
     ui.draw();
     assert_eq!(
         accepted.get(),
-        (1, 0),
-        "The nested theme picker selects Dark"
+        (midnight_core::PreferenceTheme::CarbonBlack.index(), 0),
+        "The nested theme picker selects Carbon Black"
     );
     click_popup(&ui.window, "Spacing", AccessibleRole::Combobox);
     key(&ui.window, Key::DownArrow);
@@ -190,7 +188,7 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     ui.draw();
     assert_eq!(
         accepted.get(),
-        (1, 1),
+        (midnight_core::PreferenceTheme::CarbonBlack.index(), 1),
         "Touch applies without closing Options"
     );
     ui.options_topic(0);

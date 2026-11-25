@@ -38,9 +38,9 @@ fn accepted_search_before_load_merges_saved_history_and_placement() {
 fn find_saves_survive_options_reset_and_cancel_without_saving_previewed_theme() {
     let mut p = Presenter::new("left".into(), "right".into());
     p.preferences.loaded = true;
-    let original_theme = p.preferences.values.theme;
+    let original_theme = p.preferences.values.light_theme;
     p.begin_options();
-    p.preferences.values.theme = PreferenceTheme::Light;
+    p.preferences.values.light_theme = PreferenceTheme::Light;
     let saved = std::cell::RefCell::new(Vec::new());
     let send = |command| {
         if let Command::SavePreferences { preferences, .. } = command {
@@ -51,7 +51,12 @@ fn find_saves_survive_options_reset_and_cancel_without_saving_previewed_theme() 
     p.remember_find_mask("*.文档", &send);
     p.save_find_window_geometry(geometry(), &send);
     assert_eq!(saved.borrow().len(), 2);
-    assert!(saved.borrow().iter().all(|p| p.theme == original_theme));
+    assert!(
+        saved
+            .borrow()
+            .iter()
+            .all(|p| p.light_theme == original_theme)
+    );
     p.reset_options(&|_| true);
     p.cancel_options(&|_| true);
     assert_eq!(p.preferences.values.find.mask_history, ["*.文档"]);
@@ -106,17 +111,17 @@ fn imported_find_choices_apply_only_after_options_save_succeeds() {
 fn final_placement_flush_retries_rejected_save_without_committing_options_preview() {
     let mut p = Presenter::new("left".into(), "right".into());
     p.preferences.loaded = true;
-    let original_theme = p.preferences.values.theme;
+    let original_theme = p.preferences.values.light_theme;
     p.begin_options();
-    p.preferences.values.theme = PreferenceTheme::Light;
+    p.preferences.values.light_theme = PreferenceTheme::Light;
     *p.finds.pending_window_geometry.borrow_mut() = Some(geometry());
     p.flush_find_window_preferences(&|_| false);
     assert!(p.finds.pending_window_geometry.borrow().is_none());
     assert_eq!(p.preferences.values.find.window_geometry, Some(geometry()));
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::Light);
+    assert_eq!(p.preferences.values.light_theme, PreferenceTheme::Light);
     let Command::SavePreferences { preferences, .. } = p.pending_preferences_save().unwrap() else {
         panic!()
     };
     assert_eq!(preferences.find.window_geometry, Some(geometry()));
-    assert_eq!(preferences.theme, original_theme);
+    assert_eq!(preferences.light_theme, original_theme);
 }

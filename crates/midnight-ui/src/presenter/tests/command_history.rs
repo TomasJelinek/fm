@@ -53,7 +53,7 @@ fn local_history_and_byte_setting_survive_late_load_without_losing_saved_command
         "initial disk read must finish before saving"
     );
     p.preferences_loaded(Ok(UserPreferences {
-        theme: PreferenceTheme::Dark,
+        dark_theme: PreferenceTheme::Dark,
         command_history: vec![
             entry("echo 文档", ShellFlavor::Cmd),
             entry("older", ShellFlavor::Cmd),
@@ -61,7 +61,7 @@ fn local_history_and_byte_setting_survive_late_load_without_losing_saved_command
         ..Default::default()
     }));
     assert_eq!(p.preferences.values.size_display, SizeDisplay::Bytes);
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::Dark);
+    assert_eq!(p.preferences.values.dark_theme, PreferenceTheme::Dark);
     assert_eq!(
         p.preferences.values.command_history,
         vec![

@@ -175,8 +175,8 @@ saves to the current location; it never changes the old file.
   when indentation would pass the limit) and end with a newline. The whole file is
   at most 4 MiB.
 - `version` is the number of the settings schema. This version reads schema
-  versions 1 to 44. When saving or exporting, it writes the lowest version that can
-  hold the settings, at most 44. The latest schemas added:
+  versions 1 to 45. Saves and exports use the lowest version that can hold the settings.
+  The latest schemas added:
   - 33: `file_comparators`, the external comparison rules;
   - 34: `glyph_fitting` (Text rendering) and `thumbnailer_associations`;
   - 35: `show_hidden_files` and `mask_selection` (the last Select or Deselect by mask
@@ -225,10 +225,13 @@ saves to the current location; it never changes the old file.
     Choosing Harvest Navigator, Origami Trail or Interleave stores `harvest-navigator`,
     `origami-trail` or `interleave`. Older profiles use Midnight Moon. Schema 44 also
     accepts its identifier, `moon`.
+  - 45: choosing a custom dark or light palette saves both `dark_theme` and
+    `light_theme`. Earlier profiles open with Pencil Lead for dark appearance and
+    Letterhead for light appearance and retain their other settings.
 
-  A version is written only for a setting that needs it, so a schema 34, 35, 36, 37, 38,
-  39, 40, 41, 42, 43 or 44 file without any of that version's new fields is refused, and so is a field in a
-  schema older than the one that added it. The update check's own state (the last check,
+  Historical schemas 34 through 44 require at least one of the fields each introduced.
+  Schema 45 requires both theme choices. The reader also checks that fields belong to
+  the declared schema. The update check's own state (the last check,
   GitHub's retry time and a skipped version) is not a setting: it is kept in
   `update-state.json` in the private update folder
   ([Updates](developer/UPDATES.md#check)).

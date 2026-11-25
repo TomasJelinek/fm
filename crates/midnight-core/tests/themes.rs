@@ -25,11 +25,10 @@ fn modern_and_retro_themes_append_without_reusing_saved_ids() {
         assert_eq!(PreferenceTheme::from_index(index), Some(theme));
         assert_eq!(theme.storage_name(), name);
     }
-    assert_eq!(PreferenceTheme::ALL.len(), 26);
 }
 
 #[test]
-fn contrast_and_slate_themes_append_with_stable_storage_names() {
+fn appended_themes_keep_their_stable_ids_and_storage_names() {
     for (index, name) in [
         (17, "paper-contrast"),
         (18, "sandstone-contrast"),
@@ -40,6 +39,26 @@ fn contrast_and_slate_themes_append_with_stable_storage_names() {
         (23, "slate-blue"),
         (24, "slate-teal"),
         (25, "slate-violet"),
+        (26, "red-lacquer"),
+        (27, "overprint"),
+        (28, "faience"),
+        (29, "afterimage"),
+        (30, "last-train"),
+        (31, "drawing-office"),
+        (32, "letterhead"),
+        (33, "field-survey"),
+        (34, "mastering-room"),
+        (35, "titanium"),
+        (36, "bankers-lamp"),
+        (37, "bindery"),
+        (38, "chronometer"),
+        (39, "iris"),
+        (40, "canary-copy"),
+        (41, "pencil-lead"),
+        (42, "carbon-black"),
+        (43, "warm-ash"),
+        (44, "pewter"),
+        (45, "plum-smoke"),
     ] {
         let theme = PreferenceTheme::from_storage_name(name)
             .unwrap_or_else(|| panic!("missing saved theme {name}"));

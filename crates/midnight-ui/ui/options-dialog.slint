@@ -137,6 +137,8 @@ export component OptionsBody inherits Rectangle {
     in property <ActionIcons> action-icons;
     in-out property <int> topic-index;
     in property <int> theme-index;
+    in property <int> dark-theme-index;
+    in property <int> light-theme-index;
     in property <int> density-index;
     in property <[string]> font-choices;
     in property <int> font-index;
@@ -562,11 +564,24 @@ export component OptionsBody inherits Rectangle {
             }
             if root.topic-index == 1 : VerticalLayout {
                 spacing: OptionRows.row-gap; alignment: start;
-                theme := OptionPicker {
+                Text {
+                    text: Theme.light ? "Following your system’s light appearance."
+                        : "Following your system’s dark appearance.";
+                    color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                }
+                OptionPicker {
                     narrow: root.narrow;
-                    label: "Theme"; model: ThemePalettes.names; current-index: ThemePalettes.positions[root.theme-index];
-                    hint: "Preview a color theme. OK saves it; Cancel restores the previous theme.";
-                    selected(index) => { root.preferences-changed(ThemePalettes.ids[index], root.density-index, 0); }
+                    label: "Dark theme"; model: ThemePalettes.dark-names;
+                    current-index: ThemePalettes.positions[root.dark-theme-index];
+                    hint: "Used when your system is set to dark appearance.";
+                    selected(index) => { root.preferences-changed(ThemePalettes.dark-ids[index], root.density-index, 0); }
+                }
+                OptionPicker {
+                    narrow: root.narrow;
+                    label: "Light theme"; model: ThemePalettes.light-names;
+                    current-index: ThemePalettes.positions[root.light-theme-index];
+                    hint: "Used when your system is set to light appearance.";
+                    selected(index) => { root.preferences-changed(ThemePalettes.light-ids[index], root.density-index, 0); }
                 }
                 HorizontalLayout {
                     spacing: 8px;

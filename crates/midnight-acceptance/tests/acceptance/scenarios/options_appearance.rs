@@ -14,9 +14,9 @@ const SPACING_DESKTOP: &str = "Desktop / mouse · compact";
 const SPACING_TOUCH: &str = "Touch · larger controls";
 const ICON_PICKER: &str = "Application icon";
 /// The theme ids `Theme.scheme` uses (PreferenceTheme order).
-const BLUE: i32 = 0;
-const DARK: i32 = 1;
-const LIGHT: i32 = 2;
+const DEFAULT_DARK: i32 = PreferenceTheme::DEFAULT_DARK.index();
+const DARK: i32 = PreferenceTheme::Dark.index();
+const LIGHT: i32 = PreferenceTheme::Light.index();
 
 fn config(folder: &Path, store: &Arc<SettingsStore>) -> Config {
     let mut config = Config::new(folder, folder);
@@ -32,13 +32,13 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     let folder = context.fixture.path("code");
     let store = SettingsStore::new();
     let mut app = App::start(config(&folder, &store));
-    if app.window.get_theme_index() != BLUE {
+    if app.window.get_theme_index() != DEFAULT_DARK {
         return Err(format!(
-            "the default theme is {} instead of Blue",
+            "the default dark theme is {} instead of Pencil Lead",
             app.window.get_theme_index()
         ));
     }
-    let blue_luma = Frame::of(&mut app).mean_luma();
+    let initial_luma = Frame::of(&mut app).mean_luma();
     let moon = app.window.get_current_app_icon();
 
     // Preview a theme and icon, then Cancel to restore the previous appearance.
@@ -54,28 +54,28 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     if harvest == moon {
         return Err("Harvest Navigator did not replace the window artwork".into());
     }
-    options::choose(&mut app, "Theme", "Light")?;
-    app.until("the Light theme preview", |app| {
-        app.window.get_theme_index() == LIGHT
+    options::choose(&mut app, "Dark theme", "Carbon Black")?;
+    app.until("the Carbon Black theme preview", |app| {
+        app.window.get_theme_index() == PreferenceTheme::CarbonBlack.index()
     });
     options::review_shot(
         &mut app,
         context,
-        "appearance-light-preview",
-        "Options › Appearance previewing the Light theme",
+        "appearance-dark-preview",
+        "Options › Appearance previewing Carbon Black",
     );
     options::cancel(&mut app)?;
-    app.until("Cancel to restore the Blue theme", |app| {
-        app.window.get_theme_index() == BLUE
+    app.until("Cancel to restore Pencil Lead", |app| {
+        app.window.get_theme_index() == DEFAULT_DARK
     });
     if app.window.get_current_app_icon() != moon {
         return Err("Cancel did not restore the Midnight Moon artwork".into());
     }
     app.idle(std::time::Duration::from_millis(300));
     let restored = Frame::of(&mut app).mean_luma();
-    if (restored - blue_luma).abs() > 2.0 || store.saves() != 0 {
+    if (restored - initial_luma).abs() > 2.0 || store.saves() != 0 {
         return Err(format!(
-            "Cancel did not restore the Blue theme exactly: mean luma {blue_luma:.1} before, {restored:.1} after; {} saves",
+            "Cancel did not restore Pencil Lead: mean luma {initial_luma:.1} before, {restored:.1} after; {} saves",
             store.saves()
         ));
     }
@@ -84,13 +84,15 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     // the dialog); Light is much brighter than Dark.
     options::open(&mut app)?;
     options::page(&mut app, "Appearance")?;
-    options::choose(&mut app, "Theme", "Light")?;
+    options::choose(&mut app, "Light theme", "Light")?;
+    app.set_host_dark(false);
     app.until("the Light theme", |app| {
         app.window.get_theme_index() == LIGHT
     });
     app.idle(std::time::Duration::from_millis(300));
     let light_list = Frame::of(&mut app).luma(options::list_area(&app, PaneId::Right));
-    options::choose(&mut app, "Theme", "Dark")?;
+    options::choose(&mut app, "Dark theme", "Dark")?;
+    app.set_host_dark(true);
     app.until("the Dark theme", |app| app.window.get_theme_index() == DARK);
     app.idle(std::time::Duration::from_millis(300));
     let dark_list = Frame::of(&mut app).luma(options::list_area(&app, PaneId::Right));
@@ -177,7 +179,8 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     if saved.app_icon.storage_name() != "interleave" {
         return Err(format!("OK saved application icon {:?}", saved.app_icon));
     }
-    if saved.theme != PreferenceTheme::Dark
+    if saved.dark_theme != PreferenceTheme::Dark
+        || saved.light_theme != PreferenceTheme::Light
         || saved.density != UiDensity::Touch
         || saved.font_family != "DejaVu Sans Mono"
         || saved.desktop_font_size != 16
@@ -185,8 +188,9 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         || saved.glyph_fitting != GlyphFitting::Subpixel
     {
         return Err(format!(
-            "OK saved theme {:?}, density {:?}, font {:?}, sizes {}/{}, rendering {:?}",
-            saved.theme,
+            "OK saved themes {:?}/{:?}, density {:?}, font {:?}, sizes {}/{}, rendering {:?}",
+            saved.dark_theme,
+            saved.light_theme,
             saved.density,
             saved.font_family,
             saved.desktop_font_size,
@@ -225,7 +229,8 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         app.window.get_font_list_ready()
     });
     for (label, wanted) in [
-        ("Theme", "Dark"),
+        ("Dark theme", "Dark"),
+        ("Light theme", "Light"),
         (ICON_PICKER, "Interleave"),
         ("Spacing", SPACING_TOUCH),
         ("Font family", "DejaVu Sans Mono"),
@@ -249,11 +254,12 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
 
     // Reset to defaults restores the default appearance.
     options::press(&mut app, "Reset to defaults")?;
-    app.until("the Blue theme after Reset to defaults", |app| {
-        app.window.get_theme_index() == BLUE && app.window.get_density_index() == 0
+    app.until("Pencil Lead after Reset to defaults", |app| {
+        app.window.get_theme_index() == DEFAULT_DARK && app.window.get_density_index() == 0
     });
     for (label, wanted) in [
-        ("Theme", "Blue"),
+        ("Dark theme", "Pencil Lead"),
+        ("Light theme", "Letterhead"),
         (ICON_PICKER, "Midnight Moon"),
         ("Spacing", SPACING_DESKTOP),
         ("Font family", "Application default"),
@@ -290,7 +296,8 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
             saved.app_icon
         ));
     }
-    if saved.theme != PreferenceTheme::Blue
+    if saved.dark_theme != PreferenceTheme::DEFAULT_DARK
+        || saved.light_theme != PreferenceTheme::DEFAULT_LIGHT
         || saved.density != UiDensity::Desktop
         || !saved.font_family.is_empty()
         || saved.desktop_font_size != 12
@@ -298,8 +305,9 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         || saved.glyph_fitting != GlyphFitting::Fitted
     {
         return Err(format!(
-            "Reset to defaults saved theme {:?}, density {:?}, font {:?}, sizes {}/{}, rendering {:?}",
-            saved.theme,
+            "Reset to defaults saved themes {:?}/{:?}, density {:?}, font {:?}, sizes {}/{}, rendering {:?}",
+            saved.dark_theme,
+            saved.light_theme,
             saved.density,
             saved.font_family,
             saved.desktop_font_size,
@@ -308,6 +316,6 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         ));
     }
     context.note("All four icon choices displayed distinct window artwork. OK saved Interleave, restart restored it, cancelling Reset kept it, and accepting Reset saved Midnight Moon.");
-    context.note("Appearance: Cancel restored the previewed theme; Light/Dark, 16 px desktop and 18 px touch fonts, touch spacing and the font face changed the panels; OK saved them with smooth text rendering; a restart showed them; Reset to defaults restored Blue/Desktop/12/15/Sharp. Text rendering configures the FemtoVG renderer at startup; the software renderer used here ignores it, so it is verified by storage and its display after the restart");
+    context.note("Appearance: Cancel restored the previewed theme. The Light and Dark selections followed the host appearance. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Pencil Lead and Letterhead with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
     app.shutdown()
 }

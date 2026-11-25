@@ -111,14 +111,19 @@ impl SettingsService for Settings {
 }
 
 fn preferences(theme: PreferenceTheme) -> UserPreferences {
-    UserPreferences {
-        theme,
+    let mut preferences = UserPreferences {
         density: UiDensity::Touch,
         font_family: format!("文档 é 🧪 {theme:?}"),
         desktop_font_size: 12,
         touch_font_size: 20,
         ..UserPreferences::default()
+    };
+    if theme.is_light() {
+        preferences.light_theme = theme;
+    } else {
+        preferences.dark_theme = theme;
     }
+    preferences
 }
 
 fn controller(service: Arc<Settings>) -> (Controller, JoinSet<()>, mpsc::Receiver<Event>) {
@@ -628,7 +633,7 @@ async fn stale_saves_cannot_retarget_the_limit_and_an_accepted_reset_restores_au
     assert_eq!(disk_io.effective_limit(), 11);
     assert_eq!(service.writes.lock().unwrap().len(), 1);
     let unrelated = UserPreferences {
-        theme: PreferenceTheme::Dark,
+        dark_theme: PreferenceTheme::Dark,
         ..accepted
     };
     assert!(controller.save(PreferencesRevision(10), unrelated));

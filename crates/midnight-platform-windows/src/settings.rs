@@ -268,7 +268,7 @@ mod tests {
             .join(LEGACY_APPLICATION_DIRECTORY)
             .join("preferences.json");
         let saved = UserPreferences {
-            theme: PreferenceTheme::Dark,
+            dark_theme: PreferenceTheme::Dark,
             tabs: [
                 midnight_core::PaneTabPreferences {
                     networks: Default::default(),
@@ -340,14 +340,15 @@ mod tests {
             .join("preferences.json");
         assert!(path.as_os_str().encode_wide().count() > 260);
         assert_eq!(load_from(&path).unwrap(), UserPreferences::default());
-        for theme in [
-            PreferenceTheme::Blue,
-            PreferenceTheme::Dark,
-            PreferenceTheme::Light,
+        for (dark_theme, light_theme) in [
+            (PreferenceTheme::Blue, PreferenceTheme::Letterhead),
+            (PreferenceTheme::Dark, PreferenceTheme::Light),
+            (PreferenceTheme::PlumSmoke, PreferenceTheme::CanaryCopy),
         ] {
             for density in [UiDensity::Desktop, UiDensity::Touch] {
                 let preferences = UserPreferences {
-                    theme,
+                    dark_theme,
+                    light_theme,
                     density,
                     font_family: "文档 é 🧪".into(),
                     desktop_font_size: 12,
@@ -428,7 +429,7 @@ mod tests {
         let result = save_to(
             &path,
             UserPreferences {
-                theme: PreferenceTheme::Dark,
+                dark_theme: PreferenceTheme::Dark,
                 density: UiDensity::Touch,
                 ..UserPreferences::default()
             },

@@ -9,7 +9,8 @@ fn native(name: &str) -> PathBuf {
 /// Non-default values on Options pages and in the session state outside Options.
 fn rich() -> UserPreferences {
     UserPreferences {
-        theme: PreferenceTheme::Nord,
+        dark_theme: PreferenceTheme::Nord,
+        light_theme: PreferenceTheme::Faience,
         app_icon: AppIcon::OrigamiTrail,
         density: UiDensity::Touch,
         windows_shell: WindowsShell::Cmd,
@@ -144,11 +145,27 @@ fn byte_order_mark_is_ignored_and_older_schemas_migrate_like_saved_settings() {
     assert_eq!(
         decode_settings_file(legacy).unwrap().preferences,
         UserPreferences {
-            theme: PreferenceTheme::Dark,
             density: UiDensity::Touch,
             ..UserPreferences::default()
         }
     );
+}
+
+#[test]
+fn schema_44_import_keeps_icon_and_other_options_and_uses_the_default_theme_pair() {
+    let expected = UserPreferences {
+        dark_theme: PreferenceTheme::DEFAULT_DARK,
+        light_theme: PreferenceTheme::DEFAULT_LIGHT,
+        ..rich()
+    };
+    let mut old = document(expected.clone());
+    assert_eq!(old["version"], 44);
+    assert_eq!(old["app_icon"], "origami-trail");
+    for name in ["nord", "solarized-light"] {
+        old["theme"] = name.into();
+        let loaded = decode_settings_file(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(loaded.preferences, expected);
+    }
 }
 
 #[test]
@@ -191,7 +208,7 @@ fn refuses_unknown_fields_and_invalid_values_with_the_offending_name() {
     assert!(!text.contains("expected one of"), "{text}");
     for (field, value, expected) in [
         (
-            "theme",
+            "dark_theme",
             serde_json::json!("plaid"),
             "unknown preferences theme",
         ),

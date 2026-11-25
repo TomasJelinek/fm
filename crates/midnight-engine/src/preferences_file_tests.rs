@@ -14,7 +14,7 @@ fn fixture() -> tempfile::TempDir {
 
 fn preferences(root: &Path) -> UserPreferences {
     UserPreferences {
-        theme: PreferenceTheme::Nord,
+        dark_theme: PreferenceTheme::Nord,
         density: UiDensity::Touch,
         font_family: "Noto Sans 文档 e\u{301}".into(),
         bookmarks: vec![Bookmark {

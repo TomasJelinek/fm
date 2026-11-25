@@ -62,7 +62,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
     p.change_preferences(1, 0, 0, &|_| {
         panic!("the initial read must precede every save")
     });
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::Dark);
+    assert_eq!(p.preferences.values.dark_theme, PreferenceTheme::Dark);
     assert!(p.new_tab(PaneId::Left, &|_| true));
     let tabs = p.tabs(PaneId::Left);
     let generation = p.panes[0].generation;
@@ -98,7 +98,8 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
             ..Default::default()
         },
         editor: EditorPreferences::default(),
-        theme: PreferenceTheme::Light,
+        dark_theme: PreferenceTheme::Nord,
+        light_theme: PreferenceTheme::Light,
         app_icon: midnight_core::AppIcon::OrigamiTrail,
         density: UiDensity::Touch,
         windows_shell: WindowsShell::Cmd,
@@ -145,7 +146,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         file_comparators: Default::default(),
     };
     let mut expected = saved.clone();
-    expected.theme = PreferenceTheme::Dark;
+    expected.dark_theme = PreferenceTheme::Dark;
     expected.tabs = [
         PaneTabPreferences {
             networks: Default::default(),
@@ -345,7 +346,7 @@ fn failed_initial_read_blocks_saves_that_could_replace_unknown_saved_bookmarks()
     p.change_preferences(2, 1, -1, &|_| {
         panic!("read error continues to protect saved settings")
     });
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::Light);
+    assert_eq!(p.preferences.values.light_theme, PreferenceTheme::Light);
     assert!(
         p.desktop
             .notice
@@ -433,11 +434,13 @@ fn explicit_same_index_default_font_preserves_loaded_sizes_and_other_preferences
 #[test]
 fn explicit_same_index_default_theme_preserves_loaded_density() {
     let mut p = Presenter::new(test_root(), test_root());
-    p.change_preferences(0, 0, 0, &|_| panic!("theme preview must wait for the read"));
+    p.change_preferences(PreferenceTheme::DEFAULT_DARK.index(), 0, 0, &|_| {
+        panic!("theme preview must wait for the read")
+    });
     p.apply_with_sender(
         Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
             preferences: UserPreferences {
-                theme: PreferenceTheme::Dark,
+                dark_theme: PreferenceTheme::Dark,
                 density: UiDensity::Touch,
                 ..Default::default()
             },
@@ -450,7 +453,7 @@ fn explicit_same_index_default_theme_preserves_loaded_density() {
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
             };
-            assert_eq!(preferences.theme, PreferenceTheme::Blue);
+            assert_eq!(preferences.dark_theme, PreferenceTheme::DEFAULT_DARK);
             assert_eq!(preferences.density, UiDensity::Touch);
             true
         },

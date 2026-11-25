@@ -85,9 +85,9 @@ mod tests {
         let root = std::env::temp_dir();
         let mut p = Presenter::new(root.clone(), root);
         p.preferences.loaded = true;
-        let original_theme = p.preferences.values.theme;
+        let original_theme = p.preferences.values.light_theme;
         p.begin_options();
-        p.preferences.values.theme = PreferenceTheme::Light;
+        p.preferences.values.light_theme = PreferenceTheme::Light;
         let mut accepted = p.preferences.values.file_list.clone();
         accepted.destination = 1;
         let saved = std::cell::RefCell::new(Vec::new());
@@ -99,9 +99,9 @@ mod tests {
         });
         assert_eq!(saved.borrow().len(), 1);
         assert_eq!(saved.borrow()[0].file_list, accepted);
-        assert_eq!(saved.borrow()[0].theme, original_theme);
+        assert_eq!(saved.borrow()[0].light_theme, original_theme);
         p.cancel_options(&|_| true);
         assert_eq!(p.preferences.values.file_list, accepted);
-        assert_eq!(p.preferences.values.theme, original_theme);
+        assert_eq!(p.preferences.values.light_theme, original_theme);
     }
 }

@@ -99,7 +99,7 @@ async fn unrelated_save_reuses_the_exact_accepted_raw_arc_and_policy_id() {
     assert!(controller.save(PreferencesRevision(1), first.clone()));
     let accepted = saved(&mut events, 1).await;
     let unrelated = UserPreferences {
-        theme: PreferenceTheme::Light,
+        light_theme: PreferenceTheme::Light,
         ..first
     };
     assert!(controller.save(PreferencesRevision(2), unrelated.clone()));

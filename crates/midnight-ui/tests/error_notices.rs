@@ -193,7 +193,9 @@ fn failed_action_is_readable_copyable_and_escape_closes_without_losing_panel() {
     assert!(window.get_message_error());
     for (scheme, density, width, height) in [(2, 0, 1340, 820), (1, 1, 1040, 650), (1, 1, 320, 200)]
     {
+        presenter.borrow_mut().set_host_dark(scheme != 2);
         window.invoke_preferences_changed(scheme, density, 0);
+        window.invoke_preferences_changed(scheme, density, 1);
         slint::platform::update_timers_and_animations();
         modeless::draw(
             &owner,

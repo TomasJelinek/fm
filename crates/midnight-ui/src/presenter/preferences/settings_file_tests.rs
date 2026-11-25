@@ -69,7 +69,7 @@ fn geometry() -> WindowGeometry {
 /// Every setting outside Options differs from the defaults, plus a few Options ones.
 fn imported() -> UserPreferences {
     UserPreferences {
-        theme: PreferenceTheme::Nord,
+        dark_theme: PreferenceTheme::Nord,
         density: UiDensity::Touch,
         quick_search_filter: true,
         command_history: vec![CommandHistoryEntry {
@@ -125,7 +125,7 @@ fn imported() -> UserPreferences {
 
 fn current() -> UserPreferences {
     UserPreferences {
-        theme: PreferenceTheme::Dark,
+        dark_theme: PreferenceTheme::Dark,
         bookmarks: vec![bookmark(7, "current", Some(1))],
         ..UserPreferences::default()
     }
@@ -268,7 +268,7 @@ fn options_and_session_fields_together_restore_every_preference() {
 fn import_previews_options_stages_the_session_and_cancel_restores_everything() {
     let mut h = Harness::new();
     h.import(imported());
-    assert_eq!(h.p.preferences.values.theme, PreferenceTheme::Nord);
+    assert_eq!(h.p.preferences.values.dark_theme, PreferenceTheme::Nord);
     assert!(h.p.preferences.values.quick_search_filter);
     assert_eq!(h.p.preferences.values.bookmarks, current().bookmarks);
     assert_eq!(h.p.preferences.values.tabs, current().tabs);
@@ -409,7 +409,7 @@ fn export_sends_what_ok_would_save_and_replaces_only_with_consent() {
         panic!("Replace must export again");
     };
     assert!(input.overwrite);
-    assert_eq!(input.preferences.theme, PreferenceTheme::Nord);
+    assert_eq!(input.preferences.dark_theme, PreferenceTheme::Nord);
     assert_eq!(input.preferences.bookmarks, current().bookmarks);
     let receipt = PreferencesExportReceipt {
         path: path.clone(),
@@ -479,7 +479,10 @@ fn ok_and_reset_wait_for_a_pending_import_and_reset_drops_a_staged_one() {
     assert!(h.p.preferences.settings_file.staged.is_some());
     h.p.reset_options(&sender(&h.sent));
     assert!(h.p.preferences.settings_file.staged.is_none());
-    assert_eq!(h.p.preferences.values.theme, PreferenceTheme::default());
+    assert_eq!(
+        h.p.preferences.values.dark_theme,
+        PreferenceTheme::DEFAULT_DARK
+    );
     assert_eq!(h.p.preferences.values.bookmarks, current().bookmarks);
 }
 
@@ -490,7 +493,7 @@ fn reset_waits_for_a_pending_export() {
     let mut h = Harness::new();
     let request = h.choose(true, &native("saved.json"));
     h.p.reset_options(&sender(&h.sent));
-    assert_eq!(h.p.preferences.values.theme, PreferenceTheme::Dark);
+    assert_eq!(h.p.preferences.values.dark_theme, PreferenceTheme::Dark);
     assert!(h.p.preferences.options.reset_status.is_empty());
     h.event(Event::PreferencesExported {
         request,
@@ -501,7 +504,10 @@ fn reset_waits_for_a_pending_export() {
         }),
     });
     h.p.reset_options(&sender(&h.sent));
-    assert_eq!(h.p.preferences.values.theme, PreferenceTheme::default());
+    assert_eq!(
+        h.p.preferences.values.dark_theme,
+        PreferenceTheme::DEFAULT_DARK
+    );
     assert!(
         h.p.preferences
             .options

@@ -25,9 +25,33 @@ this is not a claim about a global popularity ranking.
 | Slate Teal | `24` / `slate-teal` | The same original neutral Slate surfaces with teal accents. |
 | Slate Violet | `25` / `slate-violet` | The same original neutral Slate surfaces with violet accents. |
 
-The removed `dos-commander` saved name is accepted only as a migration alias for
-Amber Terminal. Saving writes `amber-terminal`; DOS Commander is no longer a
-picker entry. IDs 0–12 and their persisted names remain unchanged.
+| Red Lacquer | `26` / `red-lacquer` | Original oxblood panes, cinnabar active header and gold cursor edge, inspired by a [carved lacquer scroll box](https://www.clevelandart.org/art/1969.32.b). |
+| Overprint | `27` / `overprint` | Original apricot paper and blue ink, with violet focus and raspberry file marks, inspired by [Risograph overprinting](https://sites.saic.edu/servicebureau/home/services/risography-printing/). |
+| Faience | `28` / `faience` | Original turquoise surfaces, lapis folder names and copper focus edge, inspired by [Egyptian faience](https://www.metmuseum.org/essays/egyptian-faience-technology-and-production). |
+| Afterimage | `29` / `afterimage` | Original deep violet panes and apricot folders, inspired by [Webb's color mapping of the Pillars of Creation](https://science.nasa.gov/asset/webb/pillars-of-creation-nircam-compass-image/). |
+| Last Train | `30` / `last-train` | Original amber panes with dark plum focus, inspired by [low-pressure sodium street lighting](https://www.si.edu/object/low-pressure-sodium-lamp-type-na-10%3Anmah_751238). |
+| Drawing Office | `31` / `drawing-office` | Original palette. Blueprint-blue panes, chalk focus and red-pencil file marks. |
+| Letterhead | `32` / `letterhead` | Original palette. Mauve letter paper with claret focus and a sage selection. |
+| Field Survey | `33` / `field-survey` | Original palette. Olive chart paper, sienna focus and slate-blue marked files. |
+| Mastering Room | `34` / `mastering-room` | Original palette. Walnut surfaces, mint focus and violet selection markers. |
+| Titanium | `35` / `titanium` | Original palette. Silver-grey working surfaces, cobalt focus and copper markers. |
+| Banker’s Lamp | `36` / `bankers-lamp` | Original palette. Emerald panes, a brass cursor and midnight-blue marked files. |
+| Bindery | `37` / `bindery` | Original palette. Mulberry panes with vellum folder names, rose focus and green selection. |
+| Chronometer | `38` / `chronometer` | Original palette. Olive enamel with nickel focus and copper-toned file marks. |
+| Iris | `39` / `iris` | Original palette. Lilac panes with indigo folder names and a butter-yellow cursor. |
+| Canary Copy | `40` / `canary-copy` | Original palette. Canary paper, indigo folders, sage focus and berry-pink marked files. |
+| Pencil Lead | `41` / `pencil-lead` | Original palette. Neutral graphite with a raised silver cursor and darker marked rows. |
+| Carbon Black | `42` / `carbon-black` | Original palette. Near-black surfaces with a white cursor edge and charcoal marked rows. |
+| Warm Ash | `43` / `warm-ash` | Original palette. Warm charcoal with chalk lettering and a darker cursor. |
+| Pewter | `44` / `pewter` | Original palette. Cool mid-grey with an ink-dark cursor and a silver edge. |
+| Plum Smoke | `45` / `plum-smoke` | Original palette. Violet-tinted charcoal with a lilac cursor edge and neutral graphite file marks. |
+
+Options groups the catalog by appearance and sorts the names within each group.
+The initial choices are Pencil Lead for a dark desktop and Letterhead for a light
+desktop. The saved pair follows operating-system appearance changes.
+
+In a dark-theme choice, `dos-commander` is an alias for Amber Terminal. Saving
+that choice writes `amber-terminal`. IDs 0–12 retain their original saved names.
 
 The upstream license files and palette references were inspected at the exact
 commits above. All four retained licenses permit use and distribution without mandatory fees,
@@ -140,23 +164,41 @@ if a fill would leave it below 4.5:1, so no selected text is ever unreadable.
 
 | Theme | Fill / text | Text on fill | Fill on page | Inactive fill / text | Text on inactive | Inactive on page |
 | --- | --- | --- | --- | --- | --- | --- |
+| Afterimage | `#734674` / `#fff3ff` | 6.83:1 | 1.87:1 | `#543161` / `#faeffc` | 9.46:1 | 1.30:1 |
 | Amber Terminal | `#5f4b2a` / `#fff5df` | 7.67:1 | 1.96:1 | `#403b32` / `#fff5df` | 10.26:1 | 1.46:1 |
+| Banker’s Lamp | `#527e53` / `#ffffff` | 4.70:1 | 1.91:1 | `#276545` / `#fef4db` | 6.32:1 | 1.30:1 |
+| Bindery | `#9c5d79` / `#fff7f1` | 4.66:1 | 1.89:1 | `#804462` / `#fff1e5` | 6.49:1 | 1.30:1 |
 | Blue | `#315b86` / `#ffffff` | 7.07:1 | 2.42:1 | `#323d48` / `#ffffff` | 11.07:1 | 1.55:1 |
+| Canary Copy | `#a6b170` / `#282a27` | 6.30:1 | 1.90:1 | `#d2d384` / `#282a27` | 9.23:1 | 1.30:1 |
+| Carbon Black | `#424242` / `#d6d6d6` | 6.91:1 | 1.89:1 | `#292929` / `#d6d6d6` | 10.01:1 | 1.31:1 |
 | Carbon Green | `#426127` / `#f5ffe9` | 6.85:1 | 2.47:1 | `#31392a` / `#f5ffe9` | 11.64:1 | 1.45:1 |
 | Catppuccin Latte | `#d0beef` / `#30334a` | 7.24:1 | 1.51:1 | `#e0daea` / `#30334a` | 9.06:1 | 1.21:1 |
 | Catppuccin Mocha | `#524264` / `#f5e0dc` | 7.14:1 | 1.81:1 | `#3d3942` / `#f5e0dc` | 8.90:1 | 1.45:1 |
+| Chronometer | `#838765` / `#000000` | 5.62:1 | 1.89:1 | `#6a6c47` / `#f4f8ea` | 5.06:1 | 1.30:1 |
 | Dark | `#264f78` / `#ffffff` | 8.50:1 | 1.92:1 | `#3a3d41` / `#ffffff` | 10.92:1 | 1.49:1 |
 | Deep Ocean | `#185b60` / `#ffffff` | 7.77:1 | 2.30:1 | `#293739` / `#ffffff` | 12.35:1 | 1.45:1 |
 | Dracula | `#534265` / `#ffffff` | 8.99:1 | 1.58:1 | `#46424c` / `#ffffff` | 9.79:1 | 1.45:1 |
+| Drawing Office | `#51768c` / `#f8f9f2` | 4.59:1 | 1.90:1 | `#2e5c7f` / `#f2f4e7` | 6.39:1 | 1.30:1 |
+| Faience | `#9ca492` / `#0c363d` | 5.05:1 | 1.90:1 | `#aacab8` / `#0c363d` | 7.36:1 | 1.30:1 |
+| Field Survey | `#ad8b56` / `#1c211b` | 5.15:1 | 1.91:1 | `#c0af7a` / `#262e24` | 6.44:1 | 1.31:1 |
 | Graphite Contrast | `#65485b` / `#ffffff` | 7.98:1 | 2.21:1 | `#3c3439` / `#ffffff` | 12.05:1 | 1.46:1 |
 | Gruvbox Dark | `#504945` / `#fbf1c7` | 7.78:1 | 1.67:1 | `#46403d` / `#fbf1c7` | 8.98:1 | 1.45:1 |
 | High Contrast Dark | `#1aebff` / `#000000` | 14.37:1 | 14.37:1 | `#c8c8c8` / `#000000` | 12.55:1 | 12.55:1 |
 | High Contrast Light | `#37006e` / `#ffffff` | 15.13:1 | 15.13:1 | `#c8c8c8` / `#000000` | 12.55:1 | 1.67:1 |
+| Iris | `#9f86bb` / `#211e2a` | 5.14:1 | 1.89:1 | `#bca6d9` / `#2f2940` | 6.35:1 | 1.30:1 |
+| Last Train | `#bb8e55` / `#2f231d` | 5.16:1 | 1.90:1 | `#ddaf5d` / `#2f231d` | 7.52:1 | 1.30:1 |
+| Letterhead | `#b89baa` / `#2c242c` | 5.95:1 | 1.90:1 | `#d3c0cb` / `#2c242c` | 8.72:1 | 1.29:1 |
 | Light | `#a5d0ff` / `#202020` | 10.14:1 | 1.61:1 | `#e5ebf1` / `#202020` | 13.57:1 | 1.20:1 |
+| Mastering Room | `#5e6e50` / `#edebe1` | 4.60:1 | 1.89:1 | `#56513a` / `#edebe1` | 6.67:1 | 1.30:1 |
 | Nord | `#465a70` / `#eceff4` | 6.16:1 | 1.92:1 | `#484d54` / `#eceff4` | 7.39:1 | 1.60:1 |
 | Norton Commander | `#00737d` / `#ffffff` | 5.60:1 | 2.37:1 | `#0a4a8a` / `#ffffff` | 8.90:1 | 1.49:1 |
 | One Dark | `#36546e` / `#edf1f7` | 6.99:1 | 1.77:1 | `#3d464d` / `#edf1f7` | 8.49:1 | 1.45:1 |
+| Overprint | `#d09ca7` / `#28214c` | 6.37:1 | 1.91:1 | `#ebc4bf` / `#28214c` | 9.33:1 | 1.30:1 |
 | Paper Contrast | `#a6c9f2` / `#0c1727` | 10.50:1 | 1.70:1 | `#dce6f3` / `#0c1727` | 14.27:1 | 1.25:1 |
+| Pencil Lead | `#5b5b5b` / `#e4e4e4` | 5.34:1 | 1.89:1 | `#434343` / `#e4e4e4` | 7.78:1 | 1.30:1 |
+| Pewter | `#7c8285` / `#000000` | 5.39:1 | 1.91:1 | `#62676a` / `#f1f3f4` | 5.14:1 | 1.30:1 |
+| Plum Smoke | `#4d4752` / `#e3e1e4` | 6.91:1 | 1.90:1 | `#332f37` / `#e3e1e4` | 10.08:1 | 1.30:1 |
+| Red Lacquer | `#864a3a` / `#fff8eb` | 6.51:1 | 2.18:1 | `#5d2a27` / `#ffece1` | 10.04:1 | 1.30:1 |
 | Rosé Pine | `#52425e` / `#f4efff` | 8.10:1 | 1.93:1 | `#38343c` / `#f4efff` | 10.81:1 | 1.45:1 |
 | Rosé Pine Dawn | `#e9c0cb` / `#302c48` | 8.15:1 | 1.49:1 | `#eadde1` / `#302c48` | 10.08:1 | 1.21:1 |
 | Sandstone Contrast | `#e4c09f` / `#1c160e` | 10.54:1 | 1.65:1 | `#ece0d7` / `#1c160e` | 13.85:1 | 1.25:1 |
@@ -164,8 +206,10 @@ if a fill would leave it below 4.5:1, so no selected text is ever unreadable.
 | Slate Teal | `#1c5b51` / `#ffffff` | 7.88:1 | 2.02:1 | `#31403c` / `#ffffff` | 10.89:1 | 1.46:1 |
 | Slate Violet | `#5c4874` / `#ffffff` | 7.97:1 | 2.00:1 | `#3f3a47` / `#ffffff` | 11.01:1 | 1.45:1 |
 | Solarized Light | `#9ecdd2` / `#002b36` | 8.66:1 | 1.61:1 | `#d7e4e6` / `#002b36` | 11.53:1 | 1.21:1 |
+| Titanium | `#7b8db0` / `#16222c` | 4.83:1 | 1.90:1 | `#9dadc1` / `#16222c` | 7.07:1 | 1.30:1 |
 | Tokyo Night | `#394b70` / `#e0e6ff` | 7.01:1 | 1.97:1 | `#323842` / `#e0e6ff` | 9.51:1 | 1.45:1 |
 | Verdant Light | `#badaa9` / `#172213` | 10.74:1 | 1.50:1 | `#e1ebdc` / `#172213` | 13.43:1 | 1.20:1 |
+| Warm Ash | `#6c655f` / `#efeae4` | 4.79:1 | 1.90:1 | `#524d48` / `#efeae4` | 6.99:1 | 1.30:1 |
 
 Decisions and limits:
 

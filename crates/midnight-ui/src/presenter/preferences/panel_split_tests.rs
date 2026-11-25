@@ -60,7 +60,7 @@ fn split_save_survives_backpressure_and_options_cancel_without_saving_theme_prev
         panic!()
     };
     assert_eq!(preferences.panel_split_basis_points, 6300);
-    assert_eq!(preferences.theme, PreferenceTheme::default());
+    assert_eq!(preferences.dark_theme, PreferenceTheme::DEFAULT_DARK);
     assert_eq!(preferences.density, UiDensity::Desktop);
     assert_eq!(p.preferences.values.panel_split_basis_points, 6300);
 }

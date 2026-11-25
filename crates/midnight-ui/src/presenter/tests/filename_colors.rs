@@ -434,7 +434,7 @@ fn local_color_edits_survive_late_preferences_without_overwriting_other_saved_op
         panic!("save must await disk preferences")
     });
     p.preferences_loaded(Ok(UserPreferences {
-        theme: PreferenceTheme::Nord,
+        dark_theme: PreferenceTheme::Nord,
         font_family: "Saved 文档".into(),
         ..Default::default()
     }));
@@ -442,7 +442,7 @@ fn local_color_edits_survive_late_preferences_without_overwriting_other_saved_op
         p.preferences.values.filename_colors,
         colored_preferences().filename_colors
     );
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::Nord);
+    assert_eq!(p.preferences.values.dark_theme, PreferenceTheme::Nord);
     assert_eq!(p.preferences.values.font_family, "Saved 文档");
 }
 

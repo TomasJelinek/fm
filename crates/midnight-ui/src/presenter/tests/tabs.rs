@@ -71,7 +71,7 @@ fn local_tab_edits_win_over_late_load_while_untouched_panel_restores() {
                     saved_tabs(&["saved-left"], 0),
                     saved_tabs(&["right-a", "right-b"], 1),
                 ],
-                theme: PreferenceTheme::Dark,
+                dark_theme: PreferenceTheme::Dark,
                 ..Default::default()
             },
             comparators: midnight_core::FileComparatorSnapshot::default(),
@@ -82,7 +82,7 @@ fn local_tab_edits_win_over_late_load_while_untouched_panel_restores() {
     assert_eq!(p.tabs(PaneId::Right).len(), 2);
     assert!(p.tabs(PaneId::Right)[1].active);
     assert_eq!(p.preferences.values.tabs[0].paths.len(), 2);
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::Dark);
+    assert_eq!(p.preferences.values.dark_theme, PreferenceTheme::Dark);
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn a_start_without_changes_saves_nothing_and_the_next_save_keeps_its_panels() {
             let [save] = saves.as_slice() else {
                 panic!("{case}: a changed theme saves once, not {}", saves.len());
             };
-            assert_eq!(save.theme, PreferenceTheme::Light, "{case}");
+            assert_eq!(save.light_theme, PreferenceTheme::Light, "{case}");
             assert_eq!(save.tabs, expected, "{case}");
         }
     }

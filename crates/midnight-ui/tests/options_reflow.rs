@@ -212,7 +212,7 @@ fn narrow_appearance_uses_vertical_scrolling_and_its_theme_picker_remains_intera
     for _ in 0..3 {
         test.draw();
     }
-    let picker = ui::popup_item(&test.window, "Theme", AccessibleRole::Combobox);
+    let picker = ui::popup_item(&test.window, "Dark theme", AccessibleRole::Combobox);
     let viewport = scroll_parent(&picker);
     let clip = bounds(&viewport);
     let content_width = viewport
@@ -235,7 +235,7 @@ fn narrow_appearance_uses_vertical_scrolling_and_its_theme_picker_remains_intera
         });
     test.draw();
     inside_clips(&picker, 320, 600);
-    ui::click_popup(&test.window, "Theme", AccessibleRole::Combobox);
+    ui::click_popup(&test.window, "Dark theme", AccessibleRole::Combobox);
     ui::key(&test.window, Key::DownArrow);
     ui::key(&test.window, Key::Return);
     assert!(

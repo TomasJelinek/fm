@@ -49,6 +49,7 @@ impl Startup {
             let result = match window.window().winit_window().await {
                 Ok(native) => {
                     drop(native);
+                    midnight_ui::sync_host_appearance(&window, &presenter);
                     geometry.restore(&window, &presenter.borrow());
                     window
                         .show()

@@ -27,6 +27,8 @@ pub(crate) struct PreferencesState {
     /// Export/Import configuration within the Options session.
     pub(crate) settings_file: settings_file::State,
     pub(crate) values: UserPreferences,
+    // Ephemeral OS appearance, independent of saved and staged preferences.
+    host_is_light: bool,
     pub(crate) revision: PreferencesRevision,
     pub(crate) unsaved: bool,
     pub(crate) saving: bool,
@@ -60,7 +62,8 @@ pub(super) struct EditedFields {
     pub(super) viewer_associations: bool,
     pub(super) editor: bool,
     pub(super) file_comparators: bool,
-    pub(super) theme: bool,
+    dark_theme: bool,
+    light_theme: bool,
     pub(super) density: bool,
     pub(super) windows_shell: bool,
     pub(super) font_family: bool,
@@ -96,7 +99,11 @@ pub(super) struct EditedFields {
 
 impl PreferencesState {
     pub(crate) fn theme_index(&self) -> i32 {
-        self.values.theme.index()
+        if self.host_is_light {
+            self.values.light_theme.index()
+        } else {
+            self.values.dark_theme.index()
+        }
     }
     pub(crate) fn density_index(&self) -> i32 {
         match self.values.density {
@@ -107,6 +114,15 @@ impl PreferencesState {
 }
 
 impl Presenter {
+    /// Apply the host appearance at startup or after an OS notification.
+    /// A true result asks the host to refresh the window and its open tools.
+    pub fn set_host_dark(&mut self, dark: bool) -> bool {
+        let light = !dark;
+        let changed = self.preferences.host_is_light != light;
+        self.preferences.host_is_light = light;
+        changed
+    }
+
     pub(crate) fn preferences_save_status(&self) -> String {
         if !self.preferences.loaded {
             "Loading settings…".into()
@@ -328,8 +344,11 @@ impl Presenter {
                 if edited.file_comparators {
                     loaded.file_comparators = local.file_comparators.clone();
                 }
-                if edited.theme {
-                    loaded.theme = local.theme;
+                if edited.dark_theme {
+                    loaded.dark_theme = local.dark_theme;
+                }
+                if edited.light_theme {
+                    loaded.light_theme = local.light_theme;
                 }
                 if edited.density {
                     loaded.density = local.density;
@@ -623,21 +642,30 @@ impl Presenter {
             }
             return;
         }
-        match field {
-            0 => self.preferences.edited.theme = true,
-            1 => self.preferences.edited.density = true,
-            _ => {} // Save again changes no field merely by being clicked.
+        if self.preferences.options.open && self.preferences.options.baseline.is_none() {
+            return;
         }
-        let preferences = UserPreferences {
-            // Keep the existing Blue fallback for malformed picker callbacks.
-            theme: PreferenceTheme::from_index(theme).unwrap_or_default(),
-            density: if density == 1 {
+        let mut preferences = self.preferences.values.clone();
+        if field != 1 {
+            let Some(theme) = PreferenceTheme::from_index(theme) else {
+                return;
+            };
+            if theme.is_light() {
+                self.preferences.edited.light_theme |= field == 0;
+                preferences.light_theme = theme;
+            } else {
+                self.preferences.edited.dark_theme |= field == 0;
+                preferences.dark_theme = theme;
+            }
+        }
+        if field != 0 {
+            self.preferences.edited.density |= field == 1;
+            preferences.density = if density == 1 {
                 UiDensity::Touch
             } else {
                 UiDensity::Desktop
-            },
-            ..self.preferences.values.clone()
-        };
+            };
+        }
         self.update_preferences(preferences, send);
     }
 
@@ -932,7 +960,8 @@ impl Presenter {
         if comparators_changed {
             self.comparators.revision = self.comparators.revision.saturating_add(1);
         }
-        edited.theme |= preferences.theme != previous.theme;
+        edited.dark_theme |= preferences.dark_theme != previous.dark_theme;
+        edited.light_theme |= preferences.light_theme != previous.light_theme;
         edited.density |= preferences.density != previous.density;
         edited.windows_shell |= preferences.windows_shell != previous.windows_shell;
         edited.font_family |= preferences.font_family != previous.font_family;
@@ -1067,13 +1096,13 @@ mod tests {
             thumbnails_enabled: false,
             thumbnails_network: true,
             thumbnails_archives: true,
-            theme: PreferenceTheme::Nord,
+            dark_theme: PreferenceTheme::Nord,
             ..Default::default()
         }));
         assert!(!p.preferences.values.thumbnails_archives);
         assert!(!p.preferences.values.thumbnails_enabled);
         assert!(p.preferences.values.thumbnails_network);
-        assert_eq!(p.preferences.values.theme, PreferenceTheme::Nord);
+        assert_eq!(p.preferences.values.dark_theme, PreferenceTheme::Nord);
     }
 
     #[test]
@@ -1083,12 +1112,12 @@ mod tests {
         p.preferences_loaded(Ok(UserPreferences {
             thumbnail_size: 48,
             thumbnails_network: true,
-            theme: PreferenceTheme::Nord,
+            dark_theme: PreferenceTheme::Nord,
             ..Default::default()
         }));
         assert_eq!(p.preferences.values.thumbnail_size, 192);
         assert!(p.preferences.values.thumbnails_network);
-        assert_eq!(p.preferences.values.theme, PreferenceTheme::Nord);
+        assert_eq!(p.preferences.values.dark_theme, PreferenceTheme::Nord);
         for invalid in [-1, 0, 73, 257, i32::MAX] {
             p.change_thumbnail_size(invalid, &|_| panic!("invalid input must not save"));
             assert_eq!(p.preferences.values.thumbnail_size, 192);
@@ -1104,7 +1133,7 @@ mod tests {
         presenter.preferences_loaded(Ok(UserPreferences {
             thumbnails_enabled: true,
             thumbnails_network: true,
-            theme: PreferenceTheme::Nord,
+            dark_theme: PreferenceTheme::Nord,
             ..Default::default()
         }));
         assert!(!presenter.preferences.values.thumbnails_enabled);
@@ -1115,7 +1144,7 @@ mod tests {
             };
             assert!(!preferences.thumbnails_enabled);
             assert!(preferences.thumbnails_network);
-            assert_eq!(preferences.theme, PreferenceTheme::Nord);
+            assert_eq!(preferences.dark_theme, PreferenceTheme::Nord);
             true
         });
     }
@@ -1189,7 +1218,7 @@ mod tests {
         let mut p = Presenter::new("left".into(), "right".into());
         p.change_search_filter(true, &|_| panic!("must await saved preferences"));
         p.preferences_loaded(Ok(UserPreferences {
-            theme: PreferenceTheme::Dark,
+            dark_theme: PreferenceTheme::Dark,
             font_family: "Stored 文档 e\u{301}".into(),
             quick_search_filter: false,
             ..Default::default()
@@ -1201,7 +1230,7 @@ mod tests {
                 panic!()
             };
             assert!(preferences.quick_search_filter);
-            assert_eq!(preferences.theme, PreferenceTheme::Dark);
+            assert_eq!(preferences.dark_theme, PreferenceTheme::Dark);
             assert_eq!(preferences.font_family, "Stored 文档 e\u{301}");
             true
         });
@@ -1223,18 +1252,18 @@ mod tests {
     #[test]
     fn unchanged_provisional_defaults_do_not_mask_saved_values() {
         let mut p = Presenter::new("left".into(), "right".into());
-        p.change_preferences(0, 0, -1, &|_| true);
+        p.change_preferences(PreferenceTheme::DEFAULT_DARK.index(), 0, -1, &|_| true);
         p.apply(Event::PreferencesLoaded(Ok(Box::new(
             midnight_core::AcceptedPreferences {
                 preferences: UserPreferences {
-                    theme: PreferenceTheme::Light,
+                    light_theme: PreferenceTheme::Light,
                     density: UiDensity::Touch,
                     ..Default::default()
                 },
                 comparators: midnight_core::FileComparatorSnapshot::default(),
             },
         ))));
-        assert_eq!(p.preferences.values.theme, PreferenceTheme::Light);
+        assert_eq!(p.preferences.values.light_theme, PreferenceTheme::Light);
         assert_eq!(p.preferences.values.density, UiDensity::Touch);
         assert_eq!(p.preferences.revision, PreferencesRevision(1));
     }
@@ -1242,6 +1271,7 @@ mod tests {
     #[test]
     fn local_preview_wins_over_late_load_and_stale_save_results() {
         let mut p = Presenter::new("left".into(), "right".into());
+        p.set_host_dark(false);
         let sent = RefCell::new(vec![]);
         let send = |command| {
             // The first read also requests comparator image metadata; keep the saves.
@@ -1255,7 +1285,7 @@ mod tests {
         assert_eq!(
             p.preferences.values,
             UserPreferences {
-                theme: PreferenceTheme::Light,
+                light_theme: PreferenceTheme::Light,
                 density: UiDensity::Touch,
                 ..Default::default()
             }
@@ -1283,7 +1313,8 @@ mod tests {
         assert_eq!(
             p.preferences.values,
             UserPreferences {
-                theme: PreferenceTheme::Dark,
+                dark_theme: PreferenceTheme::Dark,
+                light_theme: PreferenceTheme::Light,
                 density: UiDensity::Desktop,
                 ..Default::default()
             }
@@ -1293,7 +1324,7 @@ mod tests {
             Command::SavePreferences {
                 revision: PreferencesRevision(1),
                 preferences,
-            } if preferences.theme == PreferenceTheme::Light && preferences.density == UiDensity::Touch
+            } if preferences.light_theme == PreferenceTheme::Light && preferences.density == UiDensity::Touch
         ));
         assert!(matches!(
             sent.borrow()[1],
@@ -1307,6 +1338,7 @@ mod tests {
     #[test]
     fn failed_enqueue_keeps_preview_and_allows_retrying_the_same_choices() {
         let mut p = Presenter::new("left".into(), "right".into());
+        p.set_host_dark(false);
         p.apply(Event::PreferencesLoaded(Ok(Box::default())));
         p.change_preferences(2, 1, -1, &|_| false);
         assert_eq!(p.preferences.theme_index(), 2);

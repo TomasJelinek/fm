@@ -1,130 +1,134 @@
-use midnight_core::{UiDensity, UserPreferences};
+use midnight_core::{PreferenceTheme, UiDensity, UserPreferences};
 use midnight_platform_common::settings::{decode_preferences, encode_preferences};
+use serde_json::{Value, json};
 use std::io;
 
-const THEME_NAMES: [&str; 26] = [
-    "blue",
-    "dark",
-    "light",
-    "dracula",
-    "nord",
-    "gruvbox-dark",
-    "catppuccin-mocha",
-    "solarized-light",
-    "carbon-green",
-    "tokyo-night",
-    "one-dark",
-    "rose-pine",
-    "norton-commander",
-    "amber-terminal",
-    "verdant-light",
-    "catppuccin-latte",
-    "rose-pine-dawn",
-    "paper-contrast",
-    "sandstone-contrast",
-    "deep-ocean",
-    "graphite-contrast",
-    "high-contrast-dark",
-    "high-contrast-light",
-    "slate-blue",
-    "slate-teal",
-    "slate-violet",
-];
-
-#[test]
-fn legacy_dos_theme_loads_as_amber_terminal_and_saves_only_the_new_name() {
-    let mut input: serde_json::Value =
-        serde_json::from_slice(&encode_preferences(UserPreferences::default()).unwrap()).unwrap();
-    input["theme"] = "dos-commander".into();
-    let loaded = decode_preferences(&serde_json::to_vec(&input).unwrap()).unwrap();
-    let output: serde_json::Value =
-        serde_json::from_slice(&encode_preferences(loaded).unwrap()).unwrap();
-    input["theme"] = "amber-terminal".into();
-    assert_eq!(output, input);
+fn document(preferences: UserPreferences) -> Value {
+    serde_json::from_slice(&encode_preferences(preferences).unwrap()).unwrap()
 }
 
 #[test]
-fn all_theme_names_roundtrip_without_changing_the_schema_or_other_preferences() {
-    for name in THEME_NAMES {
-        let preferences = UserPreferences {
-            density: UiDensity::Touch,
-            font_family: "Stored 文档 e\u{301}".into(),
-            desktop_font_size: 19,
-            touch_font_size: 27,
-            quick_search_filter: true,
-            ..Default::default()
-        };
-        let mut input: serde_json::Value =
-            serde_json::from_slice(&encode_preferences(preferences).unwrap()).unwrap();
-        input["theme"] = name.into();
-        let loaded = decode_preferences(&serde_json::to_vec(&input).unwrap())
-            .unwrap_or_else(|error| panic!("theme {name}: {error}"));
-        let output: serde_json::Value =
-            serde_json::from_slice(&encode_preferences(loaded).unwrap()).unwrap();
-        assert_eq!(output, input, "theme {name}");
-        assert_eq!(output["version"], 10);
-    }
-}
-
-#[test]
-fn all_previous_schema_versions_keep_the_original_theme_names() {
-    for name in &THEME_NAMES[..3] {
-        for version in 1..=7 {
-            let mut input: serde_json::Value =
-                serde_json::from_slice(&encode_preferences(UserPreferences::default()).unwrap())
-                    .unwrap();
-            input["version"] = version.into();
-            input["theme"] = (*name).into();
-            let fields = [
-                (2, "font_family"),
-                (2, "desktop_font_size"),
-                (2, "touch_font_size"),
-                (3, "bookmarks"),
-                (4, "quick_search_filter"),
-                (5, "size_display"),
-                (5, "remember_command_history"),
-                (5, "command_history"),
-                (6, "tabs"),
-                (6, "panel_view_modes"),
-                (7, "shortcuts"),
-                (8, "panel_filters"),
-                (9, "editor"),
-                (10, "disabled_viewer_plugins"),
-            ];
-            for (introduced, field) in fields {
-                if version < introduced {
-                    input.as_object_mut().unwrap().remove(field);
-                }
-            }
-            let loaded = decode_preferences(&serde_json::to_vec(&input).unwrap()).unwrap();
-            let output: serde_json::Value =
-                serde_json::from_slice(&encode_preferences(loaded).unwrap()).unwrap();
-            assert_eq!(output["theme"], *name, "version {version}");
-            assert_eq!(output["version"], 10);
+fn every_theme_roundtrips_with_an_independently_selected_opposite_appearance() {
+    let custom = UserPreferences {
+        dark_theme: PreferenceTheme::PlumSmoke,
+        light_theme: PreferenceTheme::Iris,
+        density: UiDensity::Touch,
+        font_family: "Stored 文档 e\u{301}".into(),
+        desktop_font_size: 19,
+        touch_font_size: 27,
+        ..Default::default()
+    };
+    for theme in PreferenceTheme::ALL {
+        let mut expected = custom.clone();
+        if theme.is_light() {
+            expected.light_theme = theme;
+        } else {
+            expected.dark_theme = theme;
         }
-    }
-}
-
-#[test]
-fn unknown_theme_names_are_rejected_as_invalid_data() {
-    // `decode_preferences` is a pure byte decoder; the native settings services own the file
-    // and its atomic replacement, so no file is involved here.
-    for name in [
-        "future-theme",
-        "Nord",
-        "gruvbox_dark",
-        "",
-        "solarized-light ",
-    ] {
-        let mut input: serde_json::Value =
-            serde_json::from_slice(&encode_preferences(UserPreferences::default()).unwrap())
-                .unwrap();
-        input["theme"] = name.into();
-        let bytes = serde_json::to_vec(&input).unwrap();
+        let saved = document(expected.clone());
         assert_eq!(
-            decode_preferences(&bytes).unwrap_err().kind(),
-            io::ErrorKind::InvalidData,
-            "{name:?}"
+            saved["version"],
+            midnight_platform_common::settings::SETTINGS_FILE_VERSION
+        );
+        assert!(saved.get("theme").is_none());
+        assert_eq!(saved["dark_theme"], expected.dark_theme.storage_name());
+        assert_eq!(saved["light_theme"], expected.light_theme.storage_name());
+        assert_eq!(
+            decode_preferences(&serde_json::to_vec(&saved).unwrap()).unwrap(),
+            expected
         );
     }
+}
+
+#[test]
+fn default_pair_preserves_the_minimum_schema_and_legacy_themes_use_the_defaults() {
+    let defaults = UserPreferences::default();
+    let expected = document(defaults.clone());
+    assert_eq!(expected["version"], 10);
+    assert_eq!(expected["theme"], "blue");
+    assert!(expected.get("dark_theme").is_none());
+    assert!(expected.get("light_theme").is_none());
+    let mut old = expected.clone();
+    for name in PreferenceTheme::ALL
+        .into_iter()
+        .take(26)
+        .map(PreferenceTheme::storage_name)
+        .chain(["dos-commander"])
+    {
+        old["theme"] = name.into();
+        let loaded = decode_preferences(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(loaded, defaults);
+        assert_eq!(document(loaded), expected);
+    }
+    for name in ["plum-smoke", "future-theme", "Nord"] {
+        old["theme"] = name.into();
+        assert!(decode_preferences(&serde_json::to_vec(&old).unwrap()).is_err());
+    }
+}
+
+#[test]
+fn either_custom_selection_stores_both_themes_and_restoring_defaults_returns_to_the_old_schema() {
+    for prefs in [
+        UserPreferences {
+            dark_theme: PreferenceTheme::PlumSmoke,
+            ..Default::default()
+        },
+        UserPreferences {
+            light_theme: PreferenceTheme::Iris,
+            ..Default::default()
+        },
+    ] {
+        let custom = document(prefs.clone());
+        assert_eq!(custom["version"], 45);
+        assert!(custom.get("theme").is_none());
+        assert_eq!(custom["dark_theme"], prefs.dark_theme.storage_name());
+        assert_eq!(custom["light_theme"], prefs.light_theme.storage_name());
+        let mut loaded = decode_preferences(&serde_json::to_vec(&custom).unwrap()).unwrap();
+        assert_eq!(loaded, prefs);
+        loaded.dark_theme = PreferenceTheme::DEFAULT_DARK;
+        loaded.light_theme = PreferenceTheme::DEFAULT_LIGHT;
+        assert_eq!(document(loaded), document(UserPreferences::default()));
+    }
+}
+
+#[test]
+fn separate_theme_keys_require_both_recognized_names_in_the_correct_mode() {
+    let original = document(UserPreferences {
+        dark_theme: PreferenceTheme::PlumSmoke,
+        ..Default::default()
+    });
+    for (field, value) in [
+        ("light_theme", json!("plum-smoke")),
+        ("dark_theme", json!("letterhead")),
+        ("dark_theme", Value::Null),
+        ("light_theme", json!(2)),
+        ("dark_theme", json!("")),
+        ("light_theme", json!("solarized-light ")),
+        ("dark_theme", json!("future-theme")),
+        ("dark_theme", json!("Nord")),
+        ("dark_theme", json!("gruvbox_dark")),
+        ("theme", json!("blue")),
+    ] {
+        let mut invalid = original.clone();
+        invalid[field] = value;
+        assert_eq!(
+            decode_preferences(&serde_json::to_vec(&invalid).unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+    for field in ["light_theme", "dark_theme"] {
+        let mut missing = original.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(decode_preferences(&serde_json::to_vec(&missing).unwrap()).is_err());
+    }
+    let wrong = UserPreferences {
+        dark_theme: PreferenceTheme::Iris,
+        ..Default::default()
+    };
+    assert!(encode_preferences(wrong).is_err());
+    let mut legacy = document(UserPreferences::default());
+    legacy["dark_theme"] = "blue".into();
+    assert!(decode_preferences(&serde_json::to_vec(&legacy).unwrap()).is_err());
 }

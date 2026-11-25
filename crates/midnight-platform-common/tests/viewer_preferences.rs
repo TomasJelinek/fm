@@ -5,7 +5,7 @@ use midnight_platform_common::settings::{decode_preferences, encode_preferences}
 #[test]
 fn viewer_choices_survive_restart_without_losing_other_options() {
     let mut expected = UserPreferences {
-        theme: PreferenceTheme::Dark,
+        quick_search_filter: true,
         disabled_viewer_plugins: vec!["midnight.viewer.source".into()],
         ..Default::default()
     };

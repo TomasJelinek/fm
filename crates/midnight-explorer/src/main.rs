@@ -974,6 +974,7 @@ fn run_window(
     );
     content_workers.compare_windows = Some(comparators.clone());
     content_appearance::install(&window, &viewers, &comparators);
+    let _host_appearance = midnight_ui::observe_host_appearance(&window, &presenter);
     let _ = comparators_loaded.set(Rc::downgrade(&comparators));
     let close_viewers = viewers.clone();
     let close_comparators = comparators.clone();

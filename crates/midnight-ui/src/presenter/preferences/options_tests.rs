@@ -235,12 +235,12 @@ fn disk_io_explicit_early_choice_survives_late_load_without_replacing_other_fiel
         });
         p.preferences_loaded(Ok(UserPreferences {
             disk_io_concurrency: DiskIoConcurrency::Manual(7),
-            theme: PreferenceTheme::Light,
+            light_theme: PreferenceTheme::Light,
             desktop_font_size: 21,
             ..Default::default()
         }));
         assert_eq!(p.preferences.values.disk_io_concurrency, expected);
-        assert_eq!(p.preferences.values.theme, PreferenceTheme::Light);
+        assert_eq!(p.preferences.values.light_theme, PreferenceTheme::Light);
         assert_eq!(p.preferences.values.desktop_font_size, 21);
     }
 }
@@ -298,7 +298,7 @@ fn cancelling_restores_all_options_and_runtime_shortcuts_without_saving() {
     let baseline = p.preferences.values.clone();
     p.begin_options();
     let mut draft = baseline.clone();
-    draft.theme = PreferenceTheme::from_index(1).unwrap();
+    draft.dark_theme = PreferenceTheme::from_index(1).unwrap();
     draft.density = UiDensity::Touch;
     draft.font_family = "Consolas".into();
     draft.desktop_font_size = 19;
@@ -347,13 +347,13 @@ fn automatic_session_saves_and_shutdown_never_include_preview_options() {
     p.change_panel_view_mode(PaneId::Left, 1, &send);
     let writes = saved(&commands.borrow());
     assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0].1.theme, PreferenceTheme::default());
+    assert_eq!(writes[0].1.dark_theme, PreferenceTheme::DEFAULT_DARK);
     assert_eq!(writes[0].1.density, UiDensity::Desktop);
     assert_eq!(writes[0].1.panel_view_modes[0], PanelViewMode::Brief);
     let Command::SavePreferences { preferences, .. } = p.pending_preferences_save().unwrap() else {
         panic!()
     };
-    assert_eq!(preferences.theme, PreferenceTheme::default());
+    assert_eq!(preferences.dark_theme, PreferenceTheme::DEFAULT_DARK);
     p.preferences_saved(writes[0].0, Ok(()));
     p.cancel_options(&send);
     assert_eq!(
@@ -424,7 +424,7 @@ fn failed_ok_keeps_transaction_open_retry_is_new_and_only_success_closes() {
     );
     p.preferences_saved(second, Ok(()));
     assert!(!p.preferences.options.open);
-    assert_eq!(p.preferences.values.theme.index(), 1);
+    assert_eq!(p.preferences.values.dark_theme.index(), 1);
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn ok_acknowledgement_closes_even_when_a_newer_session_save_is_pending() {
         p.preferences.saving,
         "the later session write is still pending"
     );
-    assert_eq!(p.preferences.values.theme.index(), 1);
+    assert_eq!(p.preferences.values.dark_theme.index(), 1);
 }
 
 #[test]
@@ -457,7 +457,7 @@ fn failed_admission_can_be_cancelled_and_initial_load_becomes_the_baseline() {
     p.accept_options(&|_| panic!("must wait for initial load"));
     let saved_theme = PreferenceTheme::from_index(2).unwrap();
     p.preferences_loaded(Ok(UserPreferences {
-        theme: saved_theme,
+        light_theme: saved_theme,
         ..Default::default()
     }));
     p.change_preferences(1, 0, 0, &|_| panic!("preview"));
@@ -465,7 +465,7 @@ fn failed_admission_can_be_cancelled_and_initial_load_becomes_the_baseline() {
     assert!(p.preferences.options.open);
     assert!(!p.preferences.options.saving);
     p.cancel_options(&|_| panic!("cancel"));
-    assert_eq!(p.preferences.values.theme, saved_theme);
+    assert_eq!(p.preferences.values.light_theme, saved_theme);
 }
 
 #[test]
@@ -484,7 +484,10 @@ fn failed_ok_unlocks_when_a_newer_session_save_was_not_admitted() {
     assert!(!p.preferences.save_error.is_empty());
     p.cancel_options(&|_| panic!("cancel must not save"));
     assert!(!p.preferences.options.open);
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::default());
+    assert_eq!(
+        p.preferences.values.dark_theme,
+        PreferenceTheme::DEFAULT_DARK
+    );
     assert_eq!(
         p.preferences.values.panel_view_modes[0],
         PanelViewMode::Brief
@@ -492,7 +495,7 @@ fn failed_ok_unlocks_when_a_newer_session_save_was_not_admitted() {
     let Command::SavePreferences { preferences, .. } = p.pending_preferences_save().unwrap() else {
         panic!()
     };
-    assert_eq!(preferences.theme, PreferenceTheme::default());
+    assert_eq!(preferences.dark_theme, PreferenceTheme::DEFAULT_DARK);
 }
 
 #[test]
@@ -535,7 +538,10 @@ fn rejected_ok_is_not_kept_locked_by_an_older_session_save() {
     p.cancel_options(&|_| panic!("cancel must not save"));
     p.preferences_saved(older, Ok(()));
     assert!(!p.preferences.options.open);
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::default());
+    assert_eq!(
+        p.preferences.values.dark_theme,
+        PreferenceTheme::DEFAULT_DARK
+    );
 }
 
 fn save_failure() -> FsError {
@@ -615,7 +621,7 @@ fn reset_preserves_user_content_and_commits_defaults_only_after_ok() {
     p.preferences.values.validate().unwrap();
     let preserved = p.preferences.values.clone();
     let mut custom = preserved.clone();
-    custom.theme = PreferenceTheme::from_index(1).unwrap();
+    custom.dark_theme = PreferenceTheme::from_index(1).unwrap();
     custom.font_family = "Consolas".into();
     custom.thumbnails_enabled = false;
     custom.thumbnails_archives = false;
@@ -704,7 +710,7 @@ fn reset_cannot_race_loading_or_an_accepted_settings_write() {
     p.begin_options();
     p.reset_options(&|_| panic!("reset before loading must do nothing"));
     p.preferences_loaded(Ok(UserPreferences {
-        theme: PreferenceTheme::from_index(1).unwrap(),
+        dark_theme: PreferenceTheme::from_index(1).unwrap(),
         ..Default::default()
     }));
     p.accept_options(&|_| true);
@@ -717,7 +723,7 @@ fn reset_cannot_race_loading_or_an_accepted_settings_write() {
 #[test]
 fn reset_waits_for_an_open_native_picker_without_discarding_its_result() {
     let mut p = loaded();
-    p.preferences.values.theme = PreferenceTheme::from_index(1).unwrap();
+    p.preferences.values.dark_theme = PreferenceTheme::from_index(1).unwrap();
     p.begin_options();
     let request = RefCell::new(None);
     p.request_settings_picker(
@@ -732,13 +738,16 @@ fn reset_waits_for_an_open_native_picker_without_discarding_its_result() {
     );
     assert!(p.settings_picker.busy());
     p.reset_options(&|_| panic!("reset cannot interfere with an open picker"));
-    assert_eq!(p.preferences.values.theme.index(), 1);
+    assert_eq!(p.preferences.values.dark_theme.index(), 1);
     let selected = std::env::temp_dir().join("editor fixture");
     p.settings_path_picked(request.borrow().unwrap(), Ok(Some(selected.clone())));
     assert_eq!(p.editor_draft().native, Some(selected));
     p.reset_options(&|_| panic!("reset only stages defaults"));
     assert!(!p.editor.dirty);
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::default());
+    assert_eq!(
+        p.preferences.values.dark_theme,
+        PreferenceTheme::DEFAULT_DARK
+    );
 }
 
 #[test]
@@ -872,10 +881,13 @@ fn reset_always_reports_what_it_did_until_the_next_edit_or_session() {
     );
     // A previewed setting: the next edit retires the report, Reset applies.
     p.change_preferences(1, 0, 0, &send);
-    assert_eq!(p.preferences.values.theme.index(), 1);
+    assert_eq!(p.preferences.values.dark_theme.index(), 1);
     assert_eq!(p.preferences.options.reset_status, "", "an edit retires it");
     p.reset_options(&send);
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::default());
+    assert_eq!(
+        p.preferences.values.dark_theme,
+        PreferenceTheme::DEFAULT_DARK
+    );
     assert_eq!(p.preferences.options.reset_status, applied);
     // Only an unfinished page edit differs: Reset discards it and says so.
     p.capture_editor_shortcut(ShortcutChord::parse("ctrl+alt+y").unwrap());

@@ -3,7 +3,8 @@
 mod render;
 use crate::support::ui;
 
-use i_slint_core::items::AccessibleRole;
+use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
+use midnight_core::PreferenceTheme;
 use midnight_ui::{FileRow, Theme};
 use slint::{Color, ComponentHandle, VecModel, platform::Key};
 use std::{cell::Cell, collections::HashSet, rc::Rc, time::Duration};
@@ -188,20 +189,49 @@ fn all_themes_are_selectable_and_keep_text_readable() {
         "Slate Blue",
         "Slate Teal",
         "Slate Violet",
+        "Red Lacquer",
+        "Overprint",
+        "Faience",
+        "Afterimage",
+        "Last Train",
+        "Drawing Office",
+        "Letterhead",
+        "Field Survey",
+        "Mastering Room",
+        "Titanium",
+        "Banker’s Lamp",
+        "Bindery",
+        "Chronometer",
+        "Iris",
+        "Canary Copy",
+        "Pencil Lead",
+        "Carbon Black",
+        "Warm Ash",
+        "Pewter",
+        "Plum Smoke",
     ];
-    assert_eq!(choices.len(), midnight_core::PreferenceTheme::ALL.len());
-    let mut choices: Vec<_> = choices.into_iter().enumerate().collect();
+    assert_eq!(choices.len(), PreferenceTheme::ALL.len());
+    let mut choices: Vec<_> = PreferenceTheme::ALL.into_iter().zip(choices).collect();
     choices.sort_by_key(|(_, name)| name.to_lowercase());
-    let accepted = Rc::new(Cell::new(0));
+    let accepted = Rc::new(Cell::new(None));
     let changed = accepted.clone();
+    let host_light = Rc::new(Cell::new(false));
+    let appearance = host_light.clone();
     let weak = test.window.as_weak();
     test.window
-        .on_preferences_changed(move |scheme, density, _| {
-            changed.set(scheme);
+        .on_preferences_changed(move |scheme, density, field| {
+            assert_eq!(field, 0);
+            let picked = PreferenceTheme::from_index(scheme).unwrap();
+            changed.set(Some(picked));
             let window = weak.upgrade().unwrap();
-            window.set_theme_index(scheme);
-            window.set_density_index(density);
-            window.invoke_apply_preferences(scheme, density);
+            if picked.is_light() {
+                window.set_light_theme_index(scheme);
+            } else {
+                window.set_dark_theme_index(scheme);
+            }
+            if appearance.get() == picked.is_light() {
+                window.invoke_apply_preferences(scheme, density);
+            }
         });
     test.window.set_left_rows(
         Rc::new(VecModel::from(vec![
@@ -244,84 +274,123 @@ fn all_themes_are_selectable_and_keep_text_readable() {
     );
     for density in [0, 1] {
         let mut unique = HashSet::new();
-        accepted.set(0);
-        test.window.set_theme_index(0);
-        test.window.set_density_index(density);
-        test.window.invoke_apply_preferences(0, density);
+        test.window
+            .set_dark_theme_index(PreferenceTheme::Blue.index());
+        test.window
+            .set_light_theme_index(PreferenceTheme::Light.index());
         test.window.invoke_apply_fonts("".into(), 11, 15);
-        let mut current_position = 1usize; // Blue in the alphabetic picker.
-        for (position, (index, name)) in choices.iter().enumerate() {
-            // Only the panel frame below is a pixel assertion; the dialog itself is
-            // rendered for the first theme of each density (and for artifacts).
-            let render_dialog = ui::render_case(position == 0);
-            test.window.invoke_show_options();
-            if render_dialog {
-                test.draw();
+        for light in [false, true] {
+            host_light.set(light);
+            let (label, other_label, initial) = if light {
+                (
+                    "Light theme",
+                    "Dark theme",
+                    test.window.get_light_theme_index(),
+                )
             } else {
+                (
+                    "Dark theme",
+                    "Light theme",
+                    test.window.get_dark_theme_index(),
+                )
+            };
+            test.window.invoke_apply_preferences(initial, density);
+            let group: Vec<_> = choices
+                .iter()
+                .filter(|(theme, _)| theme.is_light() == light)
+                .collect();
+            let mut current_position = group
+                .iter()
+                .position(|(theme, _)| theme.index() == initial)
+                .unwrap();
+            for (position, (choice, name)) in group.into_iter().enumerate() {
+                let index = choice.index();
+                accepted.set(None);
+                // Only the panel frame below is a pixel assertion; the dialog itself is
+                // rendered for the first theme of each density (and for artifacts).
+                let render_dialog = ui::render_case(position == 0);
+                test.window.invoke_show_options();
+                if render_dialog {
+                    test.draw();
+                } else {
+                    test.layout();
+                }
+                test.options_topic(1);
+                let inactive_choice =
+                    ui::popup_item(&test.window, other_label, AccessibleRole::Combobox)
+                        .accessible_string_property(AccessibleStringProperty::Value);
+                ui::click_popup(&test.window, label, AccessibleRole::Combobox);
+                for _ in 0..position.abs_diff(current_position) {
+                    ui::key(
+                        &test.window,
+                        if position < current_position {
+                            Key::UpArrow
+                        } else {
+                            Key::DownArrow
+                        },
+                    );
+                }
+                current_position = position;
+                ui::key(&test.window, Key::Return);
                 test.layout();
-            }
-            test.options_topic(1);
-            ui::click_popup(&test.window, "Theme", AccessibleRole::Combobox);
-            for _ in 0..position.abs_diff(current_position) {
-                ui::key(
-                    &test.window,
-                    if position < current_position {
-                        Key::UpArrow
-                    } else {
-                        Key::DownArrow
-                    },
+                // Fluent animates foregrounds and borders for 150–200 ms. Capture
+                // the settled palette, rather than an intermediate light/dark frame.
+                // The virtual clock also keeps the next iteration's clicks single clicks.
+                ui::advance(&clock, Duration::from_millis(600));
+                if render_dialog {
+                    test.draw();
+                } else {
+                    test.layout();
+                }
+                assert_eq!(accepted.get(), Some(*choice), "picker must offer {name}");
+                assert_eq!(
+                    ui::popup_item(&test.window, other_label, AccessibleRole::Combobox)
+                        .accessible_string_property(AccessibleStringProperty::Value),
+                    inactive_choice,
+                    "{other_label} must keep its own choice"
                 );
-            }
-            current_position = position;
-            ui::key(&test.window, Key::Return);
-            test.layout();
-            // Fluent animates foregrounds and borders for 150–200 ms. Capture
-            // the settled palette, rather than an intermediate light/dark frame.
-            // The virtual clock also keeps the next iteration's clicks single clicks.
-            ui::advance(&clock, Duration::from_millis(600));
-            if render_dialog {
+                let picker = ui::popup_item(&test.window, label, AccessibleRole::Combobox);
+                assert_eq!(
+                    picker
+                        .accessible_string_property(AccessibleStringProperty::Value)
+                        .as_deref(),
+                    Some(*name),
+                    "picker label for scheme {index}"
+                );
+                let theme = test.window.global::<Theme>();
+                assert_eq!(theme.get_light(), light, "{name}");
+                let color = theme.get_pane_background();
+                let accent = theme.get_accent();
+                assert!(
+                    unique.insert((
+                        color.red(),
+                        color.green(),
+                        color.blue(),
+                        accent.red(),
+                        accent.green(),
+                        accent.blue(),
+                    )),
+                    "{name}"
+                );
+                readable(&theme, name);
+                let background = theme.get_header();
+                render::snapshot(&test, &format!("palette-{index}-density-{density}-options"));
+                ui::key(&test.window, Key::Escape);
                 test.draw();
-            } else {
-                test.layout();
+                // The wide empty part of the bar must use the theme header rather
+                // than an uncolored/light surface, in both density modes.
+                let options = ui::root_position(&test.window, "Options", AccessibleRole::Button);
+                let pixel = test.pixel(test.width as f32 * 0.75, options.y);
+                assert_eq!(
+                    (pixel.r, pixel.g, pixel.b),
+                    (background.red(), background.green(), background.blue()),
+                    "{name}: top toolbar background must follow the theme",
+                );
+                if matches!(index, 21..=22) {
+                    high_contrast_selection_marks(&test);
+                }
+                render::snapshot(&test, &format!("palette-{index}-density-{density}-panel"));
             }
-            assert_eq!(accepted.get(), *index as i32, "picker must offer {name}");
-            let theme = test.window.global::<Theme>();
-            assert_eq!(
-                theme.get_light(),
-                matches!(index, 2 | 7 | 14..=18 | 22),
-                "{name}"
-            );
-            let color = theme.get_pane_background();
-            let accent = theme.get_accent();
-            assert!(
-                unique.insert((
-                    color.red(),
-                    color.green(),
-                    color.blue(),
-                    accent.red(),
-                    accent.green(),
-                    accent.blue(),
-                )),
-                "{name}"
-            );
-            readable(&theme, name);
-            let background = theme.get_header();
-            render::snapshot(&test, &format!("palette-{index}-density-{density}-options"));
-            ui::key(&test.window, Key::Escape);
-            test.draw();
-            // The wide empty part of the bar must use the theme header rather
-            // than an uncolored/light surface, in both density modes.
-            let options = ui::root_position(&test.window, "Options", AccessibleRole::Button);
-            let pixel = test.pixel(test.width as f32 * 0.75, options.y);
-            assert_eq!(
-                (pixel.r, pixel.g, pixel.b),
-                (background.red(), background.green(), background.blue()),
-                "{name}: top toolbar background must follow the theme",
-            );
-            if matches!(index, 21..=22) {
-                high_contrast_selection_marks(&test);
-            }
-            render::snapshot(&test, &format!("palette-{index}-density-{density}-panel"));
         }
     }
     test.window.hide().unwrap();
@@ -329,12 +398,19 @@ fn all_themes_are_selectable_and_keep_text_readable() {
 
 #[test]
 fn marked_rows_keep_each_theme_hue_and_distinct_cursor_outline() {
-    // Accepted palette fills before the November 12 shared warm-fill change.
+    // Accepted marked-row fills in persisted theme order.
     let selected_rgb = [
         0x375775, 0x4b4b4b, 0xc8c8c8, 0x4d425e, 0x3d5660, 0x435038, 0x414767, 0xccd9ba, 0x3d4824,
         0x393451, 0x434354, 0x3b344c, 0x003e75, 0x49402e, 0xe2ebcc, 0xe6dcf4, 0xedded8, 0xd4e1f0,
-        0xe9dbc1, 0x243b49, 0x3a313b, 0x181818, 0xeeeeee, 0x293946, 0x283d38, 0x352f42,
+        0xe9dbc1, 0x243b49, 0x3a313b, 0x181818, 0xeeeeee, 0x293946, 0x283d38, 0x352f42, 0x643337,
+        0xf5aac2, 0x8dcdbc, 0x563b72, 0xdca771, 0x4d2d40, 0xcedace, 0xa5b8cd, 0x33271f, 0xbfb0a1,
+        0x19344e, 0x25473d, 0x714345, 0xaca4d6, 0xf4c5d8, 0x252525, 0x383838, 0x514a45, 0x393f42,
+        0x343436,
     ];
+    assert_eq!(
+        selected_rgb.len(),
+        midnight_core::PreferenceTheme::ALL.len()
+    );
     let mut test = ui::TestUi::new();
     test.resize(900, 600);
     test.window.set_active_pane(0);
@@ -371,7 +447,7 @@ fn marked_rows_keep_each_theme_hue_and_distinct_cursor_outline() {
                 theme.get_cursor_background(),
                 "theme {scheme}: selection and cursor must remain distinguishable"
             );
-            if scheme >= 23 {
+            if (23..=25).contains(&scheme) {
                 assert_eq!(theme.get_selected_edge(), theme.get_accent());
             }
             readable(&theme, &format!("theme {scheme}, density {density}"));

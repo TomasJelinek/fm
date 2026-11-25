@@ -192,7 +192,8 @@ fn settings_file(context: &mut Context) -> Result<(), String> {
         let imported_hot = imported_hot.clone();
         let editor = editor.clone();
         SettingsStore::seeded(move |preferences| {
-            preferences.theme = PreferenceTheme::Light;
+            preferences.dark_theme = PreferenceTheme::PlumSmoke;
+            preferences.light_theme = PreferenceTheme::Light;
             preferences.bookmarks = vec![bookmark(1, "Imported", &imported_hot, 4)];
             preferences.editor.executable = Some(editor);
             preferences.editor.arguments = vec!["{file}".into()];
@@ -221,7 +222,7 @@ fn settings_file(context: &mut Context) -> Result<(), String> {
     let store = {
         let hot = hot.clone();
         SettingsStore::seeded(move |preferences| {
-            preferences.theme = PreferenceTheme::Dark;
+            preferences.dark_theme = PreferenceTheme::Dark;
             preferences.bookmarks = vec![bookmark(1, "Current", &hot, 3)];
         })
     };
@@ -324,9 +325,9 @@ fn settings_file(context: &mut Context) -> Result<(), String> {
         return Err(format!("the import preview says {preview:?}"));
     }
     if !options::poll(&mut app, Duration::from_secs(5), move |app| {
-        app.window.get_theme_index() != dark
+        app.window.get_theme_index() == PreferenceTheme::PlumSmoke.index()
     }) {
-        return Err("the import did not preview the Light theme".into());
+        return Err("the import did not preview Plum Smoke for the dark host".into());
     }
     options::review_shot(
         &mut app,
@@ -340,11 +341,15 @@ fn settings_file(context: &mut Context) -> Result<(), String> {
     }) {
         return Err("Cancel did not restore the Dark theme".into());
     }
-    if store.saves() != saves || store.current().theme != PreferenceTheme::Dark {
+    let current = store.current();
+    if store.saves() != saves
+        || current.dark_theme != PreferenceTheme::Dark
+        || current.light_theme != PreferenceTheme::DEFAULT_LIGHT
+    {
         return Err("Cancel after the import saved settings".into());
     }
 
-    // Import and OK: the Light theme and Hot Path 4 apply; digit 4 opens it.
+    // Import and OK save both appearances and Hot Path 4. Digit 4 opens it.
     options::open(&mut app)?;
     choose(&mut app, IMPORT, &light)?;
     wait_feedback(&mut app, "the second import", |text, error| {
@@ -354,15 +359,16 @@ fn settings_file(context: &mut Context) -> Result<(), String> {
         return Err("OK after the import saved nothing".into());
     }
     let saved = store.current();
-    if saved.theme != PreferenceTheme::Light
+    if saved.dark_theme != PreferenceTheme::PlumSmoke
+        || saved.light_theme != PreferenceTheme::Light
         || !saved
             .bookmarks
             .iter()
             .any(|mark| mark.path == imported_hot && mark.slot == Some(4))
     {
         return Err(format!(
-            "OK after the import saved the theme {:?} and the Hot Paths {:?}",
-            saved.theme, saved.bookmarks
+            "OK after the import saved dark {:?}, light {:?} and Hot Paths {:?}",
+            saved.dark_theme, saved.light_theme, saved.bookmarks
         ));
     }
     if saved.size_display != SizeDisplay::Readable {
@@ -424,7 +430,11 @@ fn settings_file(context: &mut Context) -> Result<(), String> {
         "Import configuration: a refused file",
     );
     options::cancel(&mut app)?;
-    if store.saves() != saves || store.current().theme != PreferenceTheme::Light {
+    let current = store.current();
+    if store.saves() != saves
+        || current.dark_theme != PreferenceTheme::PlumSmoke
+        || current.light_theme != PreferenceTheme::Light
+    {
         return Err("a refused import changed the settings".into());
     }
 
@@ -547,7 +557,7 @@ fn settings_file(context: &mut Context) -> Result<(), String> {
         ));
     }
     context.note(format!(
-        "Settings file: Export wrote the previewed byte sizes and the Hot Path ({message:?} for the other system's file); Keep left the existing file byte for byte; Replace wrote the current settings and kept the replaced file for recovery; Import previewed the Light theme, Cancel restored Dark and saved nothing, OK saved Light and Hot Path 4, which digit 4 opened; not JSON, no version and a newer version were refused with their reasons; a file from the other system kept its Hot Path and its editor inactive: the Hot Path's number reported why it does not open, the Hot Paths manager listed and removed it, General listed the editor and Remove then OK dropped it"
+        "Settings file: Export wrote the previewed byte sizes and the Hot Path ({message:?} for the other system's file); Keep left the existing file byte for byte; Replace wrote the current settings and kept the replaced file for recovery; Import previewed Plum Smoke on a dark host, Cancel restored Dark and saved nothing, OK saved both Plum Smoke and Light and Hot Path 4, which digit 4 opened; not JSON, no version and a newer version were refused with their reasons; a file from the other system kept its Hot Path and its editor inactive: the Hot Path's number reported why it does not open, the Hot Paths manager listed and removed it, General listed the editor and Remove then OK dropped it"
     ));
     app.shutdown()
 }

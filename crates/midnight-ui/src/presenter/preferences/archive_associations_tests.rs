@@ -13,7 +13,7 @@ fn early_archive_choices_override_only_their_saved_extensions() {
         .insert("zip".into(), false);
     presenter.update_preferences(local, &|_| panic!("wait for initial preferences"));
     let mut loaded = UserPreferences {
-        theme: PreferenceTheme::Nord,
+        dark_theme: PreferenceTheme::Nord,
         ..Default::default()
     };
     loaded
@@ -31,7 +31,7 @@ fn early_archive_choices_override_only_their_saved_extensions() {
     assert!(!values.archive_association_enabled("zip"));
     assert!(values.archive_association_enabled("xlsx"));
     assert!(!values.archive_association_enabled("tar"));
-    assert_eq!(values.theme, PreferenceTheme::Nord);
+    assert_eq!(values.dark_theme, PreferenceTheme::Nord);
     let saved = RefCell::new(Vec::new());
     presenter.flush_loaded_preferences(&|command| {
         if let Command::SavePreferences { preferences, .. } = command {

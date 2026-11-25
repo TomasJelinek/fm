@@ -114,7 +114,9 @@ fn run(context: &mut Context) -> Result<(), String> {
     let ended = ended.and_then(|baseline| shutdown.map(|()| baseline));
     drop(app);
     let ended = ended.and_then(|baseline| {
-        let mut app = App::start(setup.config());
+        let mut config = setup.config();
+        config.theme = PreferenceTheme::DEFAULT_LIGHT;
+        let mut app = App::start(config);
         let after = after_restart(&mut app, context, &mut journey, &setup, &baseline);
         files::dismiss_all(&mut app);
         after.and(app.shutdown())
@@ -361,7 +363,8 @@ fn before_restart(
     // 1. One Options session.
     options::open(app)?;
     options::page(app, "Appearance")?;
-    options::choose(app, "Theme", "Light")?;
+    options::choose(app, "Light theme", "Light")?;
+    app.set_host_dark(false);
     colour_rule(app)?;
     rebind(app)?;
     options::review_shot(
@@ -490,7 +493,8 @@ fn after_restart(
     let saved = setup.store.current();
     journey.check(
         "the saved settings hold the three choices",
-        if saved.theme == PreferenceTheme::Light
+        if saved.light_theme == PreferenceTheme::Light
+            && saved.dark_theme == PreferenceTheme::DEFAULT_DARK
             && saved
                 .filename_colors
                 .first()
@@ -504,7 +508,7 @@ fn after_restart(
         } else {
             Err(format!(
                 "theme {:?}, first rule {:?}, shortcuts {:?}",
-                saved.theme,
+                saved.light_theme,
                 saved.filename_colors.first().map(|rule| &rule.expression),
                 saved.shortcuts
             ))

@@ -214,12 +214,33 @@ fn reset_to_defaults_updates_controls_the_user_already_changed() {
 
     h.window.set_options_topic_index(1);
     h.settle();
-    let original = h.value("Theme", AccessibleRole::Combobox);
-    h.choose("Theme", 1);
-    let previewed = h.value("Theme", AccessibleRole::Combobox);
-    assert_ne!(previewed, original);
+    let original_dark = h.value("Dark theme", AccessibleRole::Combobox);
+    let original_light = h.value("Light theme", AccessibleRole::Combobox);
+    h.choose("Dark theme", 1);
+    let dark_index = h.window.get_theme_index();
+    assert_ne!(
+        h.value("Dark theme", AccessibleRole::Combobox),
+        original_dark
+    );
+    assert_eq!(
+        h.value("Light theme", AccessibleRole::Combobox),
+        original_light
+    );
+    h.choose("Light theme", 1);
+    assert_ne!(
+        h.value("Light theme", AccessibleRole::Combobox),
+        original_light
+    );
+    assert_eq!(h.window.get_theme_index(), dark_index);
     h.activate("Reset to defaults", AccessibleRole::Button);
-    assert_eq!(h.value("Theme", AccessibleRole::Combobox), original);
+    assert_eq!(
+        h.value("Dark theme", AccessibleRole::Combobox),
+        original_dark
+    );
+    assert_eq!(
+        h.value("Light theme", AccessibleRole::Combobox),
+        original_light
+    );
 }
 
 #[test]

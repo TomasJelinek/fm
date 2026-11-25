@@ -31,7 +31,8 @@ pub(crate) struct State {
 /// Options-owned fields only. Geometry, navigation, viewer settings and terminal
 /// choice belong to independent session actions and survive cancellation.
 pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
-    to.theme = from.theme;
+    to.dark_theme = from.dark_theme;
+    to.light_theme = from.light_theme;
     to.app_icon = from.app_icon;
     to.density = from.density;
     to.font_family.clone_from(&from.font_family);
@@ -85,7 +86,8 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
         viewer_associations: _,
         editor: _,
         file_comparators: _,
-        theme: _,
+        dark_theme: _,
+        light_theme: _,
         app_icon: _,
         density: _,
         font_family: _,

@@ -899,7 +899,7 @@ pub fn all() -> &'static [Scenario] {
                 name: "options_themes",
                 isolation: crate::Isolation::Parallel,
                 area: "options",
-                summary: "Every theme of the picker previews distinctly (Light bright, Dark dark), OK saves the last, a restart keeps it; the narrow and the compact header topic pickers: their order, keyboard and a theme saved through them.",
+                summary: "Both appearance menus preview every matching theme. OS changes, Cancel, OK and restart preserve the pair. Narrow and compact topic pickers support keyboard navigation.",
                 run: options_themes::themes,
                 timeout: minutes(8),
             },

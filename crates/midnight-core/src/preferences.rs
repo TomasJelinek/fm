@@ -114,11 +114,31 @@ pub enum PreferenceTheme {
     SlateBlue = 23,
     SlateTeal = 24,
     SlateViolet = 25,
+    RedLacquer = 26,
+    Overprint = 27,
+    Faience = 28,
+    Afterimage = 29,
+    LastTrain = 30,
+    DrawingOffice = 31,
+    Letterhead = 32,
+    FieldSurvey = 33,
+    MasteringRoom = 34,
+    Titanium = 35,
+    BankersLamp = 36,
+    Bindery = 37,
+    Chronometer = 38,
+    Iris = 39,
+    CanaryCopy = 40,
+    PencilLead = 41,
+    CarbonBlack = 42,
+    WarmAsh = 43,
+    Pewter = 44,
+    PlumSmoke = 45,
 }
 
 impl PreferenceTheme {
-    /// Stable picker order. Replaced names retain a storage migration alias.
-    pub const ALL: [Self; 26] = [
+    /// Stable ID order. Replaced names retain a storage migration alias.
+    pub const ALL: [Self; 46] = [
         Self::Blue,
         Self::Dark,
         Self::Light,
@@ -145,7 +165,52 @@ impl PreferenceTheme {
         Self::SlateBlue,
         Self::SlateTeal,
         Self::SlateViolet,
+        Self::RedLacquer,
+        Self::Overprint,
+        Self::Faience,
+        Self::Afterimage,
+        Self::LastTrain,
+        Self::DrawingOffice,
+        Self::Letterhead,
+        Self::FieldSurvey,
+        Self::MasteringRoom,
+        Self::Titanium,
+        Self::BankersLamp,
+        Self::Bindery,
+        Self::Chronometer,
+        Self::Iris,
+        Self::CanaryCopy,
+        Self::PencilLead,
+        Self::CarbonBlack,
+        Self::WarmAsh,
+        Self::Pewter,
+        Self::PlumSmoke,
     ];
+
+    pub const DEFAULT_DARK: Self = Self::PencilLead;
+    pub const DEFAULT_LIGHT: Self = Self::Letterhead;
+
+    pub const fn is_light(self) -> bool {
+        matches!(
+            self,
+            Self::Light
+                | Self::SolarizedLight
+                | Self::VerdantLight
+                | Self::CatppuccinLatte
+                | Self::RosePineDawn
+                | Self::PaperContrast
+                | Self::SandstoneContrast
+                | Self::HighContrastLight
+                | Self::Overprint
+                | Self::Faience
+                | Self::LastTrain
+                | Self::Letterhead
+                | Self::FieldSurvey
+                | Self::Titanium
+                | Self::Iris
+                | Self::CanaryCopy
+        )
+    }
 
     pub const fn index(self) -> i32 {
         self as i32
@@ -185,6 +250,26 @@ impl PreferenceTheme {
             Self::SlateBlue => "slate-blue",
             Self::SlateTeal => "slate-teal",
             Self::SlateViolet => "slate-violet",
+            Self::RedLacquer => "red-lacquer",
+            Self::Overprint => "overprint",
+            Self::Faience => "faience",
+            Self::Afterimage => "afterimage",
+            Self::LastTrain => "last-train",
+            Self::DrawingOffice => "drawing-office",
+            Self::Letterhead => "letterhead",
+            Self::FieldSurvey => "field-survey",
+            Self::MasteringRoom => "mastering-room",
+            Self::Titanium => "titanium",
+            Self::BankersLamp => "bankers-lamp",
+            Self::Bindery => "bindery",
+            Self::Chronometer => "chronometer",
+            Self::Iris => "iris",
+            Self::CanaryCopy => "canary-copy",
+            Self::PencilLead => "pencil-lead",
+            Self::CarbonBlack => "carbon-black",
+            Self::WarmAsh => "warm-ash",
+            Self::Pewter => "pewter",
+            Self::PlumSmoke => "plum-smoke",
         }
     }
 
@@ -493,7 +578,8 @@ pub struct UserPreferences {
     pub editor: crate::EditorPreferences,
     /// Accepted filename routing; Options drafts are isolated until successful persistence.
     pub file_comparators: crate::FileComparatorPreferences,
-    pub theme: PreferenceTheme,
+    pub dark_theme: PreferenceTheme,
+    pub light_theme: PreferenceTheme,
     pub app_icon: AppIcon,
     pub density: UiDensity,
     pub windows_shell: WindowsShell,
@@ -604,7 +690,8 @@ impl Default for UserPreferences {
             viewer: crate::ViewerPreferences::default(),
             editor: crate::EditorPreferences::default(),
             file_comparators: crate::FileComparatorPreferences::default(),
-            theme: PreferenceTheme::default(),
+            dark_theme: PreferenceTheme::DEFAULT_DARK,
+            light_theme: PreferenceTheme::DEFAULT_LIGHT,
             app_icon: AppIcon::default(),
             density: UiDensity::default(),
             windows_shell: WindowsShell::default(),
@@ -705,6 +792,10 @@ impl UserPreferences {
             None
         };
         let mut message = message;
+        if self.dark_theme.is_light() || !self.light_theme.is_light() {
+            message = Some("Dark and light themes must match their respective OS appearances.");
+        }
+
         if let Err(error) = self.disk_io_concurrency.validate() {
             message = Some(error);
         }

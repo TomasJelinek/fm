@@ -115,7 +115,7 @@ fn verify_page() -> (
 fn the_verify_path_field_selects_with_theme_colours_in_every_theme() {
     let (window, native, _) = verify_page();
     let mut findings = Vec::new();
-    for scheme in 0..26 {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         window.invoke_apply_preferences(scheme, 0, "".into(), 12, 15);
         modeless::layout(&native, 860, 620);
         let field = modeless::accessible_item(&native, AccessibleRole::TextInput, FIELD)

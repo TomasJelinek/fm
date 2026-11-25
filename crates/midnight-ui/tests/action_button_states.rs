@@ -34,7 +34,6 @@ slint::slint! {
 
 const WIDTH: u32 = 360;
 const HEIGHT: u32 = 80;
-const PALETTES: i32 = 26;
 
 /// What a button draws in one state: its fill beside the content, its caption's colour
 /// and its glyph's tint.
@@ -100,7 +99,7 @@ fn primary_and_destructive_actions_answer_hover_and_press_readably_in_every_pale
     ui::render(&native, WIDTH, HEIGHT, "action-states");
     let outside = slint::LogicalPosition::new(WIDTH as f32 - 4.0, HEIGHT as f32 - 4.0);
     let window = native.window();
-    for scheme in 0..PALETTES {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         fixture.global::<Theme>().set_scheme(scheme);
         let minimum = text_minimum(scheme);
         for label in ["Copy", "Delete"] {

@@ -63,8 +63,8 @@ folder) and the Engine's own settings-file workers.
 
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
-| O-A01 | Theme previews; Cancel restores | `options_appearance` | theme index, mean luma | PASS |
-| O-A02 | Every theme of the picker previews distinctly; Light themes bright, Dark ones dark; OK saves; restart | `options_themes` | theme index and panel pixels per theme; saved theme; restart | PASS |
+| O-A01 | The active appearance previews immediately and Cancel restores it | `options_appearance`, `options_themes` | active palette, panel luminance and saved choices | PASS |
+| O-A02 | The dark and light menus offer every palette of their appearance. Host changes apply the matching choice during preview and after restart | `options_themes` | accessible popup lists, rendered panel colors, inactive edits, OK, Cancel and restart | PASS |
 | O-A03 | Spacing (desktop, touch) | `options_appearance` | row height, density | PASS |
 | O-A04 | Font family | `options_appearance` | rendered panel text changes | PASS |
 | O-A05 | Desktop and touch font sizes | `options_appearance` | row height, rendered text | PASS |
@@ -186,6 +186,11 @@ Findings O-3 (About) and O-5 (notices) are in [tools.md](tools.md#findings).
 | O-4 | Options buttons that are enabled but change nothing: Keyboard › Clear with nothing captured, Keyboard › Restore command for a command at its defaults, Colors › Discard changes without changes, Plugins › Rescan all plugins (no feedback without plugins). | `options_buttons` |
 
 ## Host runs
+
+Windows run `20261125-160213`, on the theme changes based on 0.6.0, passed
+`options_appearance` and `options_themes`. The two scenarios selected all 46
+palettes, switched the host appearance during preview, cancelled edits, saved
+both choices and reopened Options on the other appearance.
 
 Runs (UTC) on the Linux host with the smoke-scale fixture, the debug acceptance binary of the
 shared build and a complete plugin set:

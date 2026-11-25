@@ -656,7 +656,8 @@ cancellation.
 Small list controls share compact padding and centered glyphs; remove/clear actions
 use the same red cross in history, cache and custom archive extensions.
 
-The theme picker sorts labels alphabetically but translates to stable saved IDs.
+The dark and light theme pickers each sort their labels alphabetically and map
+them to stable saved IDs.
 Archive preset filenames use a yellow base, with existing contrast derivation for
 every theme and selection state. Only an exact previous preset migrates; custom
 or reordered color rules are retained. Find places Whole words beside Containing

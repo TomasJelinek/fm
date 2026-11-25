@@ -55,6 +55,8 @@ mod filename_colors;
 mod find_windows;
 mod font_model;
 mod history_models;
+mod host_appearance;
+pub use host_appearance::{observe_host_appearance, sync_host_appearance};
 mod hot_path_windows;
 mod information_windows;
 mod installation_notice_bridge;
@@ -548,6 +550,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         presenter.preferences.theme_index(),
         presenter.preferences.density_index(),
     );
+    window.set_dark_theme_index(presenter.preferences.values.dark_theme.index());
+    window.set_light_theme_index(presenter.preferences.values.light_theme.index());
     window.invoke_refresh_content_appearance();
     window.set_left_native_filesystem(presenter.panes[0].native_capabilities());
     window.set_right_native_filesystem(presenter.panes[1].native_capabilities());

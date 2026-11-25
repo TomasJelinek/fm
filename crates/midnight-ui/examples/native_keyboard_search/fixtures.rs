@@ -10,7 +10,7 @@ pub(super) fn load(path: &Path) -> Result<(String, UserPreferences, bool), Strin
         .find_map(|argument| argument.strip_prefix("--fixture=").map(str::to_owned))
         .unwrap_or_else(|| "standard".into());
     let mut preferences = UserPreferences {
-        theme: PreferenceTheme::Dracula,
+        dark_theme: PreferenceTheme::Dracula,
         font_family: "Segoe UI".into(),
         desktop_font_size: 13,
         ..Default::default()
@@ -43,7 +43,7 @@ pub(super) fn load(path: &Path) -> Result<(String, UserPreferences, bool), Strin
         _ => return Err("Use --fixture=standard|dynamic|compact|large".into()),
     }
     if name == "large" {
-        preferences.theme = PreferenceTheme::Light;
+        preferences.light_theme = PreferenceTheme::Light;
         preferences.font_family = "Arial".into();
         preferences.density = UiDensity::Touch;
         preferences.touch_font_size = 32;

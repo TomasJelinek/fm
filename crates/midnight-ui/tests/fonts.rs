@@ -82,7 +82,7 @@ fn font_options_keep_family_and_density_bases_independent() {
     };
     window.set_options_topic_index(1);
     draw(&mut pixels);
-    ui::click_popup(&window, "Theme", AccessibleRole::Combobox);
+    ui::click_popup(&window, "Light theme", AccessibleRole::Combobox);
     draw(&mut pixels);
     key(&window, Key::Escape);
     key(&window, Key::Tab); // Application icon.

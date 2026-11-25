@@ -31,6 +31,9 @@ the alignment polish of every window, the code review fixes of 24 November and f
 acceptance and Rust tests ([acceptance time record](verification/2026-11-24-acceptance-time.md)).
 The documents describe this source.
 
+- **Themes.** Options → Appearance remembers separate dark and light palettes and follows
+  the host appearance. The defaults are Pencil Lead and Letterhead. The [palette catalog](THEME_PROVENANCE.md)
+  lists the designs and the [settings format](SETTINGS_FILES.md) describes how choices are saved.
 - **Application icons.** Options → Appearance previews [four designs](../assets/branding/README.md#icon-shortlist).
   Windows acceptance run `20261125-092639` passed selection, Cancel, save, restart
   and Reset. A native Windows test checked the selected artwork for both title-bar

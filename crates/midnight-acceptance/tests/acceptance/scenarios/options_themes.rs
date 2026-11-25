@@ -1,12 +1,6 @@
-//! Options › Appearance › Theme, every theme the picker offers: each choice previews at
-//! once (the theme changes and the panels behind Options render differently from every
-//! other theme; themes named Light are bright and Dark ones dark), the picker shows it,
-//! and OK saves the last one, which a restart keeps. In a narrow touch window the topic
-//! picker replaces the page list: it lists the pages in the displayed order, Shift+Tab
-//! from OK reaches it and Down and Up walk the pages as the list does; a page chosen
-//! there, a theme changed and saved, and a cancelled check box all behave as in the wide
-//! layout. In a window so low that Options is compact the picker sits in the header: the
-//! same order, Down opens it and Enter chooses a page.
+//! Exercise both Appearance pickers through their accessible popup lists. Check the
+//! rendered result in each host mode, inactive edits, persistence, Cancel and narrow touch.
+//! The narrow and compact topic pickers also support keyboard navigation through every page.
 use crate::{
     Context,
     app::{App, Config},
@@ -81,94 +75,118 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
     if !app.window.get_options_open() {
         return Err("Options closed while reading the theme list".into());
     }
-    let names = offered(&mut app, "Theme")?;
-    if names.len() < 20 {
-        return Err(format!("the Theme picker offers only {names:?}"));
-    }
-    if !app.window.get_options_open() {
-        return Err("closing the theme list closed Options".into());
-    }
     let list = options::list_area(&app, PaneId::Right);
-    let mut seen: Vec<(String, i32, u64, f32)> = Vec::new();
-    for name in &names {
-        let before = app.window.get_theme_index();
-        if let Err(error) = options::choose(&mut app, "Theme", name) {
-            failures.push(format!("choosing {name:?}: {error}"));
-            continue;
-        }
-        let first = seen.is_empty();
-        for _ in 0..40 {
-            if app.window.get_theme_index() != before || first {
-                break;
-            }
-            app.idle(Duration::from_millis(25));
-        }
-        // Theme colours animate briefly.
-        app.idle(Duration::from_millis(300));
-        let frame = Frame::of(&mut app);
-        let index = app.window.get_theme_index();
-        let digest = frame.digest(list);
-        let luma = frame.luma(list);
-        if let Some((other, _, _, _)) = seen
+    let mut seen = Vec::new();
+    for (label, light) in [("Dark theme", false), ("Light theme", true)] {
+        app.set_host_dark(!light);
+        let names = offered(&mut app, label)?;
+        let count = PreferenceTheme::ALL
             .iter()
-            .find(|(_, known, pixels, _)| *known == index || *pixels == digest)
-        {
-            failures.push(format!("{name:?} previews like {other:?} (theme {index})"));
+            .filter(|theme| theme.is_light() == light)
+            .count();
+        if names.len() != count || !app.window.get_options_open() {
+            return Err(format!(
+                "{label} expected {count} entries in Options, got {names:?}"
+            ));
         }
-        let lower = name.to_lowercase();
-        if lower.contains("light") && luma < 140.0 {
-            failures.push(format!("{name:?} renders dark panels (luma {luma:.0})"));
+        for name in &names {
+            options::choose(&mut app, label, name)?;
+            app.idle(Duration::from_millis(300));
+            let index = app.window.get_theme_index();
+            let choice = PreferenceTheme::from_index(index)
+                .ok_or_else(|| format!("{label} {name:?} applied unknown ID {index}"))?;
+            let frame = Frame::of(&mut app);
+            let digest = frame.digest(list);
+            let luma = frame.luma(list);
+            if (light && luma < 140.0) || (!light && luma > 110.0) {
+                return Err(format!(
+                    "{label} {name:?} renders the panel with luma {luma:.0}"
+                ));
+            }
+            if choice.is_light() != light {
+                return Err(format!(
+                    "{label} {name:?} applied the wrong appearance ({choice:?})"
+                ));
+            }
+            if seen
+                .iter()
+                .any(|(other, pixels)| *other == choice || *pixels == digest)
+            {
+                return Err(format!(
+                    "{label} {name:?} duplicates a previous theme ({choice:?})"
+                ));
+            }
+            seen.push((choice, digest));
         }
-        if lower.contains("dark") && luma > 110.0 {
-            failures.push(format!("{name:?} renders bright panels (luma {luma:.0})"));
-        }
-        seen.push((name.clone(), index, digest, luma));
+    }
+
+    // Stage both slots while the light host is active, then switch before saving.
+    options::choose(&mut app, "Light theme", "Iris")?;
+    options::choose(&mut app, "Dark theme", "Plum Smoke")?;
+    if app.window.get_theme_index() != PreferenceTheme::Iris.index() || store.saves() != 0 {
+        return Err(
+            "editing an inactive dark theme changed the active palette or wrote settings".into(),
+        );
+    }
+    app.set_host_dark(true);
+    if app.window.get_theme_index() != PreferenceTheme::PlumSmoke.index() {
+        return Err("the dark host did not pick the staged Plum Smoke palette".into());
     }
     options::review_shot(
         &mut app,
         context,
-        "last-theme",
-        "Options › Appearance after previewing every theme",
+        "theme-pair",
+        "Plum Smoke and Iris in Options",
     );
-    let last = names.last().cloned().unwrap_or_default();
-    let last_index = app.window.get_theme_index();
     if !options::ok(&mut app, &store)? {
-        failures.push("OK did not save the theme".into());
+        return Err("OK did not save both theme choices".into());
     }
-    let saved = store.current().theme;
-    if saved as i32 != last_index {
-        failures.push(format!(
-            "OK saved {saved:?} ({}) while {last:?} ({last_index}) was shown",
-            saved as i32
+    let saved = store.current();
+    if (saved.dark_theme, saved.light_theme) != (PreferenceTheme::PlumSmoke, PreferenceTheme::Iris)
+    {
+        return Err(format!(
+            "OK saved {:?} and {:?}",
+            saved.dark_theme, saved.light_theme
         ));
     }
     app.shutdown()?;
     drop(app);
-    let mut app = App::start(config(&folder, &store));
-    app.idle(Duration::from_millis(300));
-    if app.window.get_theme_index() != last_index {
-        failures.push(format!(
-            "after a restart the theme is {} instead of {last:?} ({last_index})",
-            app.window.get_theme_index()
-        ));
+
+    let mut restart = config(&folder, &store);
+    restart.theme = PreferenceTheme::DEFAULT_LIGHT;
+    let mut app = App::start(restart);
+    if app.window.get_theme_index() != PreferenceTheme::Iris.index() {
+        return Err("a restart on a light host did not open with Iris".into());
     }
     options::open(&mut app)?;
     options::page(&mut app, "Appearance")?;
-    let shown_name = options::value(&app, AccessibleRole::Combobox, "Theme");
-    if shown_name.as_deref() != Some(last.as_str()) {
-        failures.push(format!(
-            "after a restart the Theme picker shows {shown_name:?}, not {last:?}"
-        ));
+    for (label, expected) in [("Dark theme", "Plum Smoke"), ("Light theme", "Iris")] {
+        if options::value(&app, AccessibleRole::Combobox, label).as_deref() != Some(expected) {
+            return Err(format!("after restart {label} did not show {expected:?}"));
+        }
+    }
+    let saves = store.saves();
+    options::choose(&mut app, "Dark theme", "Warm Ash")?;
+    options::choose(&mut app, "Light theme", "Faience")?;
+    app.set_host_dark(true);
+    if app.window.get_theme_index() != PreferenceTheme::WarmAsh.index() {
+        return Err("the dark host did not use the changed dark choice".into());
     }
     options::cancel(&mut app)?;
+    if app.window.get_theme_index() != PreferenceTheme::PlumSmoke.index() {
+        return Err("Cancel did not restore the saved dark theme after a host change".into());
+    }
+    app.set_host_dark(false);
+    if app.window.get_theme_index() != PreferenceTheme::Iris.index() || store.saves() != saves {
+        return Err(
+            "Cancel or a host change altered the saved light theme or wrote settings".into(),
+        );
+    }
     app.shutdown()?;
     drop(app);
     context.note(format!(
-        "{} themes previewed, each distinct; lumas {:?}",
-        seen.len(),
-        seen.iter()
-            .map(|(name, _, _, luma)| format!("{name} {luma:.0}"))
-            .collect::<Vec<_>>()
+        "{} distinct themes previewed across both appearance menus",
+        seen.len()
     ));
 
     // A narrow touch window: the topic picker replaces the list of pages.
@@ -188,17 +206,18 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
     }
     failures.extend(narrow_picker(&mut app, &store)?);
     options::page(&mut app, "Appearance")?;
-    options::choose(&mut app, "Theme", "Light")?;
+    options::choose(&mut app, "Light theme", "Light")?;
+    app.set_host_dark(false);
     options::review_shot(
         &mut app,
         context,
         "narrow-light",
         "Options in a narrow touch window: Appearance chosen with the topic picker",
     );
-    if !options::ok(&mut app, &store)? || store.current().theme != PreferenceTheme::Light {
+    if !options::ok(&mut app, &store)? || store.current().light_theme != PreferenceTheme::Light {
         failures.push(format!(
             "OK in the narrow layout saved {:?}",
-            store.current().theme
+            store.current().light_theme
         ));
     }
     options::open(&mut app)?;

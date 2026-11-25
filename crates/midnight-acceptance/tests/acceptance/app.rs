@@ -429,7 +429,7 @@ impl Config {
         Self {
             left: left.into(),
             right: right.into(),
-            theme: PreferenceTheme::default(),
+            theme: PreferenceTheme::DEFAULT_DARK,
             density: UiDensity::default(),
             width: 1340,
             height: 820,
@@ -520,7 +520,6 @@ impl App {
         let (events_send, events) = mpsc::channel(64);
         let local = Arc::new(LocalFileSystem::new(None));
         let mut preferences = UserPreferences {
-            theme: config.theme,
             density: config.density,
             size_display: if config.size_bytes {
                 SizeDisplay::Bytes
@@ -529,6 +528,11 @@ impl App {
             },
             ..UserPreferences::default()
         };
+        if config.theme.is_light() {
+            preferences.light_theme = config.theme;
+        } else {
+            preferences.dark_theme = config.theme;
+        }
         preferences.tabs[0].paths = vec![config.left.clone()];
         preferences.tabs[1].paths = vec![config.right.clone()];
         // Viewer scenarios browse through the installed native filesystem plugin.
@@ -598,6 +602,9 @@ impl App {
             config.left.clone(),
             config.right.clone(),
         )));
+        presenter
+            .borrow_mut()
+            .set_host_dark(!config.theme.is_light());
         // As `run_window` does with or without `--left`/`--right`: a restored panel takes
         // the saved tab session, an explicit one keeps its path. Without either option
         // the presenter keeps its defaults, as earlier runs did.
@@ -759,6 +766,12 @@ impl App {
             plugins.settings_applied(&app.presenter);
         }
         app
+    }
+
+    /// Deliver the appearance change a native window receives from its host.
+    pub fn set_host_dark(&mut self, dark: bool) {
+        self.presenter.borrow_mut().set_host_dark(dark);
+        refresh(&self.window, &self.presenter.borrow());
     }
 
     pub fn resize(&mut self, width: usize, height: usize) {

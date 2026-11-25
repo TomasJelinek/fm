@@ -95,12 +95,17 @@ impl Harness {
             }),
         );
         let mut preferences = UserPreferences {
-            theme,
             density,
             desktop_font_size: font,
             touch_font_size: font,
             ..Default::default()
         };
+        state.borrow_mut().set_host_dark(!theme.is_light());
+        if theme.is_light() {
+            preferences.light_theme = theme;
+        } else {
+            preferences.dark_theme = theme;
+        }
         preferences.tabs[0].paths = vec![folders[0].clone()];
         preferences.tabs[1].paths = vec![folders[1].clone()];
         owned_commands::run(&state, &begin, |state, send| {

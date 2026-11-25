@@ -585,10 +585,12 @@ fn native_operation_rejected_confirmation_keeps_same_child_and_edited_name_for_r
 fn native_operation_controls_remain_reachable_at_320_by_200_across_appearance_preferences() {
     let h = Harness::new();
     for theme in [PreferenceTheme::Light, PreferenceTheme::Dark] {
+        h.state.borrow_mut().set_host_dark(!theme.is_light());
         for density in [UiDensity::Desktop, UiDensity::Touch] {
             for font in [11, 24] {
                 let mut preferences = UserPreferences {
-                    theme,
+                    dark_theme: PreferenceTheme::Dark,
+                    light_theme: PreferenceTheme::Light,
                     density,
                     desktop_font_size: font,
                     touch_font_size: font,

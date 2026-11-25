@@ -523,7 +523,7 @@ fn late_settings(root: &Path) -> Result<(), String> {
         app.window.get_theme_index(),
         app.window.get_desktop_status().to_string(),
     );
-    let early = shown.0 && shown.1 == 0 && shown.2 == PreferenceTheme::Blue as i32;
+    let early = shown.0 && shown.1 == 0 && shown.2 == PreferenceTheme::DEFAULT_DARK.index();
     let result = if !early || shown.3 != SETTINGS_PENDING {
         Err(format!(
             "after {:.1} s the start showed late {}, reads {}, theme {}, status {:?}",

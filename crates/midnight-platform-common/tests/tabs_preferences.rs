@@ -3,7 +3,7 @@ use midnight_platform_common::settings::{decode_preferences, encode_preferences}
 fn saved() -> serde_json::Value {
     let root = std::env::current_dir().unwrap();
     serde_json::json!({
-        "version": 6, "theme": "dark", "density": "desktop", "windows_shell": "powershell",
+        "version": 6, "theme": "blue", "density": "desktop", "windows_shell": "powershell",
         "font_family": "", "desktop_font_size": 11, "touch_font_size": 15, "bookmarks": [],
         "quick_search_filter": false, "size_display": "readable", "remember_command_history": true,
         "command_history": [], "panel_view_modes": ["detailed", "detailed"],

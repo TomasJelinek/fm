@@ -55,7 +55,7 @@ fn geometry() -> WindowGeometry {
 
 fn current() -> UserPreferences {
     UserPreferences {
-        theme: PreferenceTheme::Dark,
+        dark_theme: PreferenceTheme::Dark,
         bookmarks: vec![bookmark(3, "současný")],
         ..UserPreferences::default()
     }
@@ -63,7 +63,7 @@ fn current() -> UserPreferences {
 
 fn imported() -> UserPreferences {
     UserPreferences {
-        theme: PreferenceTheme::Nord,
+        dark_theme: PreferenceTheme::Nord,
         bookmarks: vec![bookmark(1, "importovaný 文档")],
         tabs: [
             PaneTabPreferences {

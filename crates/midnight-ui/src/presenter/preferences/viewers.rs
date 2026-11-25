@@ -98,7 +98,7 @@ mod tests {
         p.apply(Event::PreferencesLoaded(Ok(Box::new(
             midnight_core::AcceptedPreferences {
                 preferences: UserPreferences {
-                    theme: PreferenceTheme::Dark,
+                    dark_theme: PreferenceTheme::Dark,
                     ..Default::default()
                 },
                 comparators: midnight_core::FileComparatorSnapshot::default(),
@@ -120,7 +120,7 @@ mod tests {
         let latest = saved.last().unwrap();
         assert!(latest.viewer.wrap);
         assert_eq!(latest.viewer.image_zoom, ViewerZoomPreference::ActualPixels);
-        assert_eq!(latest.theme, PreferenceTheme::Dark);
+        assert_eq!(latest.dark_theme, PreferenceTheme::Dark);
         drop(saved);
         let before = p.viewer_preferences().clone();
         assert!(!p.save_viewer_preferences(

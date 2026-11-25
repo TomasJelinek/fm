@@ -61,7 +61,7 @@ fn manual_boundaries_require_schema_31_and_roundtrip_all_preferences() {
 #[test]
 fn manual_choice_preserves_unrelated_nondefault_settings() {
     let mut expected = manual_preferences(7);
-    expected.theme = PreferenceTheme::Dark;
+    expected.dark_theme = PreferenceTheme::Dark;
     expected.copy_checksum_verification = false;
     expected.viewer.wrap = true;
     expected.font_family = "文档 é 🧪".into();
@@ -86,7 +86,7 @@ fn missing_legacy_values_migrate_to_automatic_without_losing_choices() {
     let legacy = br#"{"version":1,"theme":"dark","density":"touch","windows_shell":"cmd"}"#;
     let expected = decode_preferences(legacy).unwrap();
     assert_eq!(expected.disk_io_concurrency, DiskIoConcurrency::Automatic);
-    assert_eq!(expected.theme, PreferenceTheme::Dark);
+    assert_eq!(expected.dark_theme, PreferenceTheme::DEFAULT_DARK);
     assert_eq!(expected.density, midnight_core::UiDensity::Touch);
     assert_eq!(expected.windows_shell, midnight_core::WindowsShell::Cmd);
     let migrated = encode_preferences(expected.clone()).unwrap();

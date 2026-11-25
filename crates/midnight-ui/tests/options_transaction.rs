@@ -189,7 +189,10 @@ fn disk_io_general_picker_keeps_a_failed_save_draft_and_cancel_restores_automati
     ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
     h.ui.draw();
     assert_eq!(h.ui.window.get_disk_io_concurrency_index(), 0);
-    assert_eq!(appearances.borrow().last().unwrap().0, 0);
+    assert_eq!(
+        appearances.borrow().last().unwrap().0,
+        PreferenceTheme::DEFAULT_DARK.index()
+    );
     assert_eq!(h.saves().len(), 1);
 }
 
@@ -352,9 +355,15 @@ fn cancel_escape_and_x_restore_preview_without_writing_settings() {
         }
         h.ui.draw();
         assert!(!ui::has_popup(&h.ui.window));
-        assert_eq!(h.ui.window.get_theme_index(), 0);
+        assert_eq!(
+            h.ui.window.get_theme_index(),
+            PreferenceTheme::DEFAULT_DARK.index()
+        );
         assert_eq!(h.ui.window.get_desktop_font_size(), 12);
-        assert_eq!(appearances.borrow().last().unwrap().0, 0);
+        assert_eq!(
+            appearances.borrow().last().unwrap().0,
+            PreferenceTheme::DEFAULT_DARK.index()
+        );
         assert_eq!(appearances.borrow().last().unwrap().3, 12.0);
         assert!(!h.ui.window.get_sizes_in_bytes());
         assert!(h.saves().is_empty());
@@ -364,7 +373,7 @@ fn cancel_escape_and_x_restore_preview_without_writing_settings() {
 #[test]
 fn reset_defaults_is_a_preview_and_cancel_restores_the_saved_options() {
     let preferences = UserPreferences {
-        theme: PreferenceTheme::from_index(1).unwrap(),
+        dark_theme: PreferenceTheme::from_index(1).unwrap(),
         desktop_font_size: 18,
         quick_search_filter: true,
         size_display: SizeDisplay::Bytes,
@@ -379,10 +388,13 @@ fn reset_defaults_is_a_preview_and_cancel_restores_the_saved_options() {
     h.ui.draw();
     assert_eq!(
         h.ui.window.get_theme_index(),
-        PreferenceTheme::default().index()
+        PreferenceTheme::DEFAULT_DARK.index()
     );
     assert_eq!(h.ui.window.get_desktop_font_size(), 12);
-    assert_eq!(appearances.borrow().last().unwrap().0, 0);
+    assert_eq!(
+        appearances.borrow().last().unwrap().0,
+        PreferenceTheme::DEFAULT_DARK.index()
+    );
     assert_eq!(appearances.borrow().last().unwrap().3, 12.0);
     assert!(!h.ui.window.get_sizes_in_bytes());
     assert!(!h.ui.window.get_quick_search_filter());
@@ -436,7 +448,7 @@ fn ok_saves_once_and_closes_only_after_backend_success() {
     h.ui.draw();
     let saves = h.saves();
     assert_eq!(saves.len(), 1);
-    assert_eq!(saves[0].1.theme.index(), 1);
+    assert_eq!(saves[0].1.dark_theme.index(), 1);
     assert!(
         ui::has_popup(&h.ui.window),
         "wait for the real storage result"
@@ -629,7 +641,10 @@ fn reset_defaults_says_what_it_did_even_when_nothing_changes() {
     assert_eq!(reset_status(&h), None);
     ui::click_popup(&h.ui.window, "Reset to defaults", AccessibleRole::Button);
     h.ui.draw();
-    assert_eq!(h.ui.window.get_theme_index(), 0);
+    assert_eq!(
+        h.ui.window.get_theme_index(),
+        PreferenceTheme::DEFAULT_DARK.index()
+    );
     assert_eq!(
         reset_status(&h).as_deref(),
         Some(

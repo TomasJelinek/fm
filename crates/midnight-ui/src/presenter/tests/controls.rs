@@ -328,7 +328,7 @@ fn preference_loading_is_global_and_does_not_disturb_navigation() {
     p.apply(Event::PreferencesLoaded(Ok(Box::new(
         midnight_core::AcceptedPreferences {
             preferences: UserPreferences {
-                theme: PreferenceTheme::Light,
+                light_theme: PreferenceTheme::Light,
                 density: UiDensity::Touch,
                 ..Default::default()
             },

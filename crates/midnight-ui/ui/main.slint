@@ -42,16 +42,12 @@ import { PanelSplitter } from "panel-splitter.slint";
 import { TerminalControl } from "terminal-control.slint";
 import { OptionsBody } from "options-dialog.slint";
 import { OptionsPopups } from "options-popups.slint";
-import { EditorOptionsView, EditorOptionsDraft } from "editor-options.slint";
-export { EditorOptionsView, EditorOptionsDraft }
-import { ComparatorOptionsView, ComparatorOptionsDraft } from "comparator-options.slint";
-export { ComparatorOptionsView, ComparatorOptionsDraft }
+export { EditorOptionsView, EditorOptionsDraft } from "editor-options.slint";
+export { ComparatorOptionsView, ComparatorOptionsDraft } from "comparator-options.slint";
 import { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm } from "user-command-options.slint";
 export { UserCommandSettingsView, UserCommandSettingsRow, UserCommandSettingsForm }
-import { KeyboardEditorView, ShortcutCommandRow } from "keyboard-editor.slint";
-export { KeyboardEditorView, ShortcutCommandRow }
-import { ViewerPluginsView, ViewerPluginRow } from "plugin-options.slint";
-export { ViewerPluginsView, ViewerPluginRow }
+export { KeyboardEditorView, ShortcutCommandRow } from "keyboard-editor.slint";
+export { ViewerPluginsView, ViewerPluginRow } from "plugin-options.slint";
 import { ArchiveOptionsView, ArchiveAssociationRow } from "archive-options.slint";
 export { ArchiveOptionsView, ArchiveAssociationRow }
 import { ArgumentEditing } from "argument-editor.slint";
@@ -402,6 +398,8 @@ export component MainWindow inherits Window {
     // Options › Appearance › Scrolling glide as a scale (1 default, 0 off).
     in property <float> glide-scale: 1;
     in-out property <int> theme-index <=> Theme.scheme;
+    in-out property <int> dark-theme-index;
+    in-out property <int> light-theme-index: 2;
     in-out property <int> left-view-mode;
     in-out property <int> right-view-mode;
     out property <int> left-view-columns: left.view-columns;
@@ -1485,6 +1483,7 @@ export component MainWindow inherits Window {
                 action-icons: root.action-icons;
                 topic-index <=> root.options-topic-index;
                 theme-index: root.theme-index; density-index: root.density-index;
+                dark-theme-index: root.dark-theme-index; light-theme-index: root.light-theme-index;
                 font-choices: root.font-choices; font-index: root.font-index; font-list-ready: root.font-list-ready;
                 desktop-font-size: root.desktop-font-size; touch-font-size: root.touch-font-size;
                 preferences-unsaved: root.preferences-unsaved;

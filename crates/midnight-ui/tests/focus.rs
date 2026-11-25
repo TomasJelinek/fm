@@ -803,6 +803,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         "wheel must move virtualized rows before the next click; cursor={}",
         window.get_left_cursor()
     );
+    presenter.borrow_mut().set_host_dark(false);
     window.invoke_preferences_changed(2, 0, 0);
     window.invoke_preferences_changed(2, 1, 1);
     assert_eq!(window.get_theme_index(), 2);
@@ -859,6 +860,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         "End reveal must use the touch row height, cursor={}",
         window.get_left_cursor()
     );
+    presenter.borrow_mut().set_host_dark(true);
     window.invoke_preferences_changed(1, 1, 0);
     window.invoke_preferences_changed(1, 0, 1);
     native.draw_if_needed(|renderer| {
@@ -875,7 +877,7 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     });
     assert!(
         pixels[0].b > pixels[0].r,
-        "Blue must restore the default blue surface"
+        "Blue must render its blue surface"
     );
     presenter.borrow_mut().apply(Event::DesktopContext {
         system_locations: Vec::new(),

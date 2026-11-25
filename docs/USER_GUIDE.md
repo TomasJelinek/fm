@@ -1017,8 +1017,10 @@ current keys.
   start with Preserve times and attributes checked, the number of simultaneous disk
   operations (Automatic, up to 4, or 1–32), command history persistence/Clear and
   the Updates choices (check at startup, include preview releases).
-  Appearance offers 26 themes including Slate Blue, Slate Teal and Slate Violet,
-  Desktop/Touch spacing, an installed font family and independent Desktop/Touch
+  In **Appearance**, choose a **Dark theme** and a **Light theme**. Midnight Explorer
+  uses the matching choice at startup and when your operating system switches appearance.
+  The 30 dark choices default to **Pencil Lead** and the 16 light choices to **Letterhead**.
+  The same page offers Desktop/Touch spacing, an installed font family and independent Desktop/Touch
   base sizes (8–32px). In **Appearance → Application icon**, choose Midnight Moon
   (the default), Harvest Navigator, Origami Trail, or Interleave. The toolbar and
   supported window icons preview your selection immediately. **OK** saves it for

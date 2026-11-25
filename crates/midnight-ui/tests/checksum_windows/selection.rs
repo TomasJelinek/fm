@@ -596,7 +596,7 @@ fn selected_rows_and_the_cursor_row_are_distinct_in_every_theme() {
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
     let mut findings = Vec::new();
-    for scheme in 0..26 {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         window.invoke_apply_preferences(scheme, 0, "".into(), 12, 15);
         let pixels = modeless::render(&native, 700, 400, &format!("checksum-marks-{scheme}"));
         let pixel = |x: f32, y: f32| {

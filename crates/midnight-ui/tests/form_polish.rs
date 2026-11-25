@@ -1080,7 +1080,7 @@ fn make_file_list_fields_select_with_theme_colours_in_every_theme() {
     list.set_preview_text("文档.txt\nnotes.txt\n".into());
     list.set_token("file-list".into());
     list.invoke_begin();
-    for scheme in 0..26 {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         host.apply_preferences(scheme, 0, "", 12, 15);
         host.layout(1000, 700);
         let theme = host.main.global::<Theme>();

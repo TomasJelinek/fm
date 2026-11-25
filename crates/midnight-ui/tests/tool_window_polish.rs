@@ -239,7 +239,7 @@ fn text_input(item: &ItemRc) -> Option<ItemRc> {
 fn the_compare_tolerance_field_selects_with_theme_colours_in_every_theme() {
     let mut test = ui::TestUi::new();
     compare_directories(&mut test);
-    for scheme in 0..26 {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         test.window.invoke_apply_preferences(scheme, 0);
         settle(&mut test);
         let field = ui::popup_item(

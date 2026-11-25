@@ -588,7 +588,7 @@ fn the_rename_copy_and_move_name_field_selects_with_theme_colours_in_every_theme
     form.set_input_label("New name".into());
     form.set_initial_name("Picture 文档.jpg".into());
     form.set_selection_end("Picture 文档".len() as i32);
-    for scheme in 0..26 {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         host.apply_preferences(scheme, 0, "", 12, 15);
         form.invoke_begin();
         host.layout(640, 420);
@@ -622,7 +622,7 @@ fn the_alternate_name_field_selects_with_theme_colours_in_every_theme() {
     window.set_allow_alternate_name(true);
     window.show().unwrap();
     let native = windows.borrow().last().unwrap().clone();
-    for scheme in 0..26 {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         window.invoke_apply_preferences(scheme, 0, "".into(), 12, 15);
         modeless::layout(&native, 700, 500);
         let field = modeless::accessible_item(

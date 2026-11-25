@@ -29,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         preferences.touch_font_size
     );
     let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path)));
+    presenter.borrow_mut().set_host_dark(fixture != "large");
     midnight_ui::install(&window, presenter.clone(), Rc::new(|_| true));
     presenter
         .borrow_mut()

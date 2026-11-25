@@ -398,16 +398,27 @@ fn theme_preview(app: &mut App, context: &mut Context, _: &Failures) -> Result<(
     let result = (|| {
         wait_text(app, &viewing, "fn function_0")?;
         let (dark, dark_glyphs) = colours(app, &viewing)?;
+        app.set_host_dark(false);
+        viewing.wait(
+            app,
+            "the viewer to adopt the host's light theme",
+            STEP,
+            |_| probe::dominant(&viewing.canvas()) != dark,
+        )?;
+        let (original_light, _) = colours(app, &viewing)?;
         app.slint()
             .dispatch_event(WindowEvent::WindowActiveChanged(true));
         options::open(app)?;
         options::page(app, "Appearance")?;
-        options::choose(app, "Theme", "Light")?;
+        options::choose(app, "Light theme", "Light")?;
         viewing.wait(
             app,
             "the viewer to follow the previewed theme",
             STEP,
-            |_| probe::luminance(probe::dominant(&viewing.canvas())) > 0.6,
+            |_| {
+                let current = probe::dominant(&viewing.canvas());
+                current != original_light && probe::luminance(current) > 0.6
+            },
         )?;
         let (light, light_glyphs) = colours(app, &viewing)?;
         app.screenshot_window(
@@ -442,6 +453,10 @@ fn theme_preview(app: &mut App, context: &mut Context, _: &Failures) -> Result<(
         let (dim, faint) = (below(true), below(false));
         options::cancel(app)?;
         viewing.wait(app, "Cancel to restore the viewer's theme", STEP, |_| {
+            probe::dominant(&viewing.canvas()) == original_light
+        })?;
+        app.set_host_dark(true);
+        viewing.wait(app, "the viewer to return to its dark theme", STEP, |_| {
             probe::dominant(&viewing.canvas()) == dark
         })?;
         context.note(format!(

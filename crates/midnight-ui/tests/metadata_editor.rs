@@ -1050,7 +1050,7 @@ fn time_picker_keys_choose_columns_type_values_and_accept_or_cancel() {
 #[test]
 fn only_the_hovered_time_picker_arrow_lights_up_and_it_shows_in_every_theme() {
     let mut editor = times(Editor::open());
-    for scheme in 0..26 {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         editor.test.window.invoke_apply_preferences(scheme, 0);
         editor.click("Modified: choose time", AccessibleRole::Button);
         let theme = editor.test.window.global::<Theme>();

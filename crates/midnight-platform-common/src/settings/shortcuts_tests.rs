@@ -10,7 +10,6 @@ fn existing_custom_digit_shortcuts_survive_new_hot_path_defaults() {
     stored["theme"] = serde_json::json!("light");
     stored["shortcuts"] = serde_json::json!([{ "action": "files.rename", "keys": ["Digit1"] }]);
     let preferences = decode_preferences(&serde_json::to_vec(&stored).unwrap()).unwrap();
-    assert_eq!(preferences.theme, midnight_core::PreferenceTheme::Light);
     assert_eq!(preferences.shortcuts[0].keys, ["Digit1"]);
     let map = ShortcutMap::new(&preferences.shortcuts).unwrap();
     assert_eq!(

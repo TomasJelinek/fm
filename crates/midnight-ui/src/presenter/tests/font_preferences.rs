@@ -121,7 +121,7 @@ fn catalog_failure_enables_default_and_current_custom_fallbacks() {
 fn font_change_preserves_theme_density_shell_and_raw_family() {
     let mut p = with_catalog(&["Café 文档"]);
     p.preferences.values = UserPreferences {
-        theme: PreferenceTheme::Light,
+        light_theme: PreferenceTheme::Light,
         density: UiDensity::Touch,
         windows_shell: WindowsShell::Cmd,
         ..Default::default()
@@ -130,7 +130,7 @@ fn font_change_preserves_theme_density_shell_and_raw_family() {
         assert!(
             matches!(command, Command::SavePreferences { preferences, .. }
             if *preferences == UserPreferences {
-                theme: PreferenceTheme::Light,
+                light_theme: PreferenceTheme::Light,
                 density: UiDensity::Touch,
                 windows_shell: WindowsShell::Cmd,
                 font_family: "Café 文档".into(),
@@ -212,7 +212,7 @@ fn theme_and_terminal_changes_preserve_font_choices_and_sizes() {
     assert_eq!(p.preferences.values.font_family, "Café 文档");
     assert_eq!(p.preferences.values.desktop_font_size, 12);
     assert_eq!(p.preferences.values.touch_font_size, 18);
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::Light);
+    assert_eq!(p.preferences.values.light_theme, PreferenceTheme::Light);
     assert_eq!(p.preferences.values.density, UiDensity::Touch);
     assert_eq!(p.preferences.values.windows_shell, WindowsShell::Cmd);
 }

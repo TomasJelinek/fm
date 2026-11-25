@@ -3,7 +3,7 @@ use midnight_platform_common::settings::{decode_preferences, encode_preferences}
 fn current() -> serde_json::Value {
     serde_json::json!({
         "version": 5,
-        "theme": "dark",
+        "theme": "blue",
         "density": "desktop",
         "windows_shell": "powershell",
         "font_family": "文档 e\u{301}",

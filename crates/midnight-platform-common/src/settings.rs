@@ -66,7 +66,7 @@ mod wheel_speed_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 44;
+const CURRENT_PREFERENCES_VERSION: u32 = 45;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -227,7 +227,24 @@ struct StoredPreferences {
     viewer: Option<viewers::StoredViewerPreferences>,
     #[serde(default, deserialize_with = "present")]
     editor: Option<StoredEditor>,
-    theme: String,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    theme: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    dark_theme: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    light_theme: Option<String>,
     density: String,
     #[serde(default = "default_windows_shell")]
     windows_shell: String,
@@ -727,8 +744,28 @@ fn decode_preferences_impl(
             }
             _ => return Err(invalid("missing or unexpected preview preferences")),
         };
-    let theme = PreferenceTheme::from_storage_name(&stored.theme)
-        .ok_or_else(|| invalid("unknown preferences theme"))?;
+    let parse_theme = |name: &str| {
+        PreferenceTheme::from_storage_name(name).ok_or_else(|| invalid("unknown preferences theme"))
+    };
+    let (dark_theme, light_theme) = match (
+        stored.version,
+        stored.theme.as_deref(),
+        stored.dark_theme.as_deref(),
+        stored.light_theme.as_deref(),
+    ) {
+        (1..=44, Some(name), None, None) => {
+            // Earlier formats have a single palette and no independent appearance choices.
+            if parse_theme(name)?.index() > PreferenceTheme::SlateViolet.index() {
+                return Err(invalid("unknown preferences theme"));
+            }
+            (
+                PreferenceTheme::DEFAULT_DARK,
+                PreferenceTheme::DEFAULT_LIGHT,
+            )
+        }
+        (45.., None, Some(dark), Some(light)) => (parse_theme(dark)?, parse_theme(light)?),
+        _ => return Err(invalid("missing or unexpected appearance theme fields")),
+    };
     let app_icon = match (stored.version, stored.app_icon.as_deref()) {
         (44, None) => return Err(invalid("missing schema 44 app icon")),
         (_, None) => AppIcon::default(),
@@ -1088,7 +1125,8 @@ fn decode_preferences_impl(
         },
         file_comparators,
         editor,
-        theme,
+        dark_theme,
+        light_theme,
         app_icon,
         density,
         windows_shell,
@@ -1242,6 +1280,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     // Schema 43: preserve times and attributes (written only when off).
     let preserve_choices = !preferences.copy_preserve_metadata;
     let icon_choice = preferences.app_icon != AppIcon::default();
+    let theme_choices = preferences.dark_theme != PreferenceTheme::DEFAULT_DARK
+        || preferences.light_theme != PreferenceTheme::DEFAULT_LIGHT;
     // Later schemas keep the required comparator fields introduced in version 33.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
@@ -1255,7 +1295,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         || find_choices
         || nested_archive_choices
         || preserve_choices
-        || icon_choice;
+        || icon_choice
+        || theme_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1396,7 +1437,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if icon_choice {
+        version: if theme_choices {
+            45
+        } else if icon_choice {
             44
         } else if preserve_choices {
             43
@@ -1584,7 +1627,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         font_family: Some(preferences.font_family),
         desktop_font_size: Some(preferences.desktop_font_size),
         touch_font_size: Some(preferences.touch_font_size),
-        theme: preferences.theme.storage_name().into(),
+        theme: (!theme_choices).then(|| PreferenceTheme::Blue.storage_name().into()),
+        dark_theme: theme_choices.then(|| preferences.dark_theme.storage_name().into()),
+        light_theme: theme_choices.then(|| preferences.light_theme.storage_name().into()),
         windows_shell: match preferences.windows_shell {
             WindowsShell::PowerShell => "powershell",
             WindowsShell::Cmd => "cmd",
@@ -1787,7 +1832,7 @@ mod tests {
             .join("x".repeat(70_000));
         let mut stored: serde_json::Value = serde_json::from_slice(
             &encode_preferences(UserPreferences {
-                theme: PreferenceTheme::Light,
+                light_theme: PreferenceTheme::Light,
                 ..Default::default()
             })
             .unwrap(),
@@ -1799,7 +1844,7 @@ mod tests {
             {"id":9,"name":"Other","path":std::env::temp_dir().join("Other"),"slot":10}
         ]);
         let decoded = decode_preferences(&serde_json::to_vec(&stored).unwrap()).unwrap();
-        assert_eq!(decoded.theme, PreferenceTheme::Light);
+        assert_eq!(decoded.light_theme, PreferenceTheme::Light);
         assert_eq!(decoded.bookmarks.len(), 2);
         assert_eq!(
             decoded.bookmarks[0],
@@ -2018,17 +2063,17 @@ mod tests {
     fn versioned_json_roundtrips_every_theme_and_density() {
         for theme in PreferenceTheme::ALL {
             for density in [UiDensity::Desktop, UiDensity::Touch] {
-                let preferences = UserPreferences {
-                    theme,
+                let mut preferences = UserPreferences {
                     density,
                     ..UserPreferences::default()
                 };
+                if theme.is_light() {
+                    preferences.light_theme = theme;
+                } else {
+                    preferences.dark_theme = theme;
+                }
                 let encoded = encode_preferences(preferences.clone()).unwrap();
                 assert_eq!(decode_preferences(&encoded).unwrap(), preferences);
-                assert_eq!(
-                    serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["version"],
-                    10
-                );
             }
         }
     }

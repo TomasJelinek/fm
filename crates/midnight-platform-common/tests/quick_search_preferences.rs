@@ -20,7 +20,7 @@ fn legacy_options_migrate_with_filter_disabled_and_existing_choices_preserved() 
         serde_json::from_slice(&encode_preferences(preferences).unwrap()).unwrap();
     assert_eq!(stored["version"], 10);
     assert_eq!(stored["quick_search_filter"], false);
-    assert_eq!(stored["theme"], "dark");
+    assert_eq!(stored["theme"], "blue");
     assert_eq!(stored["density"], "touch");
     assert_eq!(stored["windows_shell"], "cmd");
     assert_eq!(stored["font_family"], "文档 e\u{301}");

@@ -372,6 +372,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         let path = std::env::temp_dir().join("midnight-tooltip-ui");
         let home = path.join("文档😀".repeat(40));
         let presenter = Rc::new(RefCell::new(Presenter::new(path.clone(), path)));
+        presenter.borrow_mut().set_host_dark(!scheme.is_light());
         presenter
             .borrow_mut()
             .apply(Event::PreferencesLoaded(Ok(Box::new(
@@ -380,7 +381,12 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
                         density,
                         desktop_font_size: font,
                         touch_font_size: font,
-                        theme: scheme,
+                        dark_theme: if scheme.is_light() {
+                            PreferenceTheme::DEFAULT_DARK
+                        } else {
+                            scheme
+                        },
+                        light_theme: PreferenceTheme::Light,
                         ..Default::default()
                     },
                     comparators: midnight_core::FileComparatorSnapshot::default(),
@@ -537,14 +543,14 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
         click(&window, position);
         draw(&native, &mut pixels);
         options_topic(&window, &native, &mut pixels, "Appearance", 1);
-        let theme = find(popup_root(&window), "Theme", AccessibleRole::Combobox).remove(0);
+        let theme = find(popup_root(&window), "Dark theme", AccessibleRole::Combobox).remove(0);
         hover(
             &window,
             &native,
             &time,
             &mut pixels,
             center(&theme),
-            "Preview a color theme. OK saves it; Cancel restores the previous theme.",
+            "Used when your system is set to dark appearance.",
         );
         window.window().dispatch_event(WindowEvent::PointerExited);
         options_topic(&window, &native, &mut pixels, "General", 0);

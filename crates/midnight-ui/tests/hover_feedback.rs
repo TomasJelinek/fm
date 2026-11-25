@@ -26,9 +26,6 @@ type Rect = (f32, f32, f32, f32);
 /// `hover_looks_keep_each_themes_contrast` shows the hover look in every theme.
 const THEMES: [i32; 3] = [0, 2, 21];
 
-/// Every theme.
-const ALL_THEMES: std::ops::Range<i32> = 0..26;
-
 fn bounds(item: &ItemRc) -> Rect {
     let rect = item.geometry();
     let origin = item.map_to_native_window(rect.origin);
@@ -263,7 +260,7 @@ fn hover_looks_keep_each_themes_contrast() {
         "*.rs",
     )])));
     colors.set_selected(0);
-    for scheme in ALL_THEMES {
+    for scheme in midnight_core::PreferenceTheme::ALL.map(|theme| theme.index()) {
         test.window.invoke_apply_preferences(scheme, 0);
         let theme = test.window.global::<Theme>();
         let (surface, frame, active) = (

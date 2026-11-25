@@ -125,7 +125,7 @@ fn hot_paths_use_the_origin_pane_and_latest_options_save_keeps_bookmarks() {
         panic!("expected settings save")
     };
     assert_eq!(*revision, PreferencesRevision(3));
-    assert_eq!(preferences.theme, PreferenceTheme::Light);
+    assert_eq!(preferences.light_theme, PreferenceTheme::Light);
     assert_eq!(preferences.bookmarks.len(), 2);
     assert_eq!(preferences.bookmarks[0].path, left);
     assert_eq!(preferences.bookmarks[1].path, right);
@@ -287,7 +287,7 @@ fn startup_duplicate_merge_preserves_local_callback_and_other_preferences() {
     p.apply_with_sender(
         Event::PreferencesLoaded(Ok(Box::new(midnight_core::AcceptedPreferences {
             preferences: UserPreferences {
-                theme: PreferenceTheme::Light,
+                light_theme: PreferenceTheme::Light,
                 bookmarks: vec![Bookmark {
                     network: None,
                     archive: None,
@@ -307,7 +307,7 @@ fn startup_duplicate_merge_preserves_local_callback_and_other_preferences() {
             let Command::SavePreferences { preferences, .. } = command else {
                 panic!()
             };
-            assert_eq!(preferences.theme, PreferenceTheme::Light);
+            assert_eq!(preferences.light_theme, PreferenceTheme::Light);
             assert_eq!(preferences.bookmarks, std::slice::from_ref(&local));
             true
         },
@@ -325,7 +325,7 @@ fn rejected_save_keeps_bookmark_and_retry_preserves_latest_global_choices() {
         let Command::SavePreferences { preferences, .. } = command else {
             panic!()
         };
-        assert_eq!(preferences.theme, PreferenceTheme::Dark);
+        assert_eq!(preferences.dark_theme, PreferenceTheme::Dark);
         assert_eq!(preferences.density, UiDensity::Touch);
         assert_eq!(
             preferences.bookmarks.as_slice(),
@@ -335,7 +335,7 @@ fn rejected_save_keeps_bookmark_and_retry_preserves_latest_global_choices() {
     });
     p.apply(Event::PreferencesLoaded(Ok(Box::default())));
     assert_eq!(p.bookmarks(), [bookmark]);
-    assert_eq!(p.preferences.values.theme, PreferenceTheme::Dark);
+    assert_eq!(p.preferences.values.dark_theme, PreferenceTheme::Dark);
 }
 
 #[test]

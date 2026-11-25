@@ -34,6 +34,7 @@ fn first_frame(load: Load) {
     backend();
     let window = MainWindow::new().unwrap();
     let presenter = Rc::new(RefCell::new(Presenter::new("left".into(), "right".into())));
+    let _host_appearance = midnight_ui::observe_host_appearance(&window, &presenter);
     let (commands, mut received) = tokio::sync::mpsc::channel(32);
     let control_send: Rc<dyn Fn(Command) -> bool> =
         Rc::new(move |command| match commands.try_send(command) {
@@ -72,10 +73,17 @@ fn first_frame(load: Load) {
                 return;
             }
             let window = weak.upgrade().unwrap();
-            let theme = if matches!(load, Load::Failed) {
-                PreferenceTheme::Blue
-            } else {
-                PreferenceTheme::Nord
+            let host_dark = window
+                .window()
+                .with_winit_window(|w| {
+                    w.theme() == Some(slint::winit_030::winit::window::Theme::Dark)
+                })
+                .unwrap();
+            let theme = match (host_dark, load) {
+                (true, Load::Failed) => PreferenceTheme::DEFAULT_DARK,
+                (false, Load::Failed) => PreferenceTheme::DEFAULT_LIGHT,
+                (true, _) => PreferenceTheme::Nord,
+                (false, _) => PreferenceTheme::Iris,
             };
             assert_eq!(window.get_theme_index(), theme.index(), "first frame theme");
             let split = if matches!(load, Load::Failed) {
@@ -172,7 +180,8 @@ fn first_frame(load: Load) {
             ));
             Ok(Box::new(AcceptedPreferences {
                 preferences: UserPreferences {
-                    theme: PreferenceTheme::Nord,
+                    dark_theme: PreferenceTheme::Nord,
+                    light_theme: PreferenceTheme::Iris,
                     window_geometry: Some(saved),
                     panel_split_basis_points: 6100,
                     ..Default::default()
