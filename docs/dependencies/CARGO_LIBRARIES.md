@@ -133,9 +133,9 @@ captures and does not prove that old captures match today's source files.
 | [calloop-wayland-source](https://crates.io/crates/calloop-wayland-source/0.3.0) | 0.3.0 | MIT | app, renderer-tests | Linux | — |
 | [cbc](https://crates.io/crates/cbc/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | archive | Linux, Windows | — |
 | [cbindgen](https://crates.io/crates/cbindgen/0.29.4) | 0.29.4 | MPL-2.0 | api | Linux, Windows | yes |
-| [cc](https://crates.io/crates/cc/1.2.63) | 1.2.63 | MIT OR Apache-2.0 | renderer-tests | Linux | — |
 | [cc](https://crates.io/crates/cc/1.11.0) | 1.11.0 | MIT OR Apache-2.0 | app | Linux, Windows | — |
 | [cc](https://crates.io/crates/cc/1.11.1) | 1.11.1 | MIT OR Apache-2.0 | html-viewer, thumbnail-video | Linux, Windows | — |
+| [cc](https://crates.io/crates/cc/1.2.63) | 1.2.63 | MIT OR Apache-2.0 | renderer-tests | Linux | — |
 | [cef](https://crates.io/crates/cef/156.4.0%2B156.0.26) | 156.4.0+156.0.26 | Apache-2.0 OR MIT | html-viewer | Linux, Windows | yes |
 | [cef-dll-sys](https://crates.io/crates/cef-dll-sys/156.4.0%2B156.0.26) | 156.4.0+156.0.26 | Apache-2.0 OR MIT | html-viewer | Linux, Windows | — |
 | [cexpr](https://crates.io/crates/cexpr/0.6.0) | 0.6.0 | Apache-2.0/MIT | thumbnail-video | Linux, Windows | — |
@@ -222,13 +222,13 @@ captures and does not prove that old captures match today's source files.
 | [ffmpeg-sys-next](https://crates.io/crates/ffmpeg-sys-next/9.0.1) | 9.0.1 | WTFPL | thumbnail-video | Linux, Windows | — |
 | [field-offset](https://crates.io/crates/field-offset/0.3.6) | 0.3.6 | MIT OR Apache-2.0 | app | Linux, Windows | — |
 | [filetime](https://crates.io/crates/filetime/0.2.29) | 0.2.29 | MIT/Apache-2.0 | api, app, archive, html-viewer | Linux, Windows | — |
-| [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.9) | 0.1.9 | MIT OR Apache-2.0 | renderer-tests | Linux | — |
 | [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.15) | 0.1.15 | MIT OR Apache-2.0 | app, html-viewer, thumbnail-video | Linux, Windows | yes |
+| [find-msvc-tools](https://crates.io/crates/find-msvc-tools/0.1.9) | 0.1.9 | MIT OR Apache-2.0 | renderer-tests | Linux | — |
 | [fixed_decimal](https://crates.io/crates/fixed_decimal/0.7.3) | 0.7.3 | Unicode-3.0 | app | Linux, Windows | — |
 | [fixedbitset](https://crates.io/crates/fixedbitset/0.5.7) | 0.5.7 | MIT OR Apache-2.0 | app | Linux | — |
-| [flate2](https://crates.io/crates/flate2/1.1.9) | 1.1.9 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [flate2](https://crates.io/crates/flate2/1.1.10) | 1.1.10 | MIT OR Apache-2.0 | api, app, archive | Linux, Windows | yes |
 | [flate2](https://crates.io/crates/flate2/1.1.11) | 1.1.11 | MIT OR Apache-2.0 | html-viewer, image-decoder, image-viewer, pdf-viewer, thumbnail-image | Linux, Windows | — |
+| [flate2](https://crates.io/crates/flate2/1.1.9) | 1.1.9 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [float-cmp](https://crates.io/crates/float-cmp/0.9.0) | 0.9.0 | MIT | app, image-decoder, image-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
 | [fnv](https://crates.io/crates/fnv/1.0.7) | 1.0.7 | Apache-2.0 / MIT | app, renderer-tests | Linux, Windows | — |
 | [foldhash](https://crates.io/crates/foldhash/0.1.5) | 0.1.5 | Zlib | app | Linux | — |
@@ -270,8 +270,8 @@ captures and does not prove that old captures match today's source files.
 | [gpu-allocator](https://crates.io/crates/gpu-allocator/0.28.0) | 0.28.0 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
 | [guillotiere](https://crates.io/crates/guillotiere/0.7.0) | 0.7.0 | MIT/Apache-2.0 | pdf-viewer, thumbnail-image | Linux, Windows | — |
 | [half](https://crates.io/crates/half/2.7.1) | 2.7.1 | MIT OR Apache-2.0 | app, image-decoder, image-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
-| [harfrust](https://crates.io/crates/harfrust/0.5.2) | 0.5.2 | MIT | renderer-tests | Linux, Windows | — |
 | [harfrust](https://crates.io/crates/harfrust/0.12.0) | 0.12.0 | MIT | app, image-decoder, image-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
+| [harfrust](https://crates.io/crates/harfrust/0.5.2) | 0.5.2 | MIT | renderer-tests | Linux, Windows | — |
 | [hashbrown](https://crates.io/crates/hashbrown/0.13.2) | 0.13.2 | MIT OR Apache-2.0 | image-decoder, image-viewer, thumbnail-image | Linux, Windows | — |
 | [hashbrown](https://crates.io/crates/hashbrown/0.14.5) | 0.14.5 | MIT OR Apache-2.0 | app | Linux, Windows | — |
 | [hashbrown](https://crates.io/crates/hashbrown/0.15.5) | 0.15.5 | MIT OR Apache-2.0 | app | Linux | — |
@@ -299,7 +299,7 @@ captures and does not prove that old captures match today's source files.
 | [i-slint-compiler](https://crates.io/crates/i-slint-compiler/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | app | Linux, Windows | yes |
 | [i-slint-core](https://crates.io/crates/i-slint-core/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | app | Linux, Windows | yes |
 | [i-slint-core-macros](https://crates.io/crates/i-slint-core-macros/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | app | Linux, Windows | — |
-| [i-slint-renderer-femtovg](https://crates.io/crates/i-slint-renderer-femtovg/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | app | Linux, Windows | — |
+| i-slint-renderer-femtovg | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | app | Linux, Windows | yes |
 | [i-slint-renderer-software](https://crates.io/crates/i-slint-renderer-software/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | app | Linux, Windows | — |
 | [iana-time-zone](https://crates.io/crates/iana-time-zone/0.1.65) | 0.1.65 | MIT OR Apache-2.0 | app | Linux | — |
 | [icu_casemap](https://crates.io/crates/icu_casemap/2.4.0) | 2.4.0 | Unicode-3.0 | app | Linux, Windows | yes |
@@ -359,8 +359,8 @@ captures and does not prove that old captures match today's source files.
 | [libloading](https://crates.io/crates/libloading/0.8.9) | 0.8.9 | ISC | app, network, renderer-tests, thumbnail-video | Linux, Windows | yes |
 | [libm](https://crates.io/crates/libm/0.2.16) | 0.2.16 | MIT | app, renderer-tests | Linux, Windows | — |
 | [linebender_resource_handle](https://crates.io/crates/linebender_resource_handle/0.1.1) | 0.1.1 | Apache-2.0 OR MIT | app, pdf-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
-| [linux-raw-sys](https://crates.io/crates/linux-raw-sys/0.4.15) | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | app, renderer-tests | Linux | — |
 | [linux-raw-sys](https://crates.io/crates/linux-raw-sys/0.12.1) | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | api, app, html-viewer, renderer-tests | Linux | — |
+| [linux-raw-sys](https://crates.io/crates/linux-raw-sys/0.4.15) | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | app, renderer-tests | Linux | — |
 | [litemap](https://crates.io/crates/litemap/0.8.3) | 0.8.3 | Unicode-3.0 | app, renderer-tests | Linux, Windows | — |
 | [litrs](https://crates.io/crates/litrs/1.0.0) | 1.0.0 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [litrs](https://crates.io/crates/litrs/1.0.1) | 1.0.1 | MIT OR Apache-2.0 | app | Linux, Windows | — |
@@ -520,8 +520,8 @@ captures and does not prove that old captures match today's source files.
 | [sharded-slab](https://crates.io/crates/sharded-slab/0.1.7) | 0.1.7 | MIT | app | Linux, Windows | — |
 | [shlex](https://crates.io/crates/shlex/2.0.1) | 2.0.1 | MIT OR Apache-2.0 | app, html-viewer, renderer-tests, thumbnail-video | Linux, Windows | — |
 | [signal-hook-registry](https://crates.io/crates/signal-hook-registry/1.4.8) | 1.4.8 | MIT OR Apache-2.0 | app | Linux | — |
-| [simd-adler32](https://crates.io/crates/simd-adler32/0.3.9) | 0.3.9 | MIT | renderer-tests | Linux, Windows | — |
 | [simd-adler32](https://crates.io/crates/simd-adler32/0.3.10) | 0.3.10 | MIT | api, app, archive, html-viewer, image-decoder, image-viewer, pdf-viewer, thumbnail-image | Linux, Windows | — |
+| [simd-adler32](https://crates.io/crates/simd-adler32/0.3.9) | 0.3.9 | MIT | renderer-tests | Linux, Windows | — |
 | [similar](https://crates.io/crates/similar/2.7.0) | 2.7.0 | Apache-2.0 | app | Linux, Windows | yes |
 | [simplecss](https://crates.io/crates/simplecss/0.2.2) | 0.2.2 | Apache-2.0 OR MIT | app, image-decoder, image-viewer, renderer-tests, thumbnail-image | Linux, Windows | yes |
 | [siphasher](https://crates.io/crates/siphasher/1.0.3) | 1.0.3 | MIT/Apache-2.0 | renderer-tests | Linux, Windows | — |
@@ -558,9 +558,9 @@ captures and does not prove that old captures match today's source files.
 | [swash](https://crates.io/crates/swash/0.2.10) | 0.2.10 | Apache-2.0 OR MIT | app, renderer-tests | Linux, Windows | yes |
 | [syn](https://crates.io/crates/syn/2.0.117) | 2.0.117 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [syn](https://crates.io/crates/syn/2.0.119) | 2.0.119 | MIT OR Apache-2.0 | api, app, basic, conformance, image-decoder, image-viewer, markdown, pdf-viewer, source, thumbnail-image, thumbnail-video | Linux, Windows | — |
+| [syn](https://crates.io/crates/syn/3.0.10) | 3.0.10 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
 | [syn](https://crates.io/crates/syn/3.0.4) | 3.0.4 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [syn](https://crates.io/crates/syn/3.0.9) | 3.0.9 | MIT OR Apache-2.0 | api, app, image-decoder, image-viewer, pdf-viewer, thumbnail-image, thumbnail-video | Linux, Windows | — |
-| [syn](https://crates.io/crates/syn/3.0.10) | 3.0.10 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
 | [synstructure](https://crates.io/crates/synstructure/0.13.2) | 0.13.2 | MIT | renderer-tests | Linux, Windows | — |
 | [synstructure](https://crates.io/crates/synstructure/0.14.0) | 0.14.0 | MIT | app, pdf-viewer, thumbnail-image | Linux, Windows | — |
 | [sys-locale](https://crates.io/crates/sys-locale/0.3.2) | 0.3.2 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |

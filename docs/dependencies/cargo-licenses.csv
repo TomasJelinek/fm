@@ -72,9 +72,9 @@ calloop,0.13.0,MIT,registry+https://github.com/rust-lang/crates.io-index,app; re
 calloop-wayland-source,0.3.0,MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux,
 cbc,0.2.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,archive,Linux; Windows,
 cbindgen,0.29.4,MPL-2.0,registry+https://github.com/rust-lang/crates.io-index,api,Linux; Windows,midnight-api-headergen
-cc,1.2.63,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux,
 cc,1.11.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 cc,1.11.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,html-viewer; thumbnail-video,Linux; Windows,
+cc,1.2.63,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux,
 cef,156.4.0+156.0.26,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,html-viewer,Linux; Windows,midnight-viewer-html
 cef-dll-sys,156.4.0+156.0.26,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,html-viewer,Linux; Windows,
 cexpr,0.6.0,Apache-2.0/MIT,registry+https://github.com/rust-lang/crates.io-index,thumbnail-video,Linux; Windows,
@@ -161,13 +161,13 @@ ffmpeg-next,9.0.0,WTFPL,registry+https://github.com/rust-lang/crates.io-index,th
 ffmpeg-sys-next,9.0.1,WTFPL,registry+https://github.com/rust-lang/crates.io-index,thumbnail-video,Linux; Windows,
 field-offset,0.3.6,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 filetime,0.2.29,MIT/Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; archive; html-viewer,Linux; Windows,
-find-msvc-tools,0.1.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux,
 find-msvc-tools,0.1.15,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; html-viewer; thumbnail-video,Linux; Windows,midnight-explorer
+find-msvc-tools,0.1.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux,
 fixed_decimal,0.7.3,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 fixedbitset,0.5.7,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
-flate2,1.1.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 flate2,1.1.10,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; archive,Linux; Windows,midnight-api-package; midnight-fs-archive; midnight-office-preview; midnight-update
 flate2,1.1.11,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,html-viewer; image-decoder; image-viewer; pdf-viewer; thumbnail-image,Linux; Windows,
+flate2,1.1.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 float-cmp,0.9.0,MIT,registry+https://github.com/rust-lang/crates.io-index,app; image-decoder; image-viewer; renderer-tests; thumbnail-image,Linux; Windows,
 fnv,1.0.7,Apache-2.0 / MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 foldhash,0.1.5,Zlib,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
@@ -209,8 +209,8 @@ glutin_wgl_sys,0.6.1,Apache-2.0,registry+https://github.com/rust-lang/crates.io-
 gpu-allocator,0.28.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 guillotiere,0.7.0,MIT/Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,pdf-viewer; thumbnail-image,Linux; Windows,
 half,2.7.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; image-decoder; image-viewer; renderer-tests; thumbnail-image,Linux; Windows,
-harfrust,0.5.2,MIT,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 harfrust,0.12.0,MIT,registry+https://github.com/rust-lang/crates.io-index,app; image-decoder; image-viewer; renderer-tests; thumbnail-image,Linux; Windows,
+harfrust,0.5.2,MIT,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 hashbrown,0.13.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,image-decoder; image-viewer; thumbnail-image,Linux; Windows,
 hashbrown,0.14.5,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 hashbrown,0.15.5,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
@@ -238,7 +238,7 @@ i-slint-common,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR Licen
 i-slint-compiler,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-compare-ui; midnight-ui-bindings
 i-slint-core,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-compare-ui; midnight-ui; midnight-ui-input; midnight-viewer-ui
 i-slint-core-macros,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
-i-slint-renderer-femtovg,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
+i-slint-renderer-femtovg,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,local path dependency,app,Linux; Windows,midnight-ui-input
 i-slint-renderer-software,1.18.1,GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 iana-time-zone,0.1.65,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
 icu_casemap,2.4.0,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-platform-common
@@ -298,8 +298,8 @@ libc,0.2.191,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-i
 libloading,0.8.9,ISC,registry+https://github.com/rust-lang/crates.io-index,app; network; renderer-tests; thumbnail-video,Linux; Windows,midnight-filesystem-network; midnight-media-output
 libm,0.2.16,MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 linebender_resource_handle,0.1.1,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; pdf-viewer; renderer-tests; thumbnail-image,Linux; Windows,
-linux-raw-sys,0.4.15,Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux,
 linux-raw-sys,0.12.1,Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,api; app; html-viewer; renderer-tests,Linux,
+linux-raw-sys,0.4.15,Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux,
 litemap,0.8.3,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 litrs,1.0.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 litrs,1.0.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
@@ -459,8 +459,8 @@ sha2,0.11.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-in
 sharded-slab,0.1.7,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 shlex,2.0.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; html-viewer; renderer-tests; thumbnail-video,Linux; Windows,
 signal-hook-registry,1.4.8,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
-simd-adler32,0.3.9,MIT,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 simd-adler32,0.3.10,MIT,registry+https://github.com/rust-lang/crates.io-index,api; app; archive; html-viewer; image-decoder; image-viewer; pdf-viewer; thumbnail-image,Linux; Windows,
+simd-adler32,0.3.9,MIT,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 similar,2.7.0,Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-compare-engine
 simplecss,0.2.2,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; image-decoder; image-viewer; renderer-tests; thumbnail-image,Linux; Windows,midnight-image-decoder
 siphasher,1.0.3,MIT/Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
@@ -497,9 +497,9 @@ svgtypes,0.16.1,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.i
 swash,0.2.10,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,midnight-viewer-render
 syn,2.0.117,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 syn,2.0.119,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; basic; conformance; image-decoder; image-viewer; markdown; pdf-viewer; source; thumbnail-image; thumbnail-video,Linux; Windows,
+syn,3.0.10,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,html-viewer,Linux; Windows,
 syn,3.0.4,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 syn,3.0.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app; image-decoder; image-viewer; pdf-viewer; thumbnail-image; thumbnail-video,Linux; Windows,
-syn,3.0.10,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,html-viewer,Linux; Windows,
 synstructure,0.13.2,MIT,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 synstructure,0.14.0,MIT,registry+https://github.com/rust-lang/crates.io-index,app; pdf-viewer; thumbnail-image,Linux; Windows,
 sys-locale,0.3.2,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,

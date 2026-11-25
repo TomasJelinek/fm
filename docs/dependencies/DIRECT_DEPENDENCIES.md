@@ -28,6 +28,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [hayro](https://crates.io/crates/hayro/0.9.0) | 0.9.0 | Apache-2.0 OR MIT | midnight-thumbnail-image, midnight-viewer-pdf |
 | [i-slint-compiler](https://crates.io/crates/i-slint-compiler/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-ui-bindings |
 | [i-slint-core](https://crates.io/crates/i-slint-core/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-ui, midnight-ui-input, midnight-viewer-ui |
+| i-slint-renderer-femtovg | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-ui-input |
 | [icu_casemap](https://crates.io/crates/icu_casemap/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | [icu_locale_core](https://crates.io/crates/icu_locale_core/2.4.0) | 2.4.0 | Unicode-3.0 | midnight-platform-common |
 | image | 0.25.10 | MIT OR Apache-2.0 | midnight-image-decoder, midnight-thumbnail-image, midnight-viewer-image |
@@ -76,11 +77,11 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [unicode-segmentation](https://crates.io/crates/unicode-segmentation/1.13.3) | 1.13.3 | MIT OR Apache-2.0 | midnight-compare-engine, midnight-engine, midnight-ui, midnight-viewer-engine, midnight-viewer-render |
 | [unicode-width](https://crates.io/crates/unicode-width/0.2.3) | 0.2.3 | MIT OR Apache-2.0 | midnight-viewer-render |
 | [ureq](https://crates.io/crates/ureq/3.5.2) | 3.5.2 | MIT OR Apache-2.0 | midnight-update |
+| [wayland-backend](https://crates.io/crates/wayland-backend/0.3.17) | 0.3.17 | MIT | midnight-platform-linux |
+| [wayland-client](https://crates.io/crates/wayland-client/0.31.15) | 0.31.15 | MIT | midnight-platform-linux |
 | [windows](https://crates.io/crates/windows/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | midnight-media-output, midnight-platform-windows, midnight-thumbnail-video |
 | [windows-core](https://crates.io/crates/windows-core/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | midnight-platform-windows, midnight-thumbnail-video |
 | [windows-sys](https://crates.io/crates/windows-sys/0.61.2) | 0.61.2 | MIT OR Apache-2.0 | midnight-elevation, midnight-filesystem-native-windows, midnight-filesystem-network, midnight-platform-windows, midnight-plugin-host, midnight-ui, midnight-update, midnight-viewer-ui, midnight-worker-platform, midnight-worker-sdk |
-| [wayland-backend](https://crates.io/crates/wayland-backend/0.3.17) | 0.3.17 | MIT | midnight-platform-linux |
-| [wayland-client](https://crates.io/crates/wayland-client/0.31.15) | 0.31.15 | MIT | midnight-platform-linux |
 | [wl-clipboard-rs](https://crates.io/crates/wl-clipboard-rs/0.9.5) | 0.9.5 | MIT OR Apache-2.0 | midnight-platform-linux |
 | [x11-dl](https://crates.io/crates/x11-dl/2.21.0) | 2.21.0 | MIT | midnight-ui |
 | [x11rb](https://crates.io/crates/x11rb/0.13.2) | 0.13.2 | MIT OR Apache-2.0 | midnight-platform-linux |

@@ -47,10 +47,10 @@ the captured targets and features yields exactly the records, workspaces, target
 direct dependants of the three tables. Each record's license is the pinned crate's own
 declaration, and the SHA-256 of each crate archive in the local Cargo cache equals the
 lock file's checksum. A regeneration from Cargo's own captures
-([below](#regenerating-the-inventory)) remains the reference. The tables still list
-`i-slint-renderer-femtovg` 1.18.1 from crates.io: its vendored copy (25 November 2026)
-is a local path dependency with `midnight-ui-input` as a direct dependant, which the
-next regeneration records.
+([below](#regenerating-the-inventory)) remains the reference. The tables were last
+regenerated from the dependency-inventory workflow's Windows and Linux captures of
+`0ccc198d` (25 November 2026): they record the vendored `i-slint-renderer-femtovg`
+1.18.1 as a local path dependency with `midnight-ui-input` as a direct dependant.
 
 ## License notes
 
