@@ -66,7 +66,7 @@ is never substituted. Loading/unstable selection, parent, directory, virtual/arc
 or ambiguous rows do not supply implicit native paths. Plugin preferences must be
 loaded before opening a session so disabled providers cannot be bypassed.
 
-`midnight-compare-engine/file_choice.rs` preserves the unambiguous part of a pair
+`midnight-compare-engine/src/file_choice.rs` preserves the unambiguous part of a pair
 and returns `Output::ChooseFiles(FileChoice)` for everything else. Empty paths mean
 unknown inputs. The session stays alive for explicit `Input::Compare([PathBuf; 2])`
 or `Input::Browse { side, paths, owner }`. Invalid paths, missing/nonregular files or

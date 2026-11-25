@@ -31,8 +31,8 @@ Install a package under `<application directory>/viewers/<package>/` with
   "schema": 1,
   "protocol": 1,
   "id": "midnight.viewer.image",
-  "name": "Images",
-  "version": "0.2.0",
+  "name": "Image viewer",
+  "version": "0.3.0",
   "target": "x86_64-pc-windows-msvc",
   "executable": "midnight-viewer-image.exe",
   "extensions": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "svg", "avif"]
