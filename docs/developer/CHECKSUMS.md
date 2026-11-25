@@ -82,8 +82,8 @@ in between at most every 250 ms, because each check reopens the parent and name
 (and every manifest ancestor). The intermediate checks only shorten how long a
 replaced or rewritten source keeps streaming; the final check decides the row.
 
-`ChecksumEvent` carries Queued, Started, Verifying, Planned, Batch, Progress or
-Finished. A calculation first lists the files it will read and sends them in Planned
+`ChecksumEvent` carries a `ChecksumUpdate`: Queued, Started, Verifying, Planned,
+Batch, Progress or Finished. A calculation first lists the files it will read and sends them in Planned
 batches, then reads them in the same order. The listing walks the same folders with the
 same volume and link rules, but opens no file and reads no contents:
 each folder's `TransferSource::next_listed_child` describes the children the walk does
@@ -367,7 +367,7 @@ rows." ("1 row." for one) and the clipboard keeps what it held, as it does for a
 adds nothing. With several
 calculated rows selected its caption counts them ("Copy 3 SHA-256"); below 460 px it is
 "Copy". The footer fits its actions from their measured captions (`FooterActions` in
-`dialog-footer.slint`): one that does not fit whole beside Close moves into More…,
+`footer-actions.slint`, used by `DialogFooter` in `dialog-footer.slint`): one that does not fit whole beside Close moves into More…,
 Copy details and Save… first, then Copy; Back, Calculate or Stop and Verify stay
 buttons (showing their glyphs alone, and last in More… too, only where even that does
 not fit: see the [dialog ergonomics](DIALOG_ERGONOMICS.md)). A counted caption therefore

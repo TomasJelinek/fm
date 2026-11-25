@@ -561,10 +561,11 @@ right-aligned with the chart and at most as wide as the chart, until the next cl
 anywhere or focus leaving the button closes it. Opening it moves nothing.
 
 Logical committed bytes are separate from actual I/O counters. Retries and
-verification reads cannot inflate completion. Cross-volume Move keeps files in
-Items remaining until their source removal is confirmed, even when destination
-publication has already succeeded. ETA is an explicitly approximate
-presentation of remaining logical work and backend-measured rates. The backend
+verification reads cannot inflate completion. A Move counts a file as done in
+its totals line (`Files: N of M`) only once its source removal is
+confirmed (`source_files_removed`), even when destination publication has already
+succeeded; the window shows no Items remaining line for a Copy or Move. ETA is an
+explicitly approximate presentation of remaining logical work and backend-measured rates. The backend
 averages each rate over the job's activity time with an 8-second time constant (an
 interval's weight falls to about a third after 8 more seconds of activity) and
 publishes the averages once 1 second of activity has been measured; paused, waiting
