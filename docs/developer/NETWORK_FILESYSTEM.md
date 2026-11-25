@@ -149,6 +149,14 @@ shows its sign-in dialog. No worker waits for the dialog. Submission starts a ne
 activation for the same opaque location, with one credential response to GIO. A
 repeated challenge opens the dialog again. Canceling the dialog leaves the
 previous listing in place. A server and a share may each request credentials.
+A successful sign-in is remembered by the provider instance for its SMB server
+(`Adapter::sign_in_scope`: `smb://` and the host and port in ASCII lower case;
+`catalog/sign_ins.rs`). A later activation of a server or share there is sent as a
+sign-in with the remembered credentials, which answer its password challenge once.
+Another server, a container, listing and discovery get none. A rejection forgets
+them, and the engine then shows the dialog as for a first sign-in. Nothing is
+persisted, and GIO still receives `G_PASSWORD_SAVE_NEVER`. At most 32 servers are
+remembered.
 Native handoff requires the actual GIO/GVfs path, usually supplied by GVfs FUSE.
 
 Use plugin tests with fake adapters for discovery, paging, deadlines, cancellation,

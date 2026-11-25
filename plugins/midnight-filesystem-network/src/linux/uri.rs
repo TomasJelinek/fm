@@ -8,6 +8,25 @@ fn invalid() -> Failure {
     Failure::new(ErrorCode::Invalid, "Invalid network location.")
 }
 
+/// The SMB server of a server or share address: `smb://` and its authority, host and port,
+/// in ASCII lower case, as SMB does not tell host names apart by case. A sign-in is
+/// remembered within this scope only, so it is never offered to another server or port.
+pub(super) fn sign_in_scope(key: &[u8], kind: NodeKind) -> Option<Vec<u8>> {
+    if !matches!(kind, NodeKind::Server | NodeKind::Share) {
+        return None;
+    }
+    let rest = std::str::from_utf8(key).ok()?.strip_prefix("smb://")?;
+    let authority = rest
+        .split_once('/')
+        .map_or(rest, |(authority, _)| authority);
+    if authority.is_empty() {
+        return None;
+    }
+    let mut scope = b"smb://".to_vec();
+    scope.extend(authority.bytes().map(|byte| byte.to_ascii_lowercase()));
+    Some(scope)
+}
+
 fn decoded(value: &str) -> Result<Vec<u8>, Failure> {
     let mut output = Vec::with_capacity(value.len());
     let mut bytes = value.bytes();

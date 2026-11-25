@@ -74,6 +74,7 @@ fn retained_deep_trail_arrays_fit_inside_the_node_charge() {
     let filesystem = NetworkFilesystem::<Fixture> {
         state: Arc::new(Mutex::new(State::default())),
         budget: budget.clone(),
+        sign_ins: Default::default(),
     };
     let mut trail = Vec::with_capacity(128);
     trail.push(Fixture::root());
@@ -147,6 +148,7 @@ fn rolled_back_page_releases_the_node_map_capacities_with_its_charges() {
     let filesystem = NetworkFilesystem::<Fixture> {
         state: Arc::new(Mutex::new(State::default())),
         budget: budget.clone(),
+        sign_ins: Default::default(),
     };
     let mount = Arc::new(Mount {
         closed: AtomicBool::new(false),

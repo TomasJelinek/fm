@@ -102,7 +102,7 @@ export component NetworkSignInDialog inherits Rectangle {
                     text: "Sign in"; primary: true;
                     enabled: root.input-enabled && username.text != "";
                     min-width: 72px; min-height: Theme.control-height;
-                    hint: "Connect to this network device.";
+                    hint: "Connect to this network device. Its other shares and folders use this sign-in until Midnight Explorer closes.";
                     clicked => { root.submit-fields(); }
                 }
             }

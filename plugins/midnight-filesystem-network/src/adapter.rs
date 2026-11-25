@@ -110,4 +110,10 @@ pub trait Adapter: Send + Sync + 'static {
             "Network sign-in is unavailable.",
         ))
     }
+    /// The server for which a successful sign-in to `target` is remembered for the rest of
+    /// the session (`catalog::sign_ins`): a later explicit activation of a target with the
+    /// same scope offers those credentials to its password challenge. None remembers nothing.
+    fn sign_in_scope(_: &Target) -> Option<Vec<u8>> {
+        None
+    }
 }

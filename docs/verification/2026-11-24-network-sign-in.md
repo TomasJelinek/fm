@@ -27,3 +27,22 @@ directories to another UID. Live SMB sign-in and the optional installed
 host/provider metadata smoke test could not be verified in this environment.
 The shared library built successfully, and a direct check of its exported
 descriptor reported ABI 1.5 with sign-in support.
+
+## Remembered sign-ins, 25 November 2026
+
+The dialog asked again for every share or server of a device after a sign-in. Each
+activation mounted through GVfs with `G_PASSWORD_SAVE_NEVER`, and only the one retry
+after the dialog carried credentials. The provider now remembers a successful sign-in
+for its SMB server for the rest of the session ([contract](../developer/NETWORK_FILESYSTEM.md#platform-behavior-and-tests)).
+
+| Check | Result |
+| --- | --- |
+| `catalog::sign_ins` with a fixture adapter | 4 passed. A sign-in answers later activations on the same server only; a rejected sign-in is not remembered and a rejected memory is forgotten; a newer sign-in survives the rejection of an older one; at most 32 servers. |
+| `linux::tests::a_sign_in_is_scoped_to_its_smb_server_and_port` | Passed. The scope ignores ASCII case; another port or server is another scope; containers and the root have none. |
+| GIO password challenge tests on a desktop with GIO | Passed: the supplied fields, refusal of a second response, and the no-save setting. |
+| Provider integration tests (`activation`, `catalog`, `concurrency`, `paging`) | 22 passed |
+
+The GIO tests were built in the build image and run on a desktop that has GIO. The
+five GIO directory-listing tests did not run there, because their fixture folder is
+the build image's path. They do not touch sign-in. Live SMB sign-in against a real
+server was not run.

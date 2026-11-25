@@ -51,6 +51,9 @@ impl Adapter for Linux {
     ) -> Result<api::ActivationTarget, Failure> {
         backend::activate(&gio::Gio, target, Some(credentials), context)
     }
+    fn sign_in_scope(target: &Target) -> Option<Vec<u8>> {
+        uri::sign_in_scope(&target.key, target.kind)
+    }
 }
 #[cfg(test)]
 mod tests;

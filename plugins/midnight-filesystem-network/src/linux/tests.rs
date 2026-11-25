@@ -384,3 +384,28 @@ fn activation_preserves_authentication_offline_and_cancelled_states() {
     );
     assert_eq!(fake.mounts.get(), 0);
 }
+
+#[test]
+fn a_sign_in_is_scoped_to_its_smb_server_and_port() {
+    let scope = |uri: &str| {
+        let target = Linux::manual(uri).unwrap().target;
+        Linux::sign_in_scope(&target).map(|scope| String::from_utf8(scope).unwrap())
+    };
+    // A server and its shares share one scope; SMB names ignore ASCII case.
+    assert_eq!(scope("smb://NAS/").as_deref(), Some("smb://nas"));
+    assert_eq!(scope("smb://nas/Media/").as_deref(), Some("smb://nas"));
+    assert_eq!(scope("smb://Nas/backup").as_deref(), Some("smb://nas"));
+    // Another port or another server is another scope.
+    assert_eq!(
+        scope("smb://nas:4450/share/").as_deref(),
+        Some("smb://nas:4450")
+    );
+    assert_eq!(
+        scope("smb://[fe80::1]/share/").as_deref(),
+        Some("smb://[fe80::1]")
+    );
+    assert_ne!(scope("smb://nas2/share/"), scope("smb://nas/share/"));
+    // Containers and the root remember nothing.
+    assert_eq!(Linux::sign_in_scope(&Linux::root().target), None);
+    assert_eq!(scope("smb:///"), None);
+}

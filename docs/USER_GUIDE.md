@@ -324,8 +324,11 @@ computers, and a known server can also be entered as `smb://server/` in a panel'
 On Linux, open a protected SMB device or share from Network Neighborhood to get
 the **Network sign-in** dialog. Enter your username, password and, if required, your
 domain or workgroup. **Sign in** retries opening that location. **Cancel** returns
-to the panel you were browsing. The app does not save the password. A device and
-one of its shares can each ask you to sign in.
+to the panel you were browsing. After a successful sign-in, the app remembers it
+for that device in memory until you close Midnight Explorer, so its other shares
+and folders open without asking again. It never saves the password to disk, and it
+never offers it to another device. If the device later rejects it, for example
+because the password changed, the dialog asks again.
 
 Folders that you may not read offer **Retry with authorization**: a one-time listing
 through Windows UAC or Linux polkit (`pkexec` and a desktop authentication agent) by

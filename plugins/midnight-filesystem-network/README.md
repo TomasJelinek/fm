@@ -20,8 +20,12 @@ handoff are separate outcomes. On Linux, a protected SMB server or share can be
 opened with the application's Sign in dialog. It retries the selected location
 with the supplied username, password and optional domain. Each submission can
 answer one password request. GVfs handles authentication and retains the mounted
-session. The plugin asks GVfs to keep the password out of the keyring. Windows
-sign-in is handled by its native network connection dialog.
+session. The plugin asks GVfs to keep the password out of the keyring. After a
+successful sign-in, the plugin instance remembers the credentials in memory for
+that SMB server (host and port) for the rest of the session. A later explicit
+activation of a server or share there answers its one password request with
+them. A rejection forgets them. Windows sign-in is handled by its native network
+connection dialog.
 
 On Ubuntu/Mint, local network browsing needs the desktop's runtime packages:
 

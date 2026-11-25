@@ -34,6 +34,7 @@ fn expired_cache_releases_admission_before_replacement_is_allocated() {
     let filesystem = NetworkFilesystem::<Fixture> {
         state: Arc::new(Mutex::new(State::default())),
         budget: budget.clone(),
+        sign_ins: Default::default(),
     };
     let old = Directory {
         epoch: AtomicU64::new(0),
@@ -73,6 +74,7 @@ fn retained_directory_identity_arrays_fit_inside_the_directory_charge() {
     let filesystem = NetworkFilesystem::<Fixture> {
         state: Arc::new(Mutex::new(State::default())),
         budget: budget.clone(),
+        sign_ins: Default::default(),
     };
     let mut trail = vec![Fixture::root()];
     for id in 1..64 {

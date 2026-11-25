@@ -262,7 +262,13 @@ paths do not depend on discovery availability.
 On Linux, explicit SMB activation can open an in-app sign-in dialog. The dialog
 authorizes one retry for the requested location and navigation generation. The
 host sends credentials only to its ABI 1.5 Linux network provider, after checking
-that resolving the address returned the same opaque identity. Passwords stay
+that resolving the address returned the same opaque identity. After a sign-in
+succeeds, the provider instance keeps a copy in memory for that SMB server (its
+host and port, ASCII case ignored) until the provider closes with the application,
+at most 32 servers. A later explicit activation of a server or share with the same
+scope offers the copy to that activation's password challenge, once. Listing,
+discovery and hover never receive it, nor does any other server or port. A server
+that rejects it makes the provider forget it, so the dialog asks again. Passwords stay
 out of addresses, preferences, clipboard copies, logs and events. Rust-owned
 passwords and the encoded ABI request are wiped when released. Slint, GIO and
 GVfs manage their own internal buffers. The provider requests

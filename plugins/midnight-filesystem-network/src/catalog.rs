@@ -15,6 +15,7 @@ use std::{
 };
 mod accounting;
 mod listing;
+mod sign_ins;
 mod state;
 use state::*;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -22,12 +23,15 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct NetworkFilesystem<A: Adapter> {
     state: Arc<Mutex<State<A>>>,
     budget: Arc<Budget>,
+    /// Successful sign-ins, kept per server for the rest of the session.
+    sign_ins: sign_ins::SignIns,
 }
 impl<A: Adapter> Filesystem for NetworkFilesystem<A> {
     fn create(_: abi::Config) -> Result<Self, Failure> {
         Ok(Self {
             state: Arc::new(Mutex::new(State::default())),
             budget: shared_budget(),
+            sign_ins: sign_ins::SignIns::default(),
         })
     }
     fn handle(&self, request: Request, context: &CallContext<'_>) -> Result<Reply, Failure> {
@@ -242,10 +246,8 @@ impl<A: Adapter> NetworkFilesystem<A> {
         context.check()?;
         let _permit = DiscoveryPermit::acquire()?;
         let target = &node.location.trail.last().ok_or_else(stale)?.target;
-        let activation = match credentials {
-            Some(credentials) => A::sign_in(target, credentials, &context)?,
-            None => A::activate(target, &context)?,
-        };
+        // Submitted credentials, else those remembered for the target's server.
+        let (activation, signed_in) = self.sign_ins.activate::<A>(target, credentials, &context)?;
         context.check()?;
         let activation = match activation {
             ActivationTarget::WithinProvider(address)
@@ -253,7 +255,7 @@ impl<A: Adapter> NetworkFilesystem<A> {
                     && address.bytes == target.key
                     && target.kind != NodeKind::Share =>
             {
-                if credentials.is_some() {
+                if signed_in {
                     let directory = lock(&self.state).directories.get(&node.key).cloned();
                     if let Some(directory) = directory {
                         self.invalidate_directory(&directory)?;
