@@ -274,9 +274,12 @@ fn a_reply_that_extends_the_page_needs_no_further_request() {
 }
 
 /// Wheel steps that come while the request past the page waits: further down, the viewer
-/// still continues at the page boundary; back up, it stays on the page and scrolls back.
+/// still continues at the page boundary, and the steps move on from the page there; back
+/// up, it stays on the page and scrolls back.
 #[test]
 fn motion_that_turned_back_meanwhile_stays_on_the_page_instead_of_the_seam() {
+    // The ID a session gives the request for the page past the table.
+    const SEAM: u64 = 8;
     for back in [false, true] {
         let (mut worker, output) = markdown_worker();
         let table = table_page(&worker);
@@ -292,7 +295,9 @@ fn motion_that_turned_back_meanwhile_stays_on_the_page_instead_of_the_seam() {
         assert!(unsent::take().is_empty(), "the step waits for the reply");
         // The same window again: the reply cannot pass the table.
         worker.received_page(id, table.clone(), &output);
+        unsent::admit_from(Some(SEAM));
         worker.event(id, EventKind::Completed, &output);
+        unsent::admit_from(None);
         let requests = unsent::take();
         assert_eq!(worker.page.as_ref().unwrap().start, table.start);
         if back {
@@ -308,6 +313,19 @@ fn motion_that_turned_back_meanwhile_stays_on_the_page_instead_of_the_seam() {
             assert_eq!(requests.len(), 1, "{requests:?}");
             assert_eq!(requests[0].source_anchor, table.end);
             assert!(!requests[0].backwards);
+            assert_eq!(worker.viewport_request, Some(SEAM));
+            // A step down while that request waits waits for its page too.
+            worker.input(ViewerInput::Scroll { x: 0.0, y }, &output);
+            assert!(unsent::take().is_empty(), "the step waits for the page");
+            let following = following_page(&worker, table.end);
+            worker.received_page(SEAM, following, &output);
+            worker.event(SEAM, EventKind::Completed, &output);
+            assert_eq!(worker.page.as_ref().unwrap().start, table.end);
+            assert!(height(&worker) - GEOMETRY.height as f32 >= 2.0 * y);
+            // Both steps move on from the page's top: neither is lost with the request it
+            // waited for.
+            assert_eq!(worker.origin[1], 2.0 * y);
+            assert!(unsent::take().is_empty());
         }
     }
 }

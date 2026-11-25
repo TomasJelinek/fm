@@ -241,11 +241,14 @@ unless it is shorter than the window. A refill that would read no new row is not
 a camera outside its page asks for a page holding it without a guard when a guarded one
 cannot advance. Pages that fill the window and a guard below it, and pages of shorter
 rows, keep their range: a small fragment of short rows still takes the viewport path when
-its camera cannot pass a row. Known limit: very long rows (8000 bytes, say) still leave
-most of the window blank, since a page of 120 KiB holds only about fifteen of them. Tests:
-`worker_long_row_tests.rs` (rows of 1200, 2400 and 8000 bytes and a mixed file, in Text
-and Source, wrapped and unwrapped: every gesture moves its whole distance) and
-`worker_chain_tests.rs`.
+its camera cannot pass a row. Known limit: at rest after an opening or a scrollbar
+position, an unwrapped page of very long rows holds only what one request reads. With
+8000-byte rows that is fifteen rows, 261 of a 720-pixel window, and the rest stays blank
+until a gesture. Each refill of a gesture grows such a page (row groups, above), so every
+gesture fills the window (`rows_of_8000_bytes_fill_the_window_at_rest`, ignored while
+the limit stands). Tests: `worker_long_row_tests.rs` (rows of 1200, 2400 and 8000 bytes
+and a mixed file, in Text and Source, wrapped and unwrapped: every gesture moves its whole
+distance; rows of 2400 bytes fill the window at rest) and `worker_chain_tests.rs`.
 
 A scrollbar position's first read estimates the target from the shown page's density,
 and one correction read is allowed (`refine_position`); Source places its camera on a

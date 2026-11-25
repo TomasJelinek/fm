@@ -197,27 +197,47 @@ mod rows_of_2400_bytes_fill_the_window_at_rest {
 
     #[test]
     fn text() {
-        fills_the_window_at_rest(viewer::MODE_TEXT);
+        fills_the_window_at_rest(viewer::MODE_TEXT, rows(1_500_000 / 2400, 2400));
     }
 
     #[test]
     fn source() {
-        fills_the_window_at_rest(viewer::MODE_SOURCE);
+        fills_the_window_at_rest(viewer::MODE_SOURCE, rows(1_500_000 / 2400, 2400));
     }
 }
 
-fn fills_the_window_at_rest(mode: u16) {
-    let source = rows(1_500_000 / 2400, 2400);
+/// Known limit. One request reads fifteen rows of 8000 bytes (`viewport::PAGE_BYTES`), a
+/// third of the window's 44: after an opening or a scrollbar position they cover 261 of its
+/// 720 pixels, and 459 stay blank until a gesture grows the page (row groups take a
+/// request's bytes per refill, `worker_chain::Budget`). Every gesture fills the window.
+mod rows_of_8000_bytes_fill_the_window_at_rest {
+    use super::*;
+
+    #[test]
+    #[ignore = "known limit: a page of 8000-byte rows fills the window only after a gesture"]
+    fn text() {
+        fills_the_window_at_rest(viewer::MODE_TEXT, rows(8_000_000 / 8000, 8000));
+    }
+
+    #[test]
+    #[ignore = "known limit: a page of 8000-byte rows fills the window only after a gesture"]
+    fn source() {
+        fills_the_window_at_rest(viewer::MODE_SOURCE, rows(8_000_000 / 8000, 8000));
+    }
+}
+
+fn fills_the_window_at_rest(mode: u16, source: String) {
     let screen = f64::from(SIZE.height);
     let mut engine = Engine::open(source, mode, SIZE, 1);
     let mut window = Window::default();
     rest(&mut engine, &mut window);
+    let mut blank = vec![blank_below_rows(&engine)];
     window.seek(&mut engine, 0.5);
     assert!(
-        settle(&mut engine, &mut window),
+        settle(&mut engine, &mut window) && window.acknowledged == window.position_sequence(),
         "mode {mode}: the position rests"
     );
-    let mut blank = vec![blank_below_rows(&engine)];
+    blank.push(blank_below_rows(&engine));
     for (inputs, repeat) in [
         (vec![(screen, true)], 4),
         (vec![(NOTCH, false); 5], 4),

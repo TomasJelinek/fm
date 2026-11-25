@@ -161,6 +161,12 @@ impl RelativeMotion {
         self.steps.push_back(step);
     }
 
+    /// Defer `steps`, taken from the owner they waited for, under `owner`.
+    fn defer_all(&mut self, owner: MotionOwner, steps: VecDeque<ScrollStep>) {
+        self.adopt(owner);
+        self.steps.extend(steps);
+    }
+
     fn stage_page(&mut self, id: u64, page: Page) {
         if !matches!(self.owner, Some(MotionOwner::Rebase(_))) {
             self.adopt(MotionOwner::Viewport(id));
@@ -1758,19 +1764,28 @@ impl Worker {
                     {
                         self.seek_position(sequence, position, output);
                     }
+                    let viewport_motion = MotionOwner::Viewport(id);
                     if let Some((anchor, backwards)) = self.seam.take()
                         && completed
                         && self.viewport_request.is_none()
                         // Motion that came meanwhile and turned back wins: it is replayed
                         // on this page below, instead of a jump past the edge.
-                        && !self.motion.reverses(MotionOwner::Viewport(id), backwards)
+                        && !self.motion.reverses(viewport_motion, backwards)
                     {
                         // Continue at the edge the reply could not pass, once: this
                         // request carries no continuation, so a reply that still cannot
-                        // advance ends there. Deferred motion then waits for its page.
+                        // advance ends there. Motion deferred meanwhile goes on from the
+                        // page at that edge: a new request retires it, so it is deferred
+                        // again under that one (none admitted: it is dropped, as before).
+                        let steps = self.motion.take_steps(viewport_motion);
                         self.request_page(anchor, backwards, output);
+                        if let Some(seam) = self
+                            .viewport_request
+                            .filter(|_| !source_position && !steps.is_empty())
+                        {
+                            self.motion.defer_all(MotionOwner::Viewport(seam), steps);
+                        }
                     }
-                    let viewport_motion = MotionOwner::Viewport(id);
                     if !source_position && completed {
                         self.resume_motion(viewport_motion, output);
                     } else {
