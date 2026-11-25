@@ -819,8 +819,8 @@ fn owner_copy() -> OperationRow {
     copy.file_percent = "63%".into();
     copy.file_progress_title = "Current file written".into();
     copy.file_progress_label = "Current file written: 1,353,711,616 / 2,148,532,224 bytes".into();
-    copy.write_speed = "write 187.0 MiB/s".into();
-    copy.verify_speed = "verify 160.4 MiB/s".into();
+    copy.write_speed = "187.0 MiB/s".into();
+    copy.verify_speed = "160.4 MiB/s".into();
     copy.transfer_speed_chart = SpeedChartData {
         area: "M 0 100 L 0 62 L 100 30 L 200 55 L 300 41 L 400 48 L 500 22 L 600 44 L 700 39 L 800 47 L 900 40 L 1000 43 L 1000 100 Z".into(),
         primary: "M 0 62 L 100 30 L 200 55 L 300 41 L 400 48 L 500 22 L 600 44 L 700 39 L 800 47 L 900 40 L 1000 43".into(),
@@ -863,16 +863,52 @@ const APPEARANCES: [(i32, i32, i32); 6] = [
 ];
 const SIZES: [(usize, usize); 3] = [(1100, 820), (640, 420), (420, 360)];
 
-/// The speeds sit beside the headline on its line, and neither moves while the
-/// percentage and the rates change, nor when a rate is not measured ("—").
+/// The labels of every text in the window, shown or not.
+fn text_labels(window: &midnight_ui::JobProgressWindow) -> Vec<String> {
+    fn walk(item: ItemRc, labels: &mut Vec<String>) {
+        if item.accessible_role() == AccessibleRole::Text
+            && let Some(label) = item.accessible_string_property(AccessibleStringProperty::Label)
+        {
+            labels.push(label.to_string());
+        }
+        let mut child = item.first_child();
+        while let Some(next) = child {
+            child = next.next_sibling();
+            walk(next, labels);
+        }
+    }
+    let mut labels = Vec::new();
+    walk(
+        ItemRc::new_root(i_slint_core::window::WindowInner::from_pub(window.window()).component()),
+        &mut labels,
+    );
+    labels
+}
+
+/// A running Copy's write and verify speeds are in its chart's legend, not beside the
+/// percentage: the rates its time estimate averages, not the chart's latest interval.
+/// Neither label moves while the percentage and the rates change, nor when a rate is
+/// not measured ("—"). Without an averaged rate (copies read back by samples, a
+/// paused job) the legend shows the chart's latest interval, which the backend zeroes
+/// once the job stops.
 #[test]
-fn the_speeds_beside_the_headline_hold_still_while_their_values_change() {
+fn the_write_and_verify_speeds_are_in_the_chart_legend_and_hold_still() {
     let mut test = ui::TestUi::new();
+    let running = |headline: &str, write: &str, verify: &str| {
+        let mut copy = owner_copy();
+        copy.progress_label = headline.into();
+        // The chart's latest interval differs from every averaged rate below.
+        copy.transfer_speed_chart.speed = "999.0 MiB/s".into();
+        copy.transfer_speed_chart.verification_speed = "998.0 MiB/s".into();
+        copy.write_speed = write.into();
+        copy.verify_speed = verify.into();
+        copy
+    };
     let states = [
-        ("9% complete", "write —", "verify —"),
-        ("42% complete", "write 187.0 MiB/s", "verify 160.4 MiB/s"),
-        ("99% complete", "write 1,023.9 KiB/s", "verify 1.2 GiB/s"),
-        ("100% complete", "write 8.5 B/s", "verify —"),
+        ("9% complete", "—", "—"),
+        ("42% complete", "187.0 MiB/s", "160.4 MiB/s"),
+        ("99% complete", "1,023.9 KiB/s", "1.2 GiB/s"),
+        ("100% complete", "8.5 B/s", "—"),
     ];
     for (scheme, density, font) in APPEARANCES {
         test.window
@@ -881,56 +917,79 @@ fn the_speeds_beside_the_headline_hold_still_while_their_values_change() {
             let size = format!("theme {scheme}, density {density}, font {font}, {width}x{height}");
             let mut places = None;
             for (headline, write, verify) in states {
-                let mut copy = owner_copy();
-                copy.progress_label = headline.into();
-                copy.write_speed = write.into();
-                copy.verify_speed = verify.into();
-                test.window.set_job(copy);
+                test.window.set_job(running(headline, write, verify));
                 test.resize(width, height);
-                let label = ui::popup_item(&test.window, headline, AccessibleRole::Text);
-                let write =
-                    ui::popup_item(&test.window, &format!(" · {write}"), AccessibleRole::Text);
-                let verify =
-                    ui::popup_item(&test.window, &format!(" · {verify}"), AccessibleRole::Text);
-                let (label_rect, write_rect, verify_rect) = (
-                    native_rect(&label),
-                    native_rect(&write),
-                    native_rect(&verify),
-                );
+                let rect = |label: &str| {
+                    native_rect(&ui::popup_item(&test.window, label, AccessibleRole::Text))
+                };
+                let headline_rect = rect(headline);
+                let write_rect = rect(&format!("Write: {write}"));
+                let verify_rect = rect(&format!("Verify: {verify}"));
+                let chart = native_rect(&ui::popup_item(
+                    &test.window,
+                    "Transfer speed",
+                    AccessibleRole::Groupbox,
+                ));
+                for (what, line) in [("write", write_rect), ("verify", verify_rect)] {
+                    assert!(
+                        line.1 >= chart.1 - 0.5 && line.1 + line.3 <= chart.1 + chart.3 + 0.5,
+                        "the {what} speed in the chart: {size}"
+                    );
+                    assert!(
+                        line.1 >= headline_rect.1 + headline_rect.3,
+                        "the {what} speed under the percentage, not beside it: {size}"
+                    );
+                }
                 // One line, in reading order, inside the window.
                 assert!(
-                    (label_rect.1 + label_rect.3 - (write_rect.1 + write_rect.3)).abs() <= 1.0,
-                    "same line: {size}"
+                    (write_rect.1 - verify_rect.1).abs() <= 0.5,
+                    "one line: {size}"
                 );
-                assert!(label_rect.0 + label_rect.2 <= write_rect.0 + 0.5, "{size}");
                 assert!(write_rect.0 + write_rect.2 <= verify_rect.0 + 0.5, "{size}");
                 assert!(
                     verify_rect.0 + verify_rect.2 <= width as f32,
                     "inside: {size}"
                 );
-                let place = (write_rect.0, verify_rect.0, verify_rect.2);
+                // Each measured rate shows once, in the legend; the chart's interval not.
+                let labels = text_labels(&test.window);
+                for rate in [write, verify].into_iter().filter(|rate| *rate != "—") {
+                    assert_eq!(
+                        labels.iter().filter(|label| label.contains(rate)).count(),
+                        1,
+                        "{rate} once: {labels:?}"
+                    );
+                }
+                assert!(
+                    !labels
+                        .iter()
+                        .any(|label| label.contains("999.0") || label.contains("998.0")),
+                    "the chart's interval: {labels:?}"
+                );
+                // Neither label moves nor resizes while the numbers change.
+                let place = (write_rect.0, write_rect.2, verify_rect.0, verify_rect.2);
                 assert_eq!(*places.get_or_insert(place), place, "no shift: {size}");
             }
             test.snapshot(&format!("speeds-{scheme}-{density}-{font}"));
         }
     }
-    // Without a sampled or full readback only the write speed shows; paused, none.
-    let mut copy = owner_copy();
-    copy.verify_speed = "".into();
-    test.window.set_job(copy.clone());
+    // Copies read back by samples: the estimate averages no verify rate, so the
+    // chart's latest interval shows.
+    test.window
+        .set_job(running("42% complete", "187.0 MiB/s", ""));
     test.draw();
-    ui::popup_item(&test.window, " · write 187.0 MiB/s", AccessibleRole::Text);
-    assert!(
-        ui::find_popup_item(&test.window, " · verify 160.4 MiB/s", AccessibleRole::Text).is_none()
-    );
-    copy.write_speed = "".into();
-    copy.progress_label = "Paused".into();
-    test.window.set_job(copy);
+    ui::popup_item(&test.window, "Write: 187.0 MiB/s", AccessibleRole::Text);
+    ui::popup_item(&test.window, "Verify: 998.0 MiB/s", AccessibleRole::Text);
+    // Paused: no averaged rates, and the backend has zeroed the latest interval.
+    let mut paused = running("Paused", "", "");
+    paused.paused = true;
+    paused.pause_requested = true;
+    paused.transfer_speed_chart.speed = "0 B/s".into();
+    paused.transfer_speed_chart.verification_speed = "0 B/s".into();
+    test.window.set_job(paused);
     test.draw();
     ui::popup_item(&test.window, "Paused", AccessibleRole::Text);
-    assert!(
-        ui::find_popup_item(&test.window, " · write 187.0 MiB/s", AccessibleRole::Text).is_none()
-    );
+    ui::popup_item(&test.window, "Write: 0 B/s", AccessibleRole::Text);
+    ui::popup_item(&test.window, "Verify: 0 B/s", AccessibleRole::Text);
 }
 
 /// A Copy or Move shows its time remaining right under its percentage, with nothing

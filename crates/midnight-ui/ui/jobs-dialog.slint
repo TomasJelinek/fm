@@ -38,8 +38,9 @@ export struct OperationRow {
     // last part and the name's end.
     transfer-directory-tail: string, transfer-name-tail: string,
     transfer-speed-chart: SpeedChartData,
-    // Beside a running transfer's headline: "write 187.0 MiB/s" and, when it reads its
-    // copies back in full, "verify 160.4 MiB/s" ("write —" until a rate is measured).
+    // In a running transfer's speed chart legend, the rates its estimate averages:
+    // "187.0 MiB/s" written and, when it reads its copies back in full, "160.4 MiB/s"
+    // verified ("—" until a rate is measured). Empty while the job does not run.
     write-speed: string, verify-speed: string,
     // `transfer-outcome` serves every kind of job: once a job ended without completing
     // cleanly, what it did and did not do. The errors it reported, and their count.

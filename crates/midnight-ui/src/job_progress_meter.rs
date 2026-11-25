@@ -157,33 +157,33 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
     meter
 }
 
-/// The smoothed rates the estimate uses, beside the headline while the job runs:
-/// "write 187.0 MiB/s" and, when the job reads its copies back in full (SHA-256),
-/// "verify 160.4 MiB/s". Both show together, so the line never switches between
-/// them; a rate not measured yet, or zero for now, shows "—" in its place. Nothing
-/// while the job is paused, waits, needs a decision, is being cancelled or has
-/// ended, nor for a Move that only renames entries (it writes no bytes).
+/// The smoothed rates the estimate uses, in the speed chart's legend while the job
+/// runs: the write rate ("187.0 MiB/s") and, when the job reads its copies back in
+/// full (SHA-256), the verify rate ("160.4 MiB/s"). A rate not measured yet, or zero
+/// for now, is "—". Nothing while the job is paused, waits, needs a decision, is
+/// being cancelled or has ended, nor for a Move that only renames entries (it
+/// writes no bytes): the legend then shows the chart's latest interval.
 fn copy_speeds(p: &CopyProgress, locale: &NumberLocale) -> (SharedString, SharedString) {
     let renames_only = p.native_entries_moved > 0 && p.copied_bytes == 0;
     if p.state != CopyOperationState::Running || p.paused || p.wait_reason.is_some() || renames_only
     {
         return Default::default();
     }
-    let rate = |caption: &str, value: f64| -> SharedString {
+    let rate = |value: f64| -> SharedString {
         if value.is_finite() && value >= 1.0 {
             let bytes = value.min(u64::MAX as f64).round() as u64;
-            format!("{caption} {}/s", crate::format_size(bytes, locale)).into()
+            format!("{}/s", crate::format_size(bytes, locale)).into()
         } else {
-            format!("{caption} —").into()
+            "—".into()
         }
     };
     let rates = &p.throughput;
     let verify = if p.verification == midnight_core::TransferVerification::FullSha256 {
-        rate("verify", rates.smoothed_verification_per_second)
+        rate(rates.smoothed_verification_per_second)
     } else {
         SharedString::default()
     };
-    (rate("write", rates.smoothed_transfer_per_second), verify)
+    (rate(rates.smoothed_transfer_per_second), verify)
 }
 
 /// Remaining seconds from the backend's smoothed rates: from bytes when the job has
@@ -610,7 +610,7 @@ mod tests {
         assert!(copy(&p, &NumberLocale::default()).eta.starts_with('~'));
     }
     #[test]
-    fn running_copies_show_their_smoothed_write_and_full_readback_rates_side_by_side() {
+    fn running_copies_show_their_smoothed_write_and_full_readback_rates() {
         let speeds = |p: &CopyProgress, locale: &NumberLocale| {
             let meter = copy(p, locale);
             (
@@ -621,8 +621,8 @@ mod tests {
         let locale = NumberLocale::default();
         let mut p = transfer();
         p.verification = midnight_core::TransferVerification::FullSha256;
-        // Nothing measured yet: both places hold a dash.
-        assert_eq!(speeds(&p, &locale), ("write —".into(), "verify —".into()));
+        // Nothing measured yet: both rates are a dash.
+        assert_eq!(speeds(&p, &locale), ("—".into(), "—".into()));
         // The estimate's smoothed rates, not the momentary ones.
         p.throughput = Arc::new(OperationThroughput {
             transfer_per_second: 999.0,
@@ -633,25 +633,22 @@ mod tests {
         });
         assert_eq!(
             speeds(&p, &locale),
-            ("write 187.0 MiB/s".into(), "verify 160.4 MiB/s".into())
+            ("187.0 MiB/s".into(), "160.4 MiB/s".into())
         );
-        // A rate that is zero for now keeps its place.
+        // A rate that is zero for now is a dash, not the chart's interval.
         Arc::make_mut(&mut p.throughput).smoothed_verification_per_second = 0.0;
-        assert_eq!(speeds(&p, &locale).1, "verify —");
+        assert_eq!(speeds(&p, &locale).1, "—");
         Arc::make_mut(&mut p.throughput).smoothed_verification_per_second = f64::NAN;
-        assert_eq!(speeds(&p, &locale).1, "verify —");
+        assert_eq!(speeds(&p, &locale).1, "—");
         // The locale's decimal separator.
         let comma = NumberLocale {
             decimal_separator: ",".into(),
             ..Default::default()
         };
-        assert_eq!(speeds(&p, &comma).0, "write 187,0 MiB/s");
+        assert_eq!(speeds(&p, &comma).0, "187,0 MiB/s");
         // Sampled readback is a few KiB per file: the write rate alone.
         p.verification = midnight_core::TransferVerification::SizeAndSamples;
-        assert_eq!(
-            speeds(&p, &locale),
-            ("write 187.0 MiB/s".into(), String::new())
-        );
+        assert_eq!(speeds(&p, &locale), ("187.0 MiB/s".into(), String::new()));
         p.verification = midnight_core::TransferVerification::FullSha256;
         // A pause, a wait, a decision, a cancellation and the end show none.
         let mut paused = p.clone();
@@ -676,14 +673,14 @@ mod tests {
         // Pausing runs on to its checkpoint and keeps the rates until then.
         let mut pausing = p.clone();
         pausing.pause_requested = true;
-        assert_eq!(speeds(&pausing, &locale).0, "write 187.0 MiB/s");
+        assert_eq!(speeds(&pausing, &locale).0, "187.0 MiB/s");
         // A Move that only renames writes no bytes.
         let mut renamed = p.clone();
         renamed.intent = TransferIntent::Move;
         renamed.native_entries_moved = 3;
         assert_eq!(speeds(&renamed, &locale), Default::default());
         renamed.copied_bytes = 1;
-        assert_eq!(speeds(&renamed, &locale).0, "write 187.0 MiB/s");
+        assert_eq!(speeds(&renamed, &locale).0, "187.0 MiB/s");
     }
 }
 

@@ -16,6 +16,18 @@ export component OperationSpeedChart inherits Rectangle {
     in property <float> progress;
     in property <string> progress-label;
     in property <string> waiting-label: "Waiting for activity";
+    // A running Copy or Move's rates as its time estimate averages them ("187.0 MiB/s",
+    // "—" until measured): the legend shows them instead of the latest interval. Empty
+    // while the job does not run, and the verify rate unless copies are read back in
+    // full: the legend then shows the chart's latest interval, which the backend sets
+    // to zero once the job stops.
+    in property <string> write-rate;
+    in property <string> verify-rate;
+    // The speeds a transfer's legend shows, and its accessible value reads.
+    private property <string> shown-write: root.write-rate != "" ? root.write-rate
+        : root.chart.speed == "" ? "0 B/s" : root.chart.speed;
+    private property <string> shown-verify: root.verify-rate != "" ? root.verify-rate
+        : root.chart.verification-speed == "" ? "0 B/s" : root.chart.verification-speed;
     private property <float> history-fraction: root.overall-progress && root.determinate
         ? clamp(root.progress, 0, 1) : 1;
     private property <bool> compact: root.height < 75px;
@@ -24,28 +36,33 @@ export component OperationSpeedChart inherits Rectangle {
     private property <string> explanation: root.deletion
         ? "Reported deleted items per second, including folders. System Trash may report only top-level items. The graph covers the entire operation from time zero; older intervals retain peak speeds. The scale rises at once to fit a faster speed and comes down one round step at a time, only after the speed stayed well below it for 10 seconds; an older peak above it is cut off at the top."
         : root.chart.native-move ? "Native renames per second. A whole renamed folder counts once; descendants are not enumerated and no content is copied. The graph retains the entire operation."
-        : "Write: bytes written per second. Verify: destination readback and additional Move validation reads under the job's selected policy. The graph covers the entire operation from time zero; older intervals retain peak speeds. The scale rises at once to fit a faster speed and comes down one round step at a time, only after the speed stayed well below it for 10 seconds; an older peak above it is cut off at the top. Current labels show the latest measured interval, not a completion percentage.";
+        : "Write: bytes written per second. Verify: destination readback and additional Move validation reads under the job's selected policy. The graph covers the entire operation from time zero; older intervals retain peak speeds. The scale rises at once to fit a faster speed and comes down one round step at a time, only after the speed stayed well below it for 10 seconds; an older peak above it is cut off at the top. While the job runs, the labels show its speeds averaged over the last few seconds, as its time estimate uses them (Verify only when copies are read back in full); otherwise they show the latest measured interval. They are speeds, not a completion percentage.";
     accessible-role: groupbox;
     accessible-label: root.deletion ? "Deletion speed" : "Transfer speed";
-    accessible-value: root.chart.description;
+    // The backend's description names the latest interval; with the averaged rates
+    // in the legend, the value reads those instead.
+    accessible-value: root.write-rate == "" && root.verify-rate == "" ? root.chart.description
+        : "Write: " + root.shown-write + ". Verify: " + root.shown-verify + ". " + root.chart.history + ".";
     min-width: 0px; min-height: 0px;
     VerticalLayout {
         spacing: root.compact ? 2px : 5px;
         HorizontalLayout {
             spacing: 8px; cross-axis-alignment: center;
             Rectangle { width: 8px; height: 8px; background: Theme.active-frame; }
+            // Each label takes an equal share of the line whatever its value, so
+            // neither moves while the speeds change; a share too narrow elides.
             Text {
                 text: root.deletion ? "Deleted: " + (root.chart.speed == "" ? "0 items/s" : root.chart.speed)
                     : root.chart.native-move ? "Renamed: " + root.chart.speed
-                    : "Write: " + (root.chart.speed == "" ? "0 B/s" : root.chart.speed);
+                    : "Write: " + root.shown-write;
                 color: Theme.strong-text; font-size: Theme.small-font; overflow: elide;
-                horizontal-stretch: 1;
+                horizontal-stretch: 1; preferred-width: 0px; min-width: 0px;
             }
             if !root.deletion && !root.chart.native-move : Rectangle { width: 10px; height: 2px; background: Theme.pending-size; }
             if !root.deletion && !root.chart.native-move : Text {
-                text: "Verify: " + (root.chart.verification-speed == "" ? "0 B/s" : root.chart.verification-speed);
+                text: "Verify: " + root.shown-verify;
                 color: Theme.strong-text; font-size: Theme.small-font; overflow: elide;
-                horizontal-stretch: 1;
+                horizontal-stretch: 1; preferred-width: 0px; min-width: 0px;
             }
             // At the chart's top right corner, above it: the chart's explanation.
             ChartInfoButton {

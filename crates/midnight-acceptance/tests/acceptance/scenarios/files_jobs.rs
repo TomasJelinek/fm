@@ -1,10 +1,10 @@
 //! Copy jobs side by side and their windows: "Wait for earlier transfers" off (a
 //! second job runs at once beside a paused one) and on (a third waits for the
 //! paused one and runs after it), the Jobs window's states and its Cancel job, the
-//! progress window's totals, time remaining (held while paused), speed chart and
-//! per-file progress, Cancel operation (its question, Escape keeping the job, a waiting
-//! Move cancelled in its own words), the Jobs window's two Clear buttons, and the job
-//! windows' wording.
+//! progress window's time remaining (held while paused), totals, speed chart (the
+//! write and verify speeds in its legend) and per-file progress, Cancel operation
+//! (its question, Escape keeping the job, a waiting Move cancelled in its own words),
+//! the Jobs window's two Clear buttons, and the job windows' wording.
 use crate::{
     Context,
     app::{self, App, Config},
@@ -595,20 +595,27 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
         },
     )?;
     let window4 = new_window(&mut app, "Copy", before)?;
-    // Running, the headline shows the write speed beside the percentage (and the
-    // verify speed with the default SHA-256 readback), "—" until one is measured.
-    // A measured rate, once a second of copying averaged it; until then a dash.
+    // Running, the speed chart's legend shows the write speed (and the verify speed
+    // with the default SHA-256 readback) that the estimate averages, "—" until one is
+    // measured, and nothing sits beside the percentage. A measured rate, once a
+    // second of copying averaged it; until then a dash.
     let speed = wait_text(&mut app, &window4, Duration::from_secs(10), |text| {
-        text.starts_with(" · write ") && !text.ends_with('—')
+        text.starts_with("Write: ") && !text.ends_with('—') && text != "Write: 0 B/s"
     })
     .or_else(|| {
         wait_text(&mut app, &window4, Duration::from_secs(20), |text| {
-            text.starts_with(" · write ")
+            text.starts_with("Write: ")
         })
     });
-    let verify = texts(&window4)
+    let running = texts(&window4);
+    let verify = running
+        .iter()
+        .find(|text| text.starts_with("Verify: "))
+        .cloned();
+    let beside: Vec<_> = running
         .into_iter()
-        .find(|text| text.starts_with(" · verify "));
+        .filter(|text| text.starts_with(" · write ") || text.starts_with(" · verify "))
+        .collect();
     // Paused in the middle of the file, the window holds still for reading.
     pause(&mut app, &window4, large, "the large file's copy")?;
     let shown = texts(&window4);
@@ -640,11 +647,26 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     match (&speed, &verify) {
         (Some(_), Some(_)) => {}
         _ => failures.push(format!(
-            "the running copy showed no write and verify speeds beside its percentage: {speed:?}, {verify:?}"
+            "the running copy's speed chart showed no write and verify speeds: {speed:?}, {verify:?}"
         )),
     }
-    if has(" · write ") {
-        failures.push(format!("a paused copy still shows a speed: {shown:?}"));
+    if !beside.is_empty() {
+        failures.push(format!(
+            "a speed still sits beside the percentage: {beside:?}"
+        ));
+    }
+    // Paused, the legend shows no speed: the averaged rates go at once, and the
+    // backend zeroes the chart's latest interval by its next sample.
+    if wait_text(&mut app, &window4, Duration::from_secs(5), |text| {
+        text == "Write: 0 B/s"
+    })
+    .is_none()
+    {
+        let legend: Vec<_> = texts(&window4)
+            .into_iter()
+            .filter(|text| text.starts_with("Write: "))
+            .collect();
+        failures.push(format!("a paused copy still shows a speed: {legend:?}"));
     }
     if tools::has(window4.window(), AccessibleRole::Button, "Details") {
         failures.push("the progress window still offers Details".into());

@@ -603,18 +603,20 @@ ETA is not a guarantee against future stalls or conflicts. See the
 [work-accounting evidence](../verification/2026-11-12-transfer-eta.md).
 
 Copy and byte-transfer Move display bytes/s (IEC units) with independent
-verification activity. Beside the headline (`42% complete · write 187.0 MiB/s ·
-verify 160.4 MiB/s`) a running Copy or Move shows the smoothed rates its estimate uses
-(`smoothed_transfer_per_second` and `smoothed_verification_per_second`, averaged over
-about eight seconds of activity), formatted as the app's sizes in the number locale.
-The verify rate shows when the job reads its copies back in full (SHA-256; sampled
-readback reads a few KiB per file). Both show at once instead of alternating with the
-phase, a rate not measured yet or zero for now reads `—` in its place, and the headline
-and each rate keep the width of their widest value (`100% complete`, `write 8,888.8
-MiB/s`), so the line does not move as the numbers change (`write_speed` and
-`verify_speed` of `OperationRow`, from `copy_speeds` in `job_progress_meter.rs`). A
-paused, waiting, deciding, cancelling or ended job, and a Move that only renames
-entries, shows no rates; its headline says why. Native same-volume Move displays
+verification activity. The headline shows the percentage alone; the speed chart's
+legend (`Write: 187.0 MiB/s`, `Verify: 160.4 MiB/s`) shows a running Copy or Move's
+smoothed rates, the ones its estimate uses (`smoothed_transfer_per_second` and
+`smoothed_verification_per_second`, averaged over about eight seconds of activity),
+formatted as the app's sizes in the number locale. The averaged verify rate shows when
+the job reads its copies back in full (SHA-256; sampled readback reads a few KiB per
+file). A rate not measured yet or zero for now reads `—`, and each legend label takes
+an equal share of its line whatever its value, so neither moves as the numbers change
+(`write_speed` and `verify_speed` of `OperationRow`, from `copy_speeds` in
+`job_progress_meter.rs`, as the chart's `write-rate` and `verify-rate`). A paused,
+waiting, deciding, cancelling or ended job, and a Move that only renames entries, has
+no averaged rates, nor has the verify label of a sampled readback: the legend then
+shows the chart's latest interval, which the backend zeroes once the job stops
+(`0 B/s`), and the headline says why the job does not run. Native same-volume Move displays
 renamed items/s. Delete displays items/s, as Windows Explorer does. Current source
 and destination are retained in Copy details; Delete shows its current item and
 remaining count. Each
