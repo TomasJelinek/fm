@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::RefCell;
 use std::time::Duration;
 
 fn header(sequence: u64) -> api::Header {
@@ -203,6 +204,36 @@ fn finish_ends_the_writer_after_queued_events_without_a_closed_event() {
     output.finish();
     assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(1));
     reader.join().unwrap();
+}
+
+thread_local! {
+    /// Runs once on the reader's thread after a pass found every queue empty and
+    /// before it decides whether to end, so a test can interleave the sender there.
+    static QUEUES_EMPTY: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+pub(super) fn pass_found_queues_empty() {
+    if let Some(hook) = QUEUES_EMPTY.with_borrow_mut(Option::take) {
+        hook();
+    }
+}
+
+#[test]
+fn closed_emitted_before_finish_is_written_when_it_races_the_empty_checks() {
+    let (output, mut receiver) = channel();
+    let sender = output.clone();
+    // The browser closes after the reader found the queues empty but before the
+    // reader looked at `finished`: Closed and finish() were both published by then.
+    QUEUES_EMPTY.set(Some(Box::new(move || {
+        sender.emit(header(1), api::EventKind::Closed);
+        sender.finish();
+    })));
+    let event = receiver.next(&output);
+    assert_eq!(
+        event.map(|event| event.kind),
+        Some(api::EventKind::Closed),
+        "an event emitted before finish() must be written before the writer ends"
+    );
+    assert!(receiver.next(&output).is_none());
 }
 
 fn view(value: u8) -> (api::Header, api::Frame, ViewPaint) {

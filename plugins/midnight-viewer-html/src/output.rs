@@ -185,6 +185,10 @@ impl Output {
 impl Receiver {
     pub(crate) fn next(&mut self, output: &Output) -> Option<api::Event> {
         loop {
+            // Read before the queues: every event emitted before `finish()` is then
+            // visible to this pass. Reading it after the empty checks could end the
+            // writer before an event (such as Closed) queued just before `finish()`.
+            let finished = output.finished.load(Ordering::Acquire);
             // Resource/state traffic must not starve an already painted viewport.
             if self.consecutive_controls >= 8 {
                 self.consecutive_controls = 0;
@@ -215,11 +219,13 @@ impl Receiver {
                 self.consecutive_controls = 0;
                 return Some(frame);
             }
-            if output.finished.load(Ordering::Acquire) {
+            #[cfg(test)]
+            tests::pass_found_queues_empty();
+            if finished {
                 return None;
             }
-            // Sleeping has no polling latency. An event arriving between the empty
-            // checks and this receive leaves a token, so no notification is lost.
+            // Sleeping has no polling latency. An event or `finish()` arriving between
+            // the reads above and this receive leaves a token, so no notification is lost.
             self.wake.recv().ok()?;
         }
     }
