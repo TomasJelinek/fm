@@ -254,8 +254,8 @@ one tab does not invalidate a viewer still reading that captured member.
 ## Errors, cancellation and resource bounds
 
 `Failed` carries one of `Invalid`, `Unsupported`, `Limit`, `Cancelled`,
-`SourceChanged`, `NotFound`, `ReadOnly`, `Corrupt` or `Io`, plus at most 4096 UTF-8
-diagnostic bytes. Report unsupported/encrypted codecs explicitly; never retry
+`SourceChanged`, `NotFound`, `ReadOnly`, `Corrupt` or `Io` (protocol 4 adds
+`PasswordRequired` and `WrongPassword`), plus at most 4096 UTF-8 diagnostic bytes. Report unsupported/encrypted codecs explicitly; never retry
 through an external utility or a host path. The host ends the mount on a failed exchange, except the explicitly negotiated
 protocol-3 cooperative cancellation acknowledgement described below and the protocol-4
 `PasswordRequired`/`WrongPassword` replies that staged nothing. Protocol violations, truncated frames and unexpected replies
@@ -294,7 +294,7 @@ MiB for protocol 1) and a 20-second idle-progress watchdog. Find's private
 sessions (`Mount::open_for_search`, at most two: one archive per running search) and
 archives inside archives (at most three, below) are counted apart, so none of these
 uses refuses another's mounts. Each of the two counts in one slot of the host's
-`NativeAllowance` (`filesystem-host/src/session_allowance.rs`): `Mount::open_captured`
+`NativeAllowance` (`midnight-filesystem-host/src/session_allowance.rs`): `Mount::open_captured`
 takes a free slot itself, and `Mount::open_captured_in` opens in a slot that its caller
 reserved with `NativeAllowance::reserve`. A reservation that names the session it
 replaces waits, as a future that blocks no thread, while that session still counts
@@ -356,8 +356,9 @@ provider's capture (a million 16-byte names: `archive_folder_memory_per_member` 
 of a million members holds about 610 MiB. That test uses stand-in collation keys; a
 real Linux en_US key of a 16-character name takes 108 bytes
 ([transfer and listing performance](../verification/2026-11-21-transfer-and-listing-performance.md)).
-The idle supervisor waits without polling; it observes startup cancellation every
-10 ms only while that exchange is active. A failed `release_on_worker` retains its
+The idle supervisor waits without polling; only while an exchange with a cancellation
+token is active does it observe that token: a startup's every 10 ms (`STARTUP_POLL`), a
+listing's or unlock's every 50 ms (`REQUEST_POLL`). A failed `release_on_worker` retains its
 host reference instead of dropping it. Once every host reference of a session whose
 cleanup is unconfirmed has been released that way, the host still terminates its
 worker and returns staging and the mount permit; the unconfirmed source stays
@@ -589,7 +590,7 @@ unreadable (not for an ambiguous name, whose records the reader merged). The hos
 passes these on as `ArchiveNode::access` (`ArchiveAccess`); older workers leave it
 empty, and their unreadable members keep a generic explanation.
 
-**One password per mount.** `ArchiveMount::unlock(&ArchivePassword)` sends `Unlock`
+**One password per mount.** `ArchiveMount::unlock(&ArchivePassword, &Cancellation)` sends `Unlock`
 and returns `Unlocked`, `WrongPassword`, `NotEncrypted` or `Unsupported`;
 `ArchiveMount::unlocked()` reads the mount's state without I/O. The worker keeps an
 accepted password for the session, so it lasts exactly as long as the archive stays

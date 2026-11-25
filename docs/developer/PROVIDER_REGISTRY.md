@@ -1,7 +1,7 @@
 # Internal filesystem registry
 
 `midnight-core` supplies `ProviderId`, `ProviderInstanceId`, `MountRef`,
-`NodeToken`, `NodeRef` and `StoredLocation` (`vfs_identity.rs`). `midnight-engine::providers`
+`NodeToken`, `NodeRef` (`vfs_identity.rs`) and `StoredLocation` (`vfs_location.rs`). `midnight-engine::providers`
 supplies the backend registry, Browse/Read contracts and adapters over the native
 services and captured archive mounts. These Rust contracts are internal;
 independent plugins must continue to depend only on the released public API/SDK.
@@ -200,9 +200,12 @@ source release failed hands its target context down the same way, so the last
 reference to a tainted archive session still reaches its host
 ([engine lifetime](ENGINE_LIFETIME.md#archive-navigation-and-queued-size-work)).
 Cancellation and revocation propagate into running listings, which the archive
-host ends between pages without stopping the shared worker. Member reads of a
-shared archive mount go through `read_cooperative`.
-Cancelling a listing or member read never ends the worker that other tabs, viewers
+host ends between pages; a page in flight that arrives within the cancellation grace
+(2 s, `Budget::cancel_grace`) is discarded and the worker serves on, while a worker that
+has not answered by then is stopped, which retires the mount
+([errors, cancellation and resource bounds](FILESYSTEM_API.md#errors-cancellation-and-resource-bounds)).
+Member reads of a shared archive mount go through `read_cooperative`.
+Cancelling a member read never ends the worker that other tabs, viewers
 and jobs use: protocol 3 cancels cooperatively, and protocol-1/2 reads finish their
 exchange while the host discards the result. A late successful reply cannot publish
 after cancellation.

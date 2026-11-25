@@ -183,7 +183,8 @@ when an untrusted response cannot establish a terminal result. Report
 ## Building the native package
 
 The root `build.bat` and `build.sh` helpers build the host, then the platform's
-native filesystem package, then the viewers. Native packages depend only on the
+native filesystem package, then the network filesystem package, the viewers, the default
+thumbnailers and the archive filesystem. Native packages depend only on the
 public filesystem API/SDK and keep their own lockfiles and notices. Building or
 packaging a provider does not prove that an application route uses it.
 

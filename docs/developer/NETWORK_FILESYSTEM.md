@@ -26,7 +26,8 @@ with exact cursor ordinals, bounded resource ownership and complete-only caching
 The host requests one entry in the first page, then up to 128 per page so a slow
 second device cannot delay the first visible result (`max_entries` in
 `network/listing.rs`). ListBegin and its first page share one ten-second deadline
-(`admission.rs`); subsequent pages each receive a new deadline. The two shared
+(`REQUEST_TIMEOUT` in the plugin's `src/catalog.rs`, applied in `catalog/listing.rs`);
+subsequent pages each receive a new deadline. The two shared
 discovery permits (`network_neighborhood.rs`) include activation and cursor destruction;
 cancellation never releases a permit while native code is still running.
 Every issued mount/node/cursor belongs to its instance and retained parent trail.
