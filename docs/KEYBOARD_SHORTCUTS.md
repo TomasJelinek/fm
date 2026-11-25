@@ -563,7 +563,7 @@ listing to complete; input remains responsive.
 Select files and folders (`selection.all`) uses Ctrl+Shift+A. It replaces
 selection with displayed top-level files and folders, clearing nested tree marks.
 Invert files only (`selection.invert`, Ctrl+I) toggles displayed files, including
-expanded descendants, while preserving folders. Invert files and folders
+expanded descendants, while preserving folders. Invert top-level files and folders
 (`selection.invert-all`, Ctrl+Shift+I) toggles only displayed top-level rows and
 preserves nested marks. The synthetic parent and context-only ancestors remain
 unselectable.

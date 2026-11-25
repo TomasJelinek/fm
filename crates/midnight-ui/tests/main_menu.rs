@@ -50,7 +50,7 @@ fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
         "Select files only",
         "Deselect files and folders",
         "Invert files only",
-        "Invert files and folders",
+        "Invert top-level files and folders",
         "Find files…",
         "Checksums…",
         "Make File List…",
@@ -73,7 +73,7 @@ fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
     test.window.on_bulk_selection(move |pane, operation| {
         captured.borrow_mut().push((pane, operation));
     });
-    for label in ["Invert files only", "Invert files and folders"] {
+    for label in ["Invert files only", "Invert top-level files and folders"] {
         test.window.invoke_show_app_menu(2);
         test.draw();
         category(&mut test, 2);

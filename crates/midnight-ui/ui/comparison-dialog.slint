@@ -305,7 +305,7 @@ export component CompareDirectoriesDialog inherits Rectangle {
                             Section { text: "Subfolders"; }
                             subfolders := Criterion {
                                 text: "Compare subfolders"; narrow: root.narrow;
-                                effect: "Folders with different content are selected in both panels. Each row then shows whether it matches.";
+                                effect: "Folders with different content are selected in both panels; expand one to see what differs inside.";
                                 enabled: !root.model.busy;
                                 hint: "Alt+S. Same-named folders are compared with everything inside them, by the criteria above. Folders on one side only are selected; links are never followed.";
                             }

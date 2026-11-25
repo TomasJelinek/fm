@@ -55,7 +55,7 @@ const MENU: [(&str, &str); 66] = [
     ("Select files only", "selection.files"),
     ("Deselect files and folders", "selection.clear"),
     ("Invert files only", "selection.invert"),
-    ("Invert files and folders", "selection.invert-all"),
+    ("Invert top-level files and folders", "selection.invert-all"),
     ("Select by mask…", "selection.mask-select"),
     ("Deselect by mask…", "selection.mask-deselect"),
     (

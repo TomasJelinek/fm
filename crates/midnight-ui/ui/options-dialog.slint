@@ -520,7 +520,7 @@ export component OptionsBody inherits Rectangle {
                         text: "Check for updates at startup";
                         checked <=> UpdateState.check-at-startup; min-height: Theme.control-height;
                         toggled => { UpdateState.options-changed(self.checked, UpdateState.include-previews); }
-                        hint: "Shortly after startup, at most once a day, ask GitHub (api.github.com, over HTTPS) whether a newer version exists. Nothing is downloaded or installed until you choose to. When off, Midnight Explorer contacts no server unless you choose Check for updates.";
+                        hint: "Shortly after startup, at most once every 20 hours, ask GitHub (api.github.com, over HTTPS) whether a newer version exists. Nothing is downloaded or installed until you choose to. When off, Midnight Explorer contacts no server unless you choose Check for updates.";
                     }
                     WrappingCheckBox {
                         text: "Include preview releases";

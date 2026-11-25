@@ -135,7 +135,7 @@ const MENU: [(&str, &[&str]); 5] = [
             "Select files only",
             "Deselect files and folders",
             "Invert files only",
-            "Invert files and folders",
+            "Invert top-level files and folders",
             "Select by mask…",
             "Deselect by mask…",
             "Invert, folders as in Select by mask",
@@ -572,7 +572,7 @@ pub fn main_menu(context: &mut Context) -> Result<(), String> {
         ("Select files only", &["alpha.txt", "beta.txt", "gamma.dat"]),
         ("Invert files only", &[]),
         (
-            "Invert files and folders",
+            "Invert top-level files and folders",
             &["alpha.txt", "beta.txt", "gamma.dat", "sub"],
         ),
         ("Deselect files and folders", &[]),

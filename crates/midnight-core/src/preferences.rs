@@ -512,7 +512,9 @@ pub struct UserPreferences {
 /// read as the defaults, so existing users get the startup check too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UpdatePreferences {
-    /// Ask GitHub for a newer version shortly after startup, at most once a day.
+    /// Ask GitHub for a newer version shortly after startup, about once a day: at most
+    /// once every 20 hours (`midnight_update::controller::STARTUP_INTERVAL`), and not
+    /// while a failed check backs off or GitHub's rate limit asks to wait.
     pub check_at_startup: bool,
     /// Offer preview (pre-)releases; every release so far is a preview.
     pub previews: bool,
