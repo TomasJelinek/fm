@@ -172,6 +172,46 @@ fn numeric_size_and_exact_time_sort_both_directions_with_unknowns_last() {
     assert_eq!(ids(&sorted(FindSortColumn::Modified, true)), [2, 1, 3]);
 }
 #[test]
+fn ties_fall_back_to_the_ascending_path_then_discovery_order_in_both_directions() {
+    let template = results().remove(0);
+    let rows: Vec<_> = ["b/same.txt", "a/same.txt", "b/same.txt", "a/other.txt"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let mut row = (*template).clone();
+            row.id = FindResultId(index as u64 + 1);
+            row.entry.path = PathBuf::from(path);
+            row.entry.metadata = EntryMetadata::default();
+            Arc::new(row)
+        })
+        .collect();
+    let order = |column, descending| {
+        ids(&find_sort::order(
+            &rows,
+            FindSortSpec { column, descending },
+            1,
+            Some(&ReverseLocale),
+            &Cancellation::default(),
+            &mut find_sort::KeyCache::default(),
+        )
+        .unwrap())
+    };
+    // ReverseLocale orders names backwards: "same.txt" before "other.txt".
+    assert_eq!(order(FindSortColumn::Name, false), [2, 1, 3, 4]);
+    assert_eq!(order(FindSortColumn::Name, true), [4, 2, 1, 3]);
+    // Equal extensions: the file name decides, always ascending.
+    for descending in [false, true] {
+        assert_eq!(order(FindSortColumn::Extension, descending), [2, 1, 3, 4]);
+    }
+    // Every size and time is unknown: only the path and discovery order decide.
+    for column in [FindSortColumn::Size, FindSortColumn::Modified] {
+        for descending in [false, true] {
+            assert_eq!(order(column, descending), [4, 2, 1, 3]);
+        }
+    }
+}
+
+#[test]
 fn cancelled_sort_never_publishes_an_order() {
     let cancel = Cancellation::default();
     cancel.cancel();

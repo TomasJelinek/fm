@@ -67,6 +67,8 @@ mod filters;
 mod find;
 mod find_feed_sizes;
 mod find_sort;
+#[cfg(test)]
+mod find_sort_bench_tests;
 mod find_worker;
 mod folder_presence;
 mod folder_size_totals;

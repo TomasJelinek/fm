@@ -68,30 +68,35 @@ pub(crate) fn order(
         cache.keys.push(Keys { primary, name });
     }
     let keys = &cache.keys[..results.len()];
-    let mut indices: Vec<_> = (0..results.len()).collect();
-    indices.sort_unstable_by(|&left, &right| {
-        let a = &results[left].entry;
-        let b = &results[right].entry;
-        let order = match sort.column {
-            FindSortColumn::Extension => {
-                extension(a, &keys[left], b, &keys[right], sort.descending)
-            }
-            FindSortColumn::Size => numeric(a.metadata.size, b.metadata.size, sort.descending),
-            FindSortColumn::Modified => {
-                numeric(a.metadata.modified, b.metadata.modified, sort.descending)
-            }
-            _ => compare_collated_text(
-                keys[left].primary.as_deref(),
-                value(&a.path, sort.column).unwrap_or_default(),
-                keys[right].primary.as_deref(),
-                value(&b.path, sort.column).unwrap_or_default(),
-                sort.descending,
-            ),
-        };
-        order
-            .then_with(|| a.path.cmp(&b.path))
-            .then_with(|| results[left].id.0.cmp(&results[right].id.0))
-    });
+    let descending = sort.descending;
+    let mut indices = match sort.column {
+        FindSortColumn::Name | FindSortColumn::Path => sorted(
+            results,
+            keys,
+            |entry, keys| {
+                (
+                    keys.primary.as_deref(),
+                    value(&entry.path, sort.column).unwrap_or_default(),
+                )
+            },
+            |a, b| compare_collated_text(a.0, a.1, b.0, b.1, descending),
+        ),
+        FindSortColumn::Extension => sorted(results, keys, ExtensionFacts::new, |a, b| {
+            a.compare(b, descending)
+        }),
+        FindSortColumn::Size => sorted(
+            results,
+            keys,
+            |entry, _| entry.metadata.size,
+            |a, b| numeric(*a, *b, descending),
+        ),
+        FindSortColumn::Modified => sorted(
+            results,
+            keys,
+            |entry, _| entry.metadata.modified,
+            |a, b| numeric(*a, *b, descending),
+        ),
+    };
     if results
         .iter()
         .any(|result| result.duplicate_group.is_some())
@@ -150,42 +155,78 @@ fn prepare_key(
     Ok(key)
 }
 
+/// Return the positions of `results` in sorted order. Each result's facts are derived
+/// once, so comparisons neither parse paths nor follow result pointers. Ties fall back
+/// to the path and then discovery order (a position is its result's ID minus one).
+fn sorted<'a, P>(
+    results: &'a [Arc<FindResult>],
+    keys: &'a [Keys],
+    facts: impl Fn(&'a FindEntry, &'a Keys) -> P,
+    compare: impl Fn(&P, &P) -> Ordering,
+) -> Vec<usize> {
+    let mut rows: Vec<_> = results
+        .iter()
+        .zip(keys)
+        .enumerate()
+        .map(|(position, (result, keys))| {
+            (
+                facts(&result.entry, keys),
+                result.entry.path.as_path(),
+                position,
+            )
+        })
+        .collect();
+    rows.sort_unstable_by(|left, right| {
+        compare(&left.0, &right.0)
+            .then_with(|| left.1.cmp(right.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    rows.into_iter().map(|(_, _, position)| position).collect()
+}
+
 fn filename(path: &Path) -> &OsStr {
     path.file_name().unwrap_or(path.as_os_str())
 }
 
-fn extension(
-    a: &FindEntry,
-    a_keys: &Keys,
-    b: &FindEntry,
-    b_keys: &Keys,
-    descending: bool,
-) -> Ordering {
-    let directory = |kind| matches!(kind, EntryKind::Directory | EntryKind::DirectoryLink);
-    directory(b.kind)
-        .cmp(&directory(a.kind))
-        .then_with(|| match (a.path.extension(), b.path.extension()) {
-            (Some(a), Some(b)) => compare_collated_text(
-                a_keys.primary.as_deref(),
-                a,
-                b_keys.primary.as_deref(),
-                b,
-                descending,
-            ),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => Ordering::Equal,
-        })
-        .then_with(|| {
-            compare_collated_text(
-                a_keys.name.as_deref(),
-                filename(&a.path),
-                b_keys.name.as_deref(),
-                filename(&b.path),
-                false,
-            )
-        })
-        .then_with(|| filename(&a.path).cmp(filename(&b.path)))
+/// What the Extension column compares: folders first, then the extension (missing
+/// last), then the file name.
+struct ExtensionFacts<'a> {
+    directory: bool,
+    extension: Option<(&'a OsStr, Option<&'a [u8]>)>,
+    name: &'a OsStr,
+    name_key: Option<&'a [u8]>,
+}
+
+impl<'a> ExtensionFacts<'a> {
+    fn new(entry: &'a FindEntry, keys: &'a Keys) -> Self {
+        Self {
+            directory: matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink),
+            extension: entry
+                .path
+                .extension()
+                .map(|extension| (extension, keys.primary.as_deref())),
+            name: filename(&entry.path),
+            name_key: keys.name.as_deref(),
+        }
+    }
+
+    fn compare(&self, other: &Self, descending: bool) -> Ordering {
+        other
+            .directory
+            .cmp(&self.directory)
+            .then_with(|| match (self.extension, other.extension) {
+                (Some((a, a_key)), Some((b, b_key))) => {
+                    compare_collated_text(a_key, a, b_key, b, descending)
+                }
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            })
+            .then_with(|| {
+                compare_collated_text(self.name_key, self.name, other.name_key, other.name, false)
+            })
+            .then_with(|| self.name.cmp(other.name))
+    }
 }
 
 fn value(path: &Path, column: FindSortColumn) -> Option<&OsStr> {
