@@ -1,5 +1,7 @@
 use crate::discovery::{Deliver, FixedPitchFonts, ImageViewers};
-use crate::file_choice::{self, Picker, resolve};
+#[cfg(test)]
+use crate::file_choice::resolve;
+use crate::file_choice::{self, FileInput, Picker};
 use crate::{
     Command, ExternalCompareLauncher, FileChoice, IdentityVerdict, Inbox, Input, Mailbox, Message,
     NativeCapture, Output, OwnedFileComparatorPolicy, StorageHint,
@@ -253,6 +255,13 @@ impl Capture<'_> {
         result
     }
 
+    fn open_input(&self, input: &FileInput) -> Result<CapturedFile, String> {
+        match input {
+            FileInput::Native(path) => self.open(path),
+            FileInput::Archive(member) => file_choice::archive_input::capture(member, self.cancel),
+        }
+    }
+
     /// Only a positive local-SSD answer admits this source's reads as shared I/O.
     fn confirmed_ssd(&self, path: &std::path::Path) -> bool {
         self.storage.is_some_and(|storage| storage(path))
@@ -300,7 +309,20 @@ pub(crate) fn run(
         generation,
         Output::Status("Preparing file identities…".into()),
     );
-    let mut pair = resolve(&launch, cancel);
+    let (captured, message) = file_choice::resolve_inputs(&launch, cancel);
+    let disabled_plugins = launch.disabled_plugins;
+    // Retain only the chosen identities while the window stays open.
+    drop(launch.sources);
+    let drafts = captured.each_ref().map(FileInput::draft);
+    let mut pair = match message {
+        None => Ok(drafts.clone()),
+        Some(message) => Err(FileChoice {
+            paths: drafts.clone(),
+            message,
+            is_error: false,
+            external_outcome: None,
+        }),
+    };
     let mut viewport = Viewport {
         geometry,
         revision: 0,
@@ -309,7 +331,13 @@ pub(crate) fn run(
         check_cancel(cancel)?;
         pair = match pair {
             Ok(paths) => {
-                if let Err(message) = file_choice::validate(&paths) {
+                let inputs = std::array::from_fn(|side| match &captured[side] {
+                    FileInput::Archive(member) if paths[side] == drafts[side] => {
+                        FileInput::Archive(member.clone())
+                    }
+                    _ => FileInput::Native(paths[side].clone()),
+                });
+                if let Err(message) = file_choice::validate(&inputs) {
                     Err(FileChoice {
                         paths,
                         message,
@@ -317,12 +345,20 @@ pub(crate) fn run(
                         external_outcome: None,
                     })
                 } else {
-                    let target = context
+                    let route_names = inputs.each_ref().map(|input| input.routing_name(false));
+                    let mut target = context
                         .policy
                         .as_deref()
                         .map_or(Target::BuiltIn(BuiltInTarget::Automatic), |policy| {
-                            routing::select(policy, &paths)
+                            routing::select(policy, &route_names)
                         });
+                    if matches!(target, Target::External(_))
+                        && inputs
+                            .iter()
+                            .any(|input| matches!(input, FileInput::Archive(_)))
+                    {
+                        target = Target::BuiltIn(BuiltInTarget::Automatic);
+                    }
                     match target {
                         Target::External(program) => match external_compare::compare(
                             program,
@@ -345,8 +381,10 @@ pub(crate) fn run(
                         },
                         Target::BuiltIn(target) => {
                             let mut viewers_unavailable = None;
+                            let decoder_names =
+                                inputs.each_ref().map(|input| input.routing_name(true));
                             let result =
-                                routing::plan(target, &paths, &launch.disabled_plugins, || {
+                                routing::plan(target, &decoder_names, &disabled_plugins, || {
                                     context
                                         .capture
                                         .image_providers(output, generation)
@@ -356,7 +394,7 @@ pub(crate) fn run(
                                 })
                                 .and_then(|plan| {
                                     compare(
-                                        &paths,
+                                        &inputs,
                                         &appearance,
                                         &mut viewport,
                                         generation,
@@ -452,7 +490,7 @@ fn replacement(
 }
 
 fn compare(
-    paths: &[std::path::PathBuf; 2],
+    inputs: &[FileInput; 2],
     appearance: &ViewerAppearance,
     viewport: &mut Viewport,
     generation: u64,
@@ -464,20 +502,19 @@ fn compare(
     let output = context.output;
     let capture = &context.capture;
     let cancel = capture.cancel;
-    let left = capture.open(&paths[0]).map_err(|error| {
-        format!(
-            "File A could not be opened: {error}\n{}",
-            paths[0].display()
-        )
-    })?;
-    let right = capture.open(&paths[1]).map_err(|error| {
-        format!(
-            "File B could not be opened: {error}\n{}",
-            paths[1].display()
-        )
-    })?;
+    let names = inputs
+        .each_ref()
+        .map(|input| input.draft().display().to_string());
+    let left = capture
+        .open_input(&inputs[0])
+        .map_err(|error| format!("File A could not be opened: {error}\n{}", names[0]))?;
+    let right = capture
+        .open_input(&inputs[1])
+        .map_err(|error| format!("File B could not be opened: {error}\n{}", names[1]))?;
     let mut sources = [left, right];
-    let ssd = paths.each_ref().map(|path| capture.confirmed_ssd(path));
+    let ssd = inputs
+        .each_ref()
+        .map(|input| matches!(input, FileInput::Native(path) if capture.confirmed_ssd(path)));
     check_cancel(cancel)?;
     let mut awaiting_fonts = None;
     let mut content = match plan {
@@ -511,7 +548,7 @@ fn compare(
                     );
                     // A source whose change time alone moved during its read is read
                     // once more from a fresh capture (`revalidation::read_text`).
-                    let recapture = |side: usize| capture.open(&paths[side]);
+                    let recapture = |side: usize| capture.open_input(&inputs[side]);
                     read_texts(&mut sources, recapture, ssd, generation, output, cancel)?
                 }
             };
@@ -588,7 +625,7 @@ fn compare(
                 &mut sources,
                 &content,
                 &mut whole_input,
-                paths,
+                inputs,
                 capture,
                 ssd,
             )?;
@@ -627,7 +664,7 @@ fn compare(
                 &mut sources,
                 &content,
                 &mut whole_input,
-                paths,
+                inputs,
                 capture,
                 ssd,
             )?;
@@ -636,7 +673,7 @@ fn compare(
                 generation,
                 Output::Frame {
                     frame,
-                    names: paths.each_ref().map(|path| path.display().to_string()),
+                    names: names.clone(),
                     appearance_revision: requested.revision,
                 },
             );
@@ -728,7 +765,7 @@ fn compare(
                                     &mut sources,
                                     &content,
                                     &mut whole_input,
-                                    paths,
+                                    inputs,
                                     capture,
                                     ssd,
                                 )
@@ -832,11 +869,11 @@ fn revalidate(
     sources: &mut [CapturedFile; 2],
     content: &Content,
     whole_input: &mut Option<WholeInput>,
-    paths: &[std::path::PathBuf; 2],
+    inputs: &[FileInput; 2],
     capture: &Capture<'_>,
     ssd: [bool; 2],
 ) -> Result<bool, String> {
-    let recapture = |side: usize| capture.open(&paths[side]);
+    let recapture = |side: usize| capture.open_input(&inputs[side]);
     let replaced =
         revalidation::revalidate(sources, content.text(), recapture, ssd, capture.cancel)?;
     if replaced {

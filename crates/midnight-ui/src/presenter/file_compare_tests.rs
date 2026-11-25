@@ -321,7 +321,7 @@ fn adopted_tree_file_comparison_uses_exact_root_aliases_and_two_selected_order()
     );
     assert!(
         matches!(&launch.sources[1], FileCompareSource::RootSameName { entries, visible, .. }
-        if Arc::ptr_eq(entries, &other.root_actions.entries) && Arc::ptr_eq(visible, &other.index.native_root_files))
+        if Arc::ptr_eq(entries, &other.root_actions.entries) && Arc::ptr_eq(visible, &other.index.comparison_root_files))
     );
 }
 
@@ -379,5 +379,5 @@ fn adopted_tree_comparison_refuses_errored_root_file_and_parent_focus() {
         presenter.file_compare_launch(PaneId::Left).unwrap().sources[0],
         FileCompareSource::Unspecified
     ));
-    assert!(!view.index.native_root_files.contains(&EntryId(0)));
+    assert!(!view.index.comparison_root_files.contains(&EntryId(0)));
 }

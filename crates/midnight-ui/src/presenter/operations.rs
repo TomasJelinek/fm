@@ -28,6 +28,8 @@ pub(crate) struct OperationsState {
     /// Delete failures waiting for the shared decision prompt.
     pub(crate) delete_decisions: super::delete_decisions::DeleteDecisions,
     pub(crate) unconfirmed: std::collections::HashSet<OperationId>,
+    /// The pane that should reveal the new file or folder when its job completes.
+    pub(super) creation_panes: HashMap<OperationId, PaneId>,
     /// A new empty file whose name the displayed folder already has: confirming the
     /// same name again replaces that file.
     pub(crate) replace_name: Option<(OperationId, String)>,
@@ -408,6 +410,12 @@ impl Presenter {
         };
         if send(Command::PrepareOperation(request)) {
             self.register_preparing_operation(id, kind, self.panes[pane.index()].path.clone());
+            if matches!(
+                kind,
+                MutationKind::CreateDirectory | MutationKind::CreateFile
+            ) {
+                self.operations.creation_panes.insert(id, pane);
+            }
         } else {
             self.desktop
                 .report("Operation queue busy", "Try again.".into());
@@ -824,23 +832,7 @@ impl Presenter {
                         self.operations.pending = None;
                         self.operations.preview = None;
                     }
-                    // The entry the shown folder gained: the new name, or for a nested
-                    // new folder path (F7 `alpha/beta`) its first new folder, `alpha`.
-                    let reveal = progress.renamed_to.as_ref().and_then(|destination| {
-                        if destination.parent() == Some(progress.source_directory.as_path()) {
-                            return Some(destination.clone());
-                        }
-                        if progress.kind != MutationKind::CreateDirectory {
-                            return None;
-                        }
-                        let below = destination.strip_prefix(&progress.source_directory).ok()?;
-                        match below.components().next()? {
-                            std::path::Component::Normal(name) => {
-                                Some(progress.source_directory.join(name))
-                            }
-                            _ => None,
-                        }
-                    });
+                    let creation_pane = self.operations.creation_panes.remove(&progress.id);
                     // A panel held since a Rename's or creation's confirmation
                     // waited for it, however long the job took.
                     let held = self.operations.settle.job == Some(progress.id);
@@ -856,21 +848,48 @@ impl Presenter {
                             OperationState::Completed | OperationState::CompletedWithErrors
                         );
                     for pane in [PaneId::Left, PaneId::Right] {
+                        let destination =
+                            progress
+                                .renamed_to
+                                .as_ref()
+                                .filter(|_| match progress.kind {
+                                    MutationKind::CreateDirectory | MutationKind::CreateFile => {
+                                        creation_pane == Some(pane)
+                                    }
+                                    _ => true,
+                                });
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
                             if hold {
                                 // A tree shows entries of loaded subfolders too.
                                 self.hold_tree_refresh(
                                     pane,
                                     std::slice::from_ref(&progress.source_directory),
-                                    progress.renamed_to.clone(),
+                                    destination.cloned(),
                                 );
                             }
                             continue;
                         }
+                        // For nested F7 paths the flat listing shows the first child.
+                        let reveal = destination.and_then(|destination| {
+                            if destination.parent() == Some(progress.source_directory.as_path()) {
+                                return Some(destination.clone());
+                            }
+                            if progress.kind != MutationKind::CreateDirectory {
+                                return None;
+                            }
+                            let below =
+                                destination.strip_prefix(&progress.source_directory).ok()?;
+                            match below.components().next()? {
+                                std::path::Component::Normal(name) => {
+                                    Some(progress.source_directory.join(name))
+                                }
+                                _ => None,
+                            }
+                        });
                         self.queue_operation_refresh(
                             pane,
                             &progress.source_directory,
-                            reveal.clone(),
+                            reveal,
                             hold,
                         );
                     }

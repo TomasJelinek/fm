@@ -834,7 +834,12 @@ editor scope and shortcuts reserved for later stages.
   Keyboard and Custom Commands. It offers readable
   or exact-byte sizes, history persistence/Clear, 26 themes including Slate Blue,
   Slate Teal and Slate Violet, Desktop/Touch spacing, an installed font family and
-  independent Desktop/Touch base sizes (8–32px). Appearance → **Text rendering**
+  independent Desktop/Touch base sizes (8–32px). In **Appearance → Application icon**,
+  choose Midnight Moon (the default), Harvest Navigator, Origami Trail, or Interleave.
+  The toolbar and supported window icons preview your choice immediately. **OK**
+  keeps it for the next launch and **Cancel** restores your previous icon.
+  [Preview the three alternate icons](assets/branding/README.md#icon-shortlist).
+  Appearance → **Text rendering**
   chooses how glyphs meet the pixel grid: Sharp (fitted, the default), Balanced
   (snapped) or Smooth (subpixel). It applies after a restart; the
   `MIDNIGHT_GLYPH_FITTING` environment variable (`fitted`, `snapped` or `subpixel`)
@@ -1066,7 +1071,7 @@ editing and IME behavior are protected. The [shortcut reference](docs/KEYBOARD_S
 lists defaults. Numbered tab and Hot Path bindings use physical digits across layouts.
 
 Options, tabs, bookmarks, panel filters, enabled command history, viewer preferences
-and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 35) in the native
+and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 36) in the native
 `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
 `~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
@@ -1456,3 +1461,5 @@ through a shell. The platform default and launch errors are shown explicitly. Se
 
 The [documentation map](docs/README.md) distinguishes current contracts,
 accepted future work and historical verification records.
+The [Windows release signing guide](docs/developer/WINDOWS_RELEASE_SIGNING.md)
+covers protected draft-release ZIP/MSI signing and required external setup.

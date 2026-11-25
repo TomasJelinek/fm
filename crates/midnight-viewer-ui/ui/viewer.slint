@@ -14,6 +14,8 @@ export struct ViewerRasterTile { image: image, x: float, y: float, width: float,
 
 export component ViewerWindow inherits Window {
     title: root.caption;
+    in property <image> app-icon;
+    icon: root.app-icon;
     preferred-width: 1000px; preferred-height: 720px; min-width: 320px; min-height: 200px;
     in property <bool> compact;
     in property <string> caption: "Viewer — Midnight Explorer";

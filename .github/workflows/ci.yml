@@ -516,6 +516,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Build script and packaging tests
         run: python -B -m unittest discover -s scripts/tests -v
+      - name: Native per-user MSI package checks
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/tests/test-windows-msi.ps1
       - name: Shared image decoder native helper tests
         run: python -B -m unittest discover -s plugins/image-decoder/native/tests -v
       - name: Deployment, registration and shortcut tests (Windows PowerShell 5.1 and 7)

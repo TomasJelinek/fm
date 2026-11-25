@@ -6,6 +6,24 @@ use slint::platform::{
 
 struct TestPlatform;
 
+#[test]
+fn content_icon_starts_with_the_main_icon_and_follows_a_live_change() {
+    slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
+    let window = MainWindow::new().unwrap();
+    window.set_app_icon_index(midnight_core::AppIcon::HarvestNavigator.index());
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let observed = received.clone();
+    install_icon_to(&window, move |icon| observed.borrow_mut().push(icon));
+    let initial = window.get_current_app_icon();
+    assert_eq!(received.borrow().as_slice(), std::slice::from_ref(&initial));
+
+    window.set_app_icon_index(midnight_core::AppIcon::Interleave.index());
+    slint::platform::update_timers_and_animations();
+    let selected = window.get_current_app_icon();
+    assert_ne!(selected, initial);
+    assert_eq!(received.borrow().last(), Some(&selected));
+}
+
 impl Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
         Ok(MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer))

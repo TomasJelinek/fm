@@ -726,7 +726,7 @@ fn small_selection_and_visible_native_root_file_cache_are_exact_and_bounded() {
     rows[1].error = Some("unavailable".into());
     let view = projection(rows);
     assert_eq!(
-        view.index.native_root_files.as_ref(),
+        view.index.comparison_root_files.as_ref(),
         &[EntryId(101), EntryId(103)]
     );
     for (bits, expected) in [

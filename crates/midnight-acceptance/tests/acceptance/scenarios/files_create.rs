@@ -19,13 +19,20 @@ pub fn create_cases(context: &mut Context) -> Result<(), String> {
     let folder = support::scratch(context, "create")?;
     fs::write(folder.join("existing.txt"), "keep\n").map_err(|error| io_error(&folder, error))?;
     fs::create_dir(folder.join("existing-folder")).map_err(|error| io_error(&folder, error))?;
-    let mut app = App::start(Config::new(&folder, &context.work));
+    let mut app = App::start(Config::new(&folder, &folder));
     let pane = PaneId::Left;
     let mut failures = Vec::new();
     let mut timings = Timings::default();
-    panel::focus_list(&mut app, pane)?;
-
-    // F7 with one name: the new folder is listed with the cursor on it.
+    // The panes show the same folder but have independent cursors and marks.
+    panel::select_row(&mut app, pane, "existing-folder")?;
+    input::key(app.slint(), Key::Insert);
+    input::key(app.slint(), Key::End);
+    app.until("the left pane's original cursor and mark", |app| {
+        support::cursor_name(app, pane).as_deref() == Some("existing.txt")
+            && support::selected_names(app, pane) == ["existing-folder"]
+    });
+    let right = PaneId::Right;
+    panel::select_row(&mut app, right, "existing-folder")?;
     let start = support::named_operation(&mut app, &[], Key::F7, "single")?;
     let progress = support::wait_operation(&mut app, start);
     let finished = Instant::now();
@@ -34,16 +41,28 @@ pub fn create_cases(context: &mut Context) -> Result<(), String> {
     } else {
         timings.add(
             "report to row listed",
-            support::row_delay(&mut app, pane, "single", true, finished),
+            support::row_delay(&mut app, right, "single", true, finished),
         );
+        support::wait_row(&mut app, pane, "single", true);
         panel::wait_input(&mut app);
-        if support::cursor_name(&app, pane).as_deref() != Some("single") {
+        let right_cursor = support::cursor_name(&app, right);
+        let left_cursor = support::cursor_name(&app, pane);
+        let left_marks = support::selected_names(&app, pane);
+        app.screenshot(
+            context,
+            "mkdir-same-folder",
+            "Right-pane F7 with both panes showing the same folder",
+        );
+        if right_cursor.as_deref() != Some("single")
+            || left_cursor.as_deref() != Some("existing.txt")
+            || left_marks != ["existing-folder"]
+        {
             failures.push(format!(
-                "after F7 single the cursor is on {:?}, not the new folder",
-                support::cursor_name(&app, pane)
+                "after right-pane F7, right cursor {right_cursor:?}, left cursor {left_cursor:?}, left marks {left_marks:?}; expected single, existing.txt and [existing-folder]"
             ));
         }
     }
+    panel::select_row(&mut app, pane, "existing.txt")?;
 
     // F7 with nested segments creates every missing folder; the cursor should go to
     // the listed ancestor of the new path.

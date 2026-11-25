@@ -80,16 +80,21 @@ a built-in comparator; an unknown launch outcome must be resolved before retryin
 never enumerates selections or accesses files. Two active-panel selections retain
 their visible order. Otherwise File A represents the left panel and File B the
 right. An explicit opposite selection wins; with none, the worker resolves a unique
-exact native basename in the captured visible listing. An unrelated opposite cursor
-is never substituted. Loading/unstable selection, parent, directory, virtual/archive
-or ambiguous rows do not supply implicit native paths. Plugin preferences must be
+exact basename in the captured visible listing. Readable archive members retain
+their mount and member identity, including when the opposite panel supplies a
+same-name match. The opposite cursor may be on any row. Loading or unstable
+selections, parent rows, directories and ambiguous matches leave the corresponding
+input for the user to choose. Plugin preferences must be
 loaded before opening a session so disabled providers cannot be bypassed.
 
 `midnight-compare-engine/file_choice.rs` preserves the unambiguous part of a pair
 and returns `Output::ChooseFiles(FileChoice)` for everything else. Empty paths mean
 unknown inputs. The session stays alive for explicit `Input::Compare([PathBuf; 2])`
 or `Input::Browse { side, paths, owner }`. Invalid paths, missing/nonregular files or
-comparison errors return the form with both draft paths intact. Native paths are
+comparison errors return the form with both inputs intact. An unchanged archive
+label retains its captured member. The built-in comparator reads the member
+through its mount, including when the matching rule names an external program.
+External programs receive only pairs of native files. Native paths are
 absolute and literal: no shell, quotes, expansion, cwd inference or writes.
 
 ## Ownership and threading

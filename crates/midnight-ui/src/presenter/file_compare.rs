@@ -1,5 +1,6 @@
 //! Capture immutable UI identities; selection enumeration and file access run in the comparator.
 use super::*;
+use midnight_core::{ArchiveCompareFolder, ArchiveCompareMember};
 
 #[cfg(test)]
 #[path = "file_compare_tests.rs"]
@@ -38,6 +39,15 @@ impl Presenter {
             let counterpart = panes.len() == 2 && *id != active && compare_selection_len(pane) == 0;
             if pane.tree_view().is_some() {
                 sources.extend(tree_sources(pane, counterpart, panes.len() == 2));
+                continue;
+            }
+            if let Some(archive) = &pane.archive {
+                sources.extend(archive_sources(
+                    pane,
+                    archive,
+                    counterpart,
+                    panes.len() == 2,
+                ));
                 continue;
             }
             if !pane.native_capabilities()
@@ -86,12 +96,85 @@ impl Presenter {
 }
 
 fn compare_selection_len(pane: &Pane) -> usize {
-    pane.tree
-        .publication
-        .as_ref()
-        .map_or(pane.selected.len(), |publication| {
-            publication.selection.len()
+    pane.tree.publication.as_ref().map_or_else(
+        || {
+            pane.archive
+                .as_ref()
+                .map_or(pane.selected.len(), |a| a.selected.len())
+        },
+        |publication| publication.selection.len(),
+    )
+}
+
+fn archive_folder(archive: &archives::ArchivePane) -> Option<ArchiveCompareFolder> {
+    let location = &archive.location;
+    Some(ArchiveCompareFolder {
+        mount: location.mount.clone()?,
+        directory: location.directory,
+        source_version: location.address.source_version.clone(),
+    })
+}
+
+fn archive_file(folder: &ArchiveCompareFolder, entry: &Entry) -> Option<FileCompareSource> {
+    let node = entry.virtual_node.as_deref()?;
+    (entry.kind == EntryKind::File
+        && node.id.entry == entry.id.0
+        && node.readable
+        && node.parent == folder.directory)
+        .then(|| {
+            FileCompareSource::ArchiveMember(ArchiveCompareMember {
+                folder: folder.clone(),
+                node: node.clone(),
+            })
         })
+}
+
+fn archive_sources(
+    pane: &Pane,
+    archive: &archives::ArchivePane,
+    counterpart: bool,
+    across: bool,
+) -> Vec<FileCompareSource> {
+    let unspecified = || vec![FileCompareSource::Unspecified];
+    let Some(folder) = archive_folder(archive) else {
+        return unspecified();
+    };
+    let count = archive.selected.len();
+    if pane.loading
+        || pane.search_view_waiting()
+        || pane.search.pending
+        || archive.selection_pending
+        || count > 2
+        || (across && count > 1)
+        || (count == 0 && !counterpart && !pane.search_allows_activation())
+    {
+        return unspecified();
+    }
+    let view = pane.display_index();
+    if count == 0 && counterpart {
+        return vec![FileCompareSource::ArchiveSameName {
+            folder,
+            entries: pane.entries.clone(),
+            view: view.clone(),
+            visible: None,
+        }];
+    }
+    if count == 0 {
+        return pane
+            .cursor
+            .filter(|_| !pane.parent_cursor)
+            .filter(|id| view.by_id.contains_key(id))
+            .and_then(|id| pane.entry_by_id(id))
+            .and_then(|entry| archive_file(&folder, entry))
+            .map_or_else(unspecified, |source| vec![source]);
+    }
+    vec![FileCompareSource::ArchiveSelected {
+        folder,
+        entries: pane.entries.clone(),
+        index: pane.index.clone(),
+        view: view.clone(),
+        selection: archive.selected.clone(),
+    }]
 }
 
 fn tree_sources(pane: &Pane, counterpart: bool, across_panes: bool) -> Vec<FileCompareSource> {
@@ -101,7 +184,8 @@ fn tree_sources(pane: &Pane, counterpart: bool, across_panes: bool) -> Vec<FileC
     };
     let view = &publication.view;
     let count = publication.selection.len();
-    if !pane.native_capabilities()
+    let archive = pane.archive.as_ref().and_then(archive_folder);
+    if (!pane.native_capabilities() && archive.is_none())
         || pane.loading
         || !pane.tree_input_ready()
         || !pane.tree.preview.is_empty()
@@ -116,25 +200,37 @@ fn tree_sources(pane: &Pane, counterpart: bool, across_panes: bool) -> Vec<FileC
     if count != 0 {
         let paths: Option<Vec<_>> = publication.selection.small_selection().and_then(|rows| {
             rows.iter()
-                .map(|row| root_file(view, *row).map(FileCompareSource::Focused))
+                .map(|row| root_file(view, *row, archive.as_ref()))
                 .collect()
         });
         return paths.unwrap_or_else(unspecified);
     }
     if counterpart {
+        if let Some(folder) = archive {
+            return vec![FileCompareSource::ArchiveSameName {
+                folder,
+                entries: view.root_actions.entries.clone(),
+                view: view.root_actions.index.clone(),
+                visible: Some(view.index.comparison_root_files.clone()),
+            }];
+        }
         return vec![FileCompareSource::RootSameName {
             directory: pane.path.clone(),
             entries: view.root_actions.entries.clone(),
             view: view.root_actions.index.clone(),
-            visible: view.index.native_root_files.clone(),
+            visible: view.index.comparison_root_files.clone(),
         }];
     }
     pane.tree_cursor_row()
-        .and_then(|row| root_file(view, row.id))
-        .map_or_else(unspecified, |path| vec![FileCompareSource::Focused(path)])
+        .and_then(|row| root_file(view, row.id, archive.as_ref()))
+        .map_or_else(unspecified, |source| vec![source])
 }
 
-fn root_file(view: &TreeProjection, row: TreeRowId) -> Option<PathBuf> {
+fn root_file(
+    view: &TreeProjection,
+    row: TreeRowId,
+    archive: Option<&ArchiveCompareFolder>,
+) -> Option<FileCompareSource> {
     let row = view.rows.get(*view.index.row_positions.get(&row)?)?;
     if row.depth != 0
         || row.parent.is_some()
@@ -149,7 +245,14 @@ fn root_file(view: &TreeProjection, row: TreeRowId) -> Option<PathBuf> {
         .root_actions
         .entries
         .get(*view.root_actions.index.by_id.get(&alias)?)?;
+    if let Some(folder) = archive {
+        return archive_file(folder, entry);
+    }
     (entry.kind == EntryKind::File)
-        .then(|| entry.native_path().map(Path::to_owned))
+        .then(|| {
+            entry
+                .native_path()
+                .map(|path| FileCompareSource::Focused(path.to_owned()))
+        })
         .flatten()
 }

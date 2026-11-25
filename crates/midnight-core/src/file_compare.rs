@@ -1,6 +1,19 @@
-//! Captured native inputs for the read-only file comparator.
-use crate::{DirectoryIndex, Entry, EntryId, SelectionSnapshot};
-use std::{path::PathBuf, sync::Arc};
+//! Captured inputs for the read-only file comparator.
+use crate::{ArchiveMount, ArchiveNode, DirectoryIndex, Entry, EntryId, SelectionSnapshot};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
+
+#[derive(Clone, Debug)]
+pub struct ArchiveCompareFolder {
+    pub mount: Arc<dyn ArchiveMount>,
+    pub directory: u64,
+    pub source_version: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ArchiveCompareMember {
+    pub folder: ArchiveCompareFolder,
+    pub node: ArchiveNode,
+}
 
 #[derive(Clone, Debug)]
 pub enum FileCompareSource {
@@ -8,6 +21,21 @@ pub enum FileCompareSource {
     /// The comparator offers manual selection instead of guessing a row.
     Unspecified,
     Focused(PathBuf),
+    ArchiveMember(ArchiveCompareMember),
+    ArchiveSelected {
+        folder: ArchiveCompareFolder,
+        entries: Arc<[Entry]>,
+        index: Arc<DirectoryIndex>,
+        view: Arc<DirectoryIndex>,
+        selection: Arc<HashSet<EntryId>>,
+    },
+    ArchiveSameName {
+        folder: ArchiveCompareFolder,
+        entries: Arc<[Entry]>,
+        view: Arc<DirectoryIndex>,
+        /// A tree offers only actionable, visible root files for comparison.
+        visible: Option<Arc<[EntryId]>>,
+    },
     Selected {
         entries: Arc<[Entry]>,
         view: Arc<DirectoryIndex>,

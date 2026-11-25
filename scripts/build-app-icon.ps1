@@ -1,9 +1,19 @@
 # Optional Windows asset maintenance; normal builds use the committed PNG and ICO.
+param(
+    [ValidateSet('origami-trail', 'harvest-navigator', 'interleave')]
+    [string]$Variant
+)
+
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 $project = Split-Path -Parent $PSScriptRoot
 $assets = Join-Path $project 'assets/branding'
-$source = [Drawing.Image]::FromFile((Join-Path $assets 'moon-master.png'))
+$master = 'moon-master.png'
+if ($Variant) {
+    $assets = Join-Path $assets "variants/$Variant"
+    $master = 'master.png'
+}
+$source = [Drawing.Image]::FromFile((Join-Path $assets $master))
 $frames = [Collections.Generic.List[byte[]]]::new()
 $sizes = @(16, 20, 24, 32, 40, 48, 64, 128, 256)
 try {

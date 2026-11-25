@@ -468,6 +468,9 @@ fn run_window(
             return startup_recovery::native_failure(error, may_retry);
         }
     };
+    if let Some(preferences) = &prefetched {
+        window.set_app_icon_index(preferences.app_icon.index());
+    }
     main_events.bind(&window);
     // This owner aborts/wakes a pending settings write on every early return.
     let startup_owner = startup_gate::Owner::new();

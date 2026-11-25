@@ -461,6 +461,11 @@ pub fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
         .map_err(|error| format!("chmod {mode:o} {}: {error}", path.display()))
 }
 
+#[cfg(not(unix))]
+pub fn set_mode(_: &Path, _: u32) -> Result<(), String> {
+    Err("SKIP: this fixture requires Unix permission bits".into())
+}
+
 /// SHA-1 (FIPS 180-4), for checking the application's results independently.
 pub fn sha1(data: &[u8]) -> [u8; 20] {
     let mut state: [u32; 5] = [

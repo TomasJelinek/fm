@@ -77,6 +77,7 @@ bug, with its finding), **PENDING** (not verified yet; the reason is given), **S
 | O-C01 | Comparators: built-in and external overrides saved, listed after a restart | `options_comparators` | rule rows, saved values | PASS |
 | O-C02 | Comparators: an invalid regular expression is refused | `options_comparators` | error line | PASS |
 | O-P01 | Plugins: empty states without staged plugins; Rescan; the Archives link | `options_previews_plugins` | texts; page switch | PASS |
+| O-P02 | Archive plugin details fit above Archive associations | `options_archive_plugin_layout` | Installed plugin, wrapped formats and package path, button bounds and navigation at 1024×700 and 560×560 | PASS (Windows, 2026-11-25) |
 | O-V01 | Previews: switches, thumbnail size seen in the Thumbnails view; Cancel, OK, restart | `options_previews_plugins` | row height; saved values | PASS |
 | O-V02 | Previews: Clear thumbnail cache | – | the thumbnail service exists only in staged viewer processes; the button would clear a real cache | SKIP |
 | O-R01 | Archives: custom extension chips (add, fold, remove, invalid, built-in conflict), an association; Cancel, OK, restart; Escape in the field | `options_archives` | chips, errors, saved values | PASS |

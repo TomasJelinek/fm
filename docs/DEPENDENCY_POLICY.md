@@ -35,6 +35,14 @@ the license of Midnight Explorer or its public API as a side effect of this poli
 
 ## Current decisions
 
+**Requested Windows release signing service:** Azure Artifact Signing (formerly
+Trusted Signing) is an explicitly requested external release-signing integration.
+Its paid Azure subscription and recurring service charges are a narrow exception
+for that service, not permission to introduce paid-only/trial-only libraries or
+select paid library license branches. Repository code does not create billable
+resources or approve purchases. All signing action/tool dependencies still require
+their exact pinned license review. See the [setup and cost boundary](developer/WINDOWS_RELEASE_SIGNING.md#external-setup-and-costs).
+
 **Slint 1.18.1:** the application uses the **Slint Royalty-free License 2.0** for
 desktop applications. It requires no paid Slint subscription. Retain Slint notices
 and the attribution required by the exact license; the application has About Slint

@@ -6,6 +6,144 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Debug)]
+struct MemberMount;
+
+impl midnight_core::ArchiveMount for MemberMount {
+    fn id(&self) -> u64 {
+        7
+    }
+    fn validate(&self) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<midnight_core::ArchiveNode>, FsError> {
+        panic!("comparison must use the captured listing")
+    }
+    fn read(
+        &self,
+        entry: u64,
+        offset: u64,
+        length: u32,
+        _: &Cancellation,
+    ) -> Result<Vec<u8>, FsError> {
+        assert_eq!(entry, 22);
+        let bytes = b"old member text\n";
+        Ok(bytes[offset as usize..offset as usize + length as usize].to_vec())
+    }
+}
+
+fn member() -> ArchiveCompareMember {
+    ArchiveCompareMember {
+        folder: ArchiveCompareFolder {
+            mount: Arc::new(MemberMount),
+            directory: 3,
+            source_version: vec![11],
+        },
+        node: midnight_core::ArchiveNode {
+            id: midnight_core::VirtualEntryId {
+                mount: 7,
+                entry: 22,
+            },
+            parent: 3,
+            raw_name: Arc::from(b"real.txt".as_slice()),
+            display_name: "Caption.txt".into(),
+            kind: EntryKind::File,
+            size: Some(16),
+            readable: true,
+            modified: None,
+        },
+    }
+}
+
+#[test]
+fn archive_decoder_uses_the_original_extension_even_with_an_opaque_stem() {
+    let mut member = member();
+    member.node.raw_name = Arc::from(b"caf\x82.png".as_slice());
+    let input = FileInput::Archive(member);
+    assert!(input.routing_name(false).as_os_str().is_empty());
+    assert_eq!(input.routing_name(true).extension().unwrap(), "png");
+}
+
+#[test]
+fn archive_counterpart_uses_raw_names_and_rejects_ambiguous_or_stale_member_ids() {
+    let member = member();
+    let source = FileCompareSource::Focused(PathBuf::from("test/real.txt"));
+    for (id, parent, duplicate, ok) in [
+        (7, 3, false, true),
+        (9, 3, false, false),
+        (7, 8, false, false),
+        (7, 3, true, false),
+    ] {
+        let mut node = member.node.clone();
+        node.id.mount = id;
+        node.parent = parent;
+        let mut entries = vec![Entry::from_archive(node.clone())];
+        if duplicate {
+            node.id.entry += 1;
+            entries.push(Entry::from_archive(node));
+        }
+        let entries: Arc<[Entry]> = entries.into();
+        let archive = FileCompareSource::ArchiveSameName {
+            folder: member.folder.clone(),
+            view: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+            visible: None,
+        };
+        let (inputs, message) = resolve_inputs(
+            &launch(vec![source.clone(), archive]),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(ok, message.is_none());
+        if ok {
+            assert!(
+                matches!(&inputs[1], FileInput::Archive(found) if found.node.id == member.node.id)
+            );
+        }
+    }
+}
+
+#[test]
+fn archive_choice_preserves_original_member_on_native_retry_and_compares_its_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let native = directory.path().join("chosen.txt");
+    std::fs::write(&native, "new native text\n").unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_owner, spawner) = crate::resident_test_support::workers();
+    let policy = crate::policy_test_support::FakePolicySource::new();
+    let (snapshot, probe) = policy.publish(midnight_core::FileComparatorTarget::External(
+        midnight_core::FileComparatorProgram {
+            executable: directory.path().join("external-comparator"),
+            arguments: vec!["{left}".into(), "{right}".into()],
+            working_directory: None,
+        },
+    ));
+    let service = Service::new(runtime.handle().clone(), spawner).with_comparator_policies(policy);
+    let mut request = launch(vec![
+        FileCompareSource::ArchiveMember(member()),
+        FileCompareSource::Unspecified,
+    ]);
+    request.comparators = snapshot.preferences;
+    request.comparator_policy = snapshot.id;
+    let session = open(&service, request);
+    let mut paths = choice(&session).paths;
+    assert!(paths[0].display().to_string().contains("Caption.txt"));
+    paths[1] = native.clone();
+    session.send(Input::Compare(paths)).unwrap();
+    match next_result(&session) {
+        Output::Frame { frame, .. } => {
+            assert!(frame.accessible_text.contains("old member text"));
+            assert!(frame.accessible_text.contains("new native text"));
+        }
+        Output::ChooseFiles(choice) => panic!("unexpected prompt: {choice:?}"),
+        _ => panic!("expected a built-in comparison"),
+    }
+    assert_eq!(
+        *probe.seen.lock().unwrap(),
+        vec![[PathBuf::from("real.txt"), native]]
+    );
+    session.close();
+}
+
 fn launch(sources: Vec<FileCompareSource>) -> FileCompareLaunch {
     let comparator_snapshot = midnight_core::FileComparatorSnapshot::default();
     FileCompareLaunch {

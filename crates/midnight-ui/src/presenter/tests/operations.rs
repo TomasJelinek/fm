@@ -123,8 +123,49 @@ fn empty_file_creation_does_not_require_a_focused_entry() {
     assert!(p.has_live_operations());
 }
 
+fn ready_for_creation(kind: MutationKind) -> Presenter {
+    let mut p = ready();
+    p.start_operation(PaneId::Left, kind, &|_| true);
+    p
+}
+
 fn created_file_refresh(p: &mut Presenter, destination: PathBuf) {
     created_entry_refresh(p, destination, MutationKind::CreateFile);
+}
+
+#[test]
+fn creation_in_a_shared_directory_reveals_only_in_the_originating_pane() {
+    for origin in [PaneId::Right, PaneId::Left] {
+        for (kind, entry_kind) in [
+            (MutationKind::CreateDirectory, EntryKind::Directory),
+            (MutationKind::CreateFile, EntryKind::File),
+        ] {
+            let mut p = ready();
+            let directory = p.panes[0].path.clone();
+            let mut entries = p.panes[0].entries.to_vec();
+            let navigation = begin(&mut p, PaneId::Right, directory.to_str().unwrap());
+            finish(&mut p, PaneId::Right, navigation, entries.clone());
+            p.panes[1].parent_cursor = false;
+            p.panes[1].cursor = Some(EntryId(2));
+            let other = origin.other();
+            let old_cursor = p.panes[other.index()].cursor;
+            p.start_operation(origin, kind, &|_| true);
+            assert_eq!(p.operations.pending, Some(OperationId(1)));
+            p.active = other;
+
+            let destination = directory.join("new");
+            created_entry_refresh(&mut p, destination.clone(), kind);
+            entries.insert(0, Entry::new(EntryId(99), destination, entry_kind));
+            for pane in [other, origin] {
+                assert!(p.panes[pane.index()].pending.is_some());
+                let navigation = NavigationId(p.panes[pane.index()].generation);
+                finish(&mut p, pane, navigation, entries.clone());
+            }
+            assert_eq!(p.panes[origin.index()].cursor, Some(EntryId(99)));
+            assert_eq!(p.panes[other.index()].cursor, old_cursor);
+            assert!(p.panes[other.index()].preserve_viewport);
+        }
+    }
 }
 
 fn created_entry_refresh(p: &mut Presenter, destination: PathBuf, kind: MutationKind) {
@@ -153,7 +194,7 @@ fn created_entry_refresh(p: &mut Presenter, destination: PathBuf, kind: Mutation
 
 #[test]
 fn created_external_directory_keeps_panel_path_search_and_caret_during_refresh() {
-    let mut p = ready();
+    let mut p = ready_for_creation(MutationKind::CreateDirectory);
     p.preferences.values.quick_search_filter = true;
     p.change_search_query(PaneId::Left, "second", &|_| true);
     let source = p.panes[0].path.clone();
@@ -172,7 +213,7 @@ fn created_external_directory_keeps_panel_path_search_and_caret_during_refresh()
 #[test]
 fn created_file_is_focused_and_revealed_after_refresh_from_existing_or_parent_cursor() {
     for parent in [false, true] {
-        let mut p = ready();
+        let mut p = ready_for_creation(MutationKind::CreateFile);
         p.panes[0].parent_cursor = parent;
         if parent {
             p.panes[0].cursor = None;
@@ -194,7 +235,7 @@ fn created_file_is_focused_and_revealed_after_refresh_from_existing_or_parent_cu
 
 #[test]
 fn a_nested_new_folder_path_focuses_its_first_new_folder_after_refresh() {
-    let mut p = ready();
+    let mut p = ready_for_creation(MutationKind::CreateDirectory);
     let top = p.panes[0].path.join("alpha");
     created_entry_refresh(
         &mut p,
@@ -211,7 +252,7 @@ fn a_nested_new_folder_path_focuses_its_first_new_folder_after_refresh() {
 
 #[test]
 fn created_file_reveal_leaves_search_but_respects_a_new_cursor_choice_during_refresh() {
-    let mut p = ready();
+    let mut p = ready_for_creation(MutationKind::CreateFile);
     p.preferences.values.quick_search_filter = true;
     p.change_search_query(PaneId::Left, "second", &|_| true);
     let target = p.panes[0].path.join("zz-new.txt");

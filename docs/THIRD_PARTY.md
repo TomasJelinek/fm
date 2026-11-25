@@ -700,6 +700,52 @@ Tree-sitter. Media preview choices and implementation status are in the
 
 ## Native libraries, runtime and data outside Cargo
 
+### Windows release signing tools
+
+The separate manual [Windows signing workflow](developer/WINDOWS_RELEASE_SIGNING.md)
+uses the following exact source/tool versions. These run on the Windows release
+runner and are not bundled into the application, portable ZIP or MSI. Their
+licenses do not change the application/API license. The external Azure service
+requires a paid subscription and recurring charges under the narrow
+[requested-service exception](DEPENDENCY_POLICY.md#current-decisions); the tooling
+does not select a paid library license.
+
+| Component | Pinned version/source | Inspected license and boundary |
+| --- | --- | --- |
+| Azure login action | `7ddb5af1ef8758cf1353cf3b42f940aee27ba21c` (v3.0.2) | MIT; retain Microsoft notice when redistributing the action |
+| Azure Artifact Signing action | `c7ab2a863ab5f9a846ddb8265964877ef296ee82` (v2) | MIT action wrapper; its downloaded tools have separate terms below |
+| ArtifactSigning PowerShell module | 0.1.8 | Exact package's `licenseUrl` resolves to Microsoft Azure Code Signing terms: Windows development/test tooling; online service terms are separate. Not an MIT module |
+| Microsoft.ArtifactSigning.Client | 1.0.128 | Exact package `LICENSE.md`: Microsoft Azure Code Signing terms; Windows development/test use, preserve notices and restricted redistribution scope |
+| Microsoft.Windows.SDK.BuildTools | 10.0.26100.4188 | Exact package links Windows SDK terms; build-server compiling/building/verifying/archiving is permitted. SDK tools are not application redistributables |
+| Sign CLI | 0.9.1-beta.26227.3, source `2a6e1f4143214d415aac92bc95b439b05574d400` | Exact package `LICENSE.txt` MIT; retain `THIRD-PARTY-NOTICES.txt` with redistributed tooling |
+| MSI assembly | Windows Installer COM and `makecab.exe` from Windows | Existing OS tools, used on the runner; no WiX or new installer-library dependency |
+
+On 25 November 2026, the exact module, client, SDK and Sign CLI NuGet/PowerShell
+archives were downloaded for source/license inspection without installing or
+executing them. Sign CLI's actual `sign.deps.json` contains 55 records: five
+assemblies from the same MIT Sign source; 44 other MIT-declared packages (including the
+actual MIT `LICENSE.md` in `Azure.CodeSigning.Sdk` 0.1.164); and six Apache-2.0
+NuGet packages at 7.3.1 (`Common`, `Configuration`, `Frameworks`, `Packaging`,
+`Protocol`, `Versioning`). All fifty external exact-version archives' manifests
+and available license/notice files were inspected. No trial-only, paid-only or
+royalty-bearing library license was selected. Preserve complete upstream tool
+packages/notices if redistributing a build environment; none of these tools or
+their bundled assemblies belongs in the app's payload.
+
+Review evidence (including exact archive SHA-256 values and transitive license
+records) is retained locally under `_build/signing-license-review/`. Upstream
+records: [pinned action](https://github.com/Azure/artifact-signing-action/tree/c7ab2a863ab5f9a846ddb8265964877ef296ee82),
+[module 0.1.8](https://www.powershellgallery.com/packages/ArtifactSigning/0.1.8),
+[client license](https://www.nuget.org/packages/Microsoft.ArtifactSigning.Client/1.0.128/License),
+[SDK package and license link](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools/10.0.26100.4188),
+[Sign CLI package](https://www.nuget.org/packages/sign/0.9.1-beta.26227.3).
+
+This is a tool-license review, not an advisory scan, Azure account setup, signing
+run or Windows Installer acceptance result. Existing payload notices remain
+unchanged and accompany both release formats.
+
+### Other native/runtime dependencies
+
 Linux settings Browse uses the desktop FileChooser portal through zbus 5.19.0
 (MIT), futures-lite 2.6.1 (MIT OR Apache-2.0) and Tokio 1.54.1 (MIT). The Tokio-backed
 portal enables socket2 0.6.5 (MIT OR Apache-2.0) and bytes 1.12.1 (MIT). These

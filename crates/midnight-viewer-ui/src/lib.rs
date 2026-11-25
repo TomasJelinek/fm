@@ -111,6 +111,7 @@ struct DocumentLayoutIntent {
 pub struct ViewerWindows {
     service: Service,
     windows: RefCell<Vec<Rc<OpenWindow>>>,
+    app_icon: RefCell<slint::Image>,
     preferences_listener: PreferencesRelay,
     appearance: RefCell<Option<appearance::AppAppearance>>,
 }
@@ -270,6 +271,7 @@ impl ViewerWindows {
         Self {
             service,
             windows: RefCell::new(Vec::new()),
+            app_icon: RefCell::default(),
             preferences_listener: Rc::new(RefCell::new(Rc::new(|_| {}))),
             appearance: RefCell::new(None),
         }
@@ -277,6 +279,19 @@ impl ViewerWindows {
 
     pub fn set_preferences_listener(&self, listener: Rc<dyn Fn(ViewerPreferenceChange)>) {
         *self.preferences_listener.borrow_mut() = listener;
+    }
+
+    /// Set the host's icon on current viewers and those opened later.
+    pub fn set_app_icon(&self, icon: slint::Image) {
+        self.app_icon.replace(icon.clone());
+        for open in self
+            .windows
+            .borrow()
+            .iter()
+            .filter(|open| !open.closed.get())
+        {
+            open.window.set_app_icon(icon.clone());
+        }
     }
 
     /// Apply the displayed app theme to chrome and four document palette colors.
@@ -395,6 +410,7 @@ impl ViewerWindows {
                 return Err(error.to_string());
             }
         };
+        window.set_app_icon(self.app_icon.borrow().clone());
         window.set_case_sensitive(launch.preferences.case_sensitive);
         window.set_wrap_enabled(launch.preferences.wrap);
         let placement = placement.into();

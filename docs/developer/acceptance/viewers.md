@@ -133,7 +133,7 @@ run" were added after the runs: they compile but have no result yet.
 | F9 | Large text: 3.5 MiB and 4.25 MiB logs compared as text | `viewers_compare` › large logs, over the former limit | PASS |
 | F10 | Text over 32 MiB, over 1,000,000 lines, or with a line over 16 KiB is compared as bytes with the reason | `viewers_compare` › over a text limit | PASS |
 | F11 | File A / File B chosen by hand: the resolved side prefilled, a missing path refused in the form (drafts kept), Browse…, Compare, Cancel | `viewers_compare` › File A and File B chosen by hand | PASS |
-| F12 | Archive members: Compare asks for File A and File B (members have no native paths) | `viewers_archives` › Compare files on archive members | PASS |
+| F12 | Compare two marked archive members, or compare a member with the same-name native file from either pane. Check rendered text for differing and identical pairs. | `viewers_archive_native_compare` | PASS (Windows, 2026-11-25). Also verified a differing file from a supplied 7z in both directions. |
 | F13 | Compare files in a list of search results is refused with the reason | `viewers_combinations` › Find results and a fed list | PASS |
 | F14 | Escape and Close close the comparator | `viewers_compare` | PASS |
 

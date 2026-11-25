@@ -49,7 +49,6 @@ fn model() -> PanelFilterView {
         ]))
         .into(),
         history_labels: Rc::new(slint::VecModel::from(vec![
-            "Choose a recent filter…".into(),
             "Masks: *.txt".into(),
             "Expression (case sensitive): name like \"文档*\"".into(),
         ]))
@@ -214,6 +213,7 @@ fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both
             for (width, height) in [(564, 384), (328, 488)] {
                 host.draw(width, height, &format!("filter-layout-{scheme}-{density}"));
                 if width == 328 {
+                    form_inside(&host, AccessibleRole::Checkbox, "Case sensitive");
                     host.stretch_vertically(&host.item(AccessibleRole::Button, "Cancel"));
                     host.draw(
                         width,
@@ -244,7 +244,19 @@ fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both
                     "expression and history must have equal height and top"
                 );
                 assert_inline_clear(&expression, &clear);
-                assert!(history.geometry().width() <= history.geometry().height() + 1.0);
+                assert!(
+                    (history.geometry().width() - history.geometry().height()).abs() <= 1.0,
+                    "the down-arrow button stays square at every width"
+                );
+                let mut icons = Vec::new();
+                visible_images(history.clone(), &mut icons);
+                assert_eq!(icons.len(), 1, "the picker shows a single dropdown arrow");
+                assert!(
+                    crate::support::ui::visible_text_values(history)
+                        .iter()
+                        .all(|caption| caption.is_empty()),
+                    "the picker has no visible text caption"
+                );
                 form_inside(&host, AccessibleRole::Checkbox, "Case sensitive");
                 for label in ["Help", "Show all", "OK", "Cancel"] {
                     form_inside(&host, AccessibleRole::Button, label);
@@ -260,6 +272,11 @@ fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both
                 if width == 564 {
                     let ok = form_inside(&host, AccessibleRole::Button, "OK");
                     let cancel = form_inside(&host, AccessibleRole::Button, "Cancel");
+                    let case = form_inside(&host, AccessibleRole::Checkbox, "Case sensitive");
+                    assert!(
+                        center(&ok) - center(&case) < 2.5 * ok.geometry().height(),
+                        "the default dialog keeps its actions close to the fields"
+                    );
                     assert!(
                         (center(&ok) - center(&cancel)).abs() <= 1.0,
                         "normal footer is misaligned"
@@ -332,9 +349,12 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
                 &host.item(AccessibleRole::TextInput, "File filter expression"),
                 &host.item(AccessibleRole::Button, "Clear filter expression"),
             );
-            let history = form_inside(&host, AccessibleRole::Combobox, "Filter history");
-            input::click(&native, &history);
-            input::key(&native, Key::DownArrow);
+            input::chord(&native, &[Key::Alt], Key::DownArrow);
+            host.draw(564, 384, &format!("filter-history-open-{scheme}-{density}"));
+            assert!(
+                host.item(AccessibleRole::Button, "Masks: *.txt")
+                    .is_visible()
+            );
             input::key(&native, Key::DownArrow);
             input::key(&native, Key::Return);
             assert!(

@@ -153,6 +153,12 @@ component PluginCatalogList inherits Rectangle {
     }
 }
 
+// Reserve every wrapped line in the scroll layout before placing the next control.
+component PluginDetailText inherits Text {
+    color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+    min-height: self.preferred-height; vertical-stretch: 0;
+}
+
 component PluginCatalog inherits VerticalLayout {
     in property <[ViewerPluginRow]> rows;
     in property <int> selected: -1;
@@ -172,20 +178,20 @@ component PluginCatalog inherits VerticalLayout {
     @children
     if root.selected >= 0 : VerticalLayout {
         spacing: 6px; alignment: start;
-        Text {
+        PluginDetailText {
             text: root.current.name + (root.current.version == "" ? "" : " · " + root.current.version);
-            color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; wrap: word-wrap;
+            color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
         }
-        Text { text: root.current.kind; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
-        if root.current.id != "" : Text {
-            text: "ID: " + root.current.id; color: Theme.secondary-text; font-size: Theme.small-font; wrap: char-wrap;
+        PluginDetailText { text: root.current.kind; }
+        if root.current.id != "" : PluginDetailText {
+            text: "ID: " + root.current.id; color: Theme.secondary-text; wrap: char-wrap;
         }
-        if root.current.description != "" : Text {
-            text: root.current.description; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+        if root.current.description != "" : PluginDetailText {
+            text: root.current.description;
         }
-        Text { text: root.current.status; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; }
-        if root.current.location != "" : Text {
-            text: root.current.location; color: Theme.secondary-text; font-size: Theme.small-font; wrap: char-wrap;
+        PluginDetailText { text: root.current.status; }
+        if root.current.location != "" : PluginDetailText {
+            text: root.current.location; color: Theme.secondary-text; wrap: char-wrap;
         }
     }
     if ViewerPluginsView.pending && root.error == "" && root.rows.length == 0 : Text {

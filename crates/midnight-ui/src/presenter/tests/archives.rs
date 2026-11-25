@@ -71,6 +71,33 @@ pub(super) fn archive_pane() -> Presenter {
 }
 
 #[test]
+fn archive_compare_captures_focus_marks_and_same_name_without_provider_io() {
+    let mut p = archive_pane();
+    p.viewer_plugins.startup_disabled = Some(Arc::from([]));
+    p.comparators.accepted = Some(FileComparatorSnapshot::default());
+    p.panes[0].parent_cursor = false;
+    p.panes[0].cursor = Some(EntryId(4));
+    let launch = p.file_compare_launch(PaneId::Left).unwrap();
+    assert!(matches!(&launch.sources[..],
+        [FileCompareSource::ArchiveMember(member), FileCompareSource::SameName { .. }] if member.node.id.entry == 4));
+    let launch = p.file_compare_launch(PaneId::Right).unwrap();
+    assert!(
+        matches!(&launch.sources[0], FileCompareSource::ArchiveSameName { folder, .. } if folder.directory == 1)
+    );
+
+    let marked = Arc::new(HashSet::from([EntryId(4), EntryId(3)]));
+    p.panes[0].archive.as_mut().unwrap().selected = marked.clone();
+    let launch = p.file_compare_launch(PaneId::Left).unwrap();
+    assert!(matches!(&launch.sources[..],
+        [FileCompareSource::ArchiveSelected { selection, .. }] if Arc::ptr_eq(selection, &marked)));
+    p.panes[0].archive.as_mut().unwrap().selection_pending = true;
+    assert!(matches!(
+        &p.file_compare_launch(PaneId::Left).unwrap().sources[..],
+        [FileCompareSource::Unspecified]
+    ));
+}
+
+#[test]
 fn archive_listing_clears_native_folder_column_samples() {
     let p = archive_pane();
     assert_eq!(p.panes[0].folder_column_samples.values().max(), None);

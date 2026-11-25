@@ -14,8 +14,8 @@
 //! level), the four-level limit (Enter on a fifth level explains it), damaged
 //! archives (truncated ZIP and 7-Zip, garbage after a 7-Zip signature, a tar.gz with a
 //! corrupted stream: a clear error; a ZIP member with a wrong CRC: the listing works,
-//! F3 and F5 of that member fail clearly), Compare files on two archive members (the
-//! File A / File B form, as members have no native paths), and archives over the former
+//! F3 and F5 of that member fail clearly), Compare files on two marked archive
+//! members (both texts shown directly), and archives over the former
 //! metadata limits of 100,000 entries and 8 MiB of names, and one folder of 100,001
 //! files. Formats whose compressor this machine lacks are skipped with that reason.
 use crate::{
@@ -25,10 +25,7 @@ use crate::{
     viewers_support::{self as support, Failures, clip, generated, millis},
 };
 use midnight_core::{CopyOperationState, PaneId};
-use slint::{
-    ComponentHandle,
-    platform::{Key, WindowEvent},
-};
+use slint::platform::Key;
 use std::{
     collections::BTreeSet,
     path::Path,
@@ -1228,8 +1225,7 @@ fn wrong_crc(
     back_to(app, home, 1, "crc.zip")
 }
 
-/// Ctrl+Shift+C on two marked archive members: members have no native paths, so the
-/// comparator asks for File A and File B with empty fields.
+/// Ctrl+Shift+C reads the two marked members in their displayed order.
 fn compare_members(app: &mut App, context: &mut Context, home: &Path) -> Result<(), String> {
     open_row(app, "bundle.tgz")?;
     wait_listing(app, "bundle.tgz root", BUNDLE[0].1)?;
@@ -1240,58 +1236,15 @@ fn compare_members(app: &mut App, context: &mut Context, home: &Path) -> Result<
         input::key(app.slint(), Key::Insert);
         app.settle();
     }
-    let before = support::plugins(app)?.compared.borrow().len();
-    input::chord(app.slint(), &[Key::Control, Key::Shift], "c");
-    app.settle();
-    let compared = support::plugins(app)?
-        .compared
-        .borrow()
-        .get(before)
-        .cloned();
-    let result = match compared.and_then(|compared| compared.window.upgrade()) {
-        None => Err(format!(
-            "Ctrl+Shift+C on two archive members opened no comparator; notice {:?}",
-            app.notice()
+    let result = super::archive_compare::compare_text(
+        app,
+        context,
+        super::archive_compare::Expected::Different(["Inside the bundle.", "Unicode member."]),
+        Some((
+            "compare-members",
+            "Two marked archive members compared directly",
         )),
-        Some(window) => {
-            window
-                .window()
-                .dispatch_event(WindowEvent::WindowActiveChanged(true));
-            app.idle(Duration::from_millis(300));
-            support::paint_tool_windows(app);
-            let checked = if !window.get_choosing_files() {
-                Err(format!(
-                    "the comparator compared archive members directly: {:?}",
-                    window.get_status()
-                ))
-            } else if !window.get_file_a().is_empty() || !window.get_file_b().is_empty() {
-                Err(format!(
-                    "the File A / File B form shows {:?} and {:?} for archive members",
-                    window.get_file_a(),
-                    window.get_file_b()
-                ))
-            } else {
-                Ok(())
-            };
-            if let Some(software) = support::software_window(app, window.window()) {
-                app.screenshot_window(
-                    context,
-                    &software,
-                    "compare-members",
-                    "Ctrl+Shift+C on two archive members: File A and File B are asked for",
-                );
-            }
-            input::key(window.window(), Key::Escape);
-            app.idle(Duration::from_millis(200));
-            app.slint()
-                .dispatch_event(WindowEvent::WindowActiveChanged(true));
-            app.settle();
-            if window.window().is_visible() {
-                return Err("Escape did not close the File A / File B form".into());
-            }
-            checked
-        }
-    };
+    );
     input::chord(app.slint(), &[Key::Control], "d");
     app.settle();
     back_to(app, home, 2, "bundle.tgz")?;

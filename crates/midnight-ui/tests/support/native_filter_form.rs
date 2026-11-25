@@ -225,10 +225,7 @@ fn embedded_filter_history_restores_mode_case_and_text_without_applying_and_clea
             open: true,
             expression: "*.old".into(),
             history: slint::ModelRc::new(slint::VecModel::from(vec![item.clone()])),
-            history_labels: slint::ModelRc::new(slint::VecModel::from(vec![
-                "Choose a recent filter…".into(),
-                item.label,
-            ])),
+            history_labels: slint::ModelRc::new(slint::VecModel::from(vec![item.label])),
             ..Default::default()
         },
         564,
@@ -248,7 +245,6 @@ fn embedded_filter_history_restores_mode_case_and_text_without_applying_and_clea
     form.presentation()
         .on_clear(move |_| *out.borrow_mut() += 1);
     click_control(native, "Filter history", AccessibleRole::Combobox);
-    key(native, slint::platform::Key::DownArrow);
     key(native, slint::platform::Key::Return);
     assert_eq!(value(native), r"\.TXT$");
     assert!(calls.borrow().is_empty());

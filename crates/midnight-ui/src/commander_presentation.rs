@@ -150,7 +150,7 @@ type HistoryModels = (
 fn filter_history(window: &MainWindow, presenter: &Presenter) -> HistoryModels {
     let source = &presenter.preferences.values.panel_filter_history;
     let previous = window.get_panel_filter_view();
-    let unchanged = previous.history_labels.row_count() == source.len() + 1
+    let unchanged = previous.history_labels.row_count() == source.len()
         && previous.history.row_count() == source.len()
         && source.iter().enumerate().all(|(index, filter)| {
             previous.history.row_data(index).is_some_and(|row| {
@@ -185,12 +185,7 @@ fn filter_history(window: &MainWindow, presenter: &Presenter) -> HistoryModels {
             case_sensitive: filter.case_sensitive,
         })
         .collect::<Vec<_>>();
-    let mut labels = vec![SharedString::from(if history.is_empty() {
-        "No filter history yet"
-    } else {
-        "Choose a recent filter…"
-    })];
-    labels.extend(history.iter().map(|item| item.label.clone()));
+    let labels: Vec<_> = history.iter().map(|item| item.label.clone()).collect();
     (
         slint::ModelRc::new(slint::VecModel::from(history)),
         slint::ModelRc::new(slint::VecModel::from(labels)),
@@ -214,7 +209,8 @@ mod tests {
             ..Default::default()
         });
         let before = h.window.get_panel_filter_view();
-        assert_eq!(before.history_labels.row_count(), 3);
+        assert_eq!(before.history_labels.row_count(), 2);
+        assert_eq!(before.history_labels.row_data(0).unwrap(), "Masks: *.rs");
         h.refresh();
         let after = h.window.get_panel_filter_view();
         assert!(

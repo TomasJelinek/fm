@@ -1,6 +1,6 @@
 //! Portable preferences codec and atomic publication; native adapters own path/security policy.
 use midnight_core::{
-    Bookmark, BookmarkId, CommandHistoryEntry, DiskIoConcurrency, PaneTabPreferences,
+    AppIcon, Bookmark, BookmarkId, CommandHistoryEntry, DiskIoConcurrency, PaneTabPreferences,
     PanelViewMode, PreferenceTheme, ShellFlavor, ShortcutBinding, SizeDisplay, UiDensity,
     UserPreferences, WindowsShell,
 };
@@ -35,6 +35,8 @@ use window_geometry::StoredWindowGeometry;
 mod native_path;
 use native_path::NativePath;
 #[cfg(test)]
+mod app_icon_tests;
+#[cfg(test)]
 mod archives_tests;
 #[cfg(test)]
 mod file_list_tests;
@@ -47,12 +49,18 @@ mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 35;
+const CURRENT_PREFERENCES_VERSION: u32 = 36;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    app_icon: Option<String>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -555,6 +563,13 @@ fn decode_preferences_impl(
         };
     let theme = PreferenceTheme::from_storage_name(&stored.theme)
         .ok_or_else(|| invalid("unknown preferences theme"))?;
+    let app_icon = match (stored.version, stored.app_icon.as_deref()) {
+        (1..=35, None) => AppIcon::default(),
+        (36.., Some(name)) => {
+            AppIcon::from_storage_name(name).ok_or_else(|| invalid("unknown app icon"))?
+        }
+        _ => return Err(invalid("missing or unexpected app icon")),
+    };
     let density = match stored.density.as_str() {
         "desktop" => UiDensity::Desktop,
         "touch" => UiDensity::Touch,
@@ -903,6 +918,7 @@ fn decode_preferences_impl(
         file_comparators,
         editor,
         theme,
+        app_icon,
         density,
         windows_shell,
         font_family,
@@ -1020,9 +1036,10 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let mask_choices =
         preferences.mask_selection != midnight_core::MaskSelectionPreferences::default();
     let panel_choices = hidden_choices || mask_choices;
-    // Schema 35 keeps every field that versions 33 and 34 require.
+    let icon_choice = preferences.app_icon != AppIcon::default();
+    // Later schemas keep the required comparator fields introduced in version 33.
     let comparator_fields =
-        comparator_choices || thumbnailer_choices || glyph_choices || panel_choices;
+        comparator_choices || thumbnailer_choices || glyph_choices || panel_choices || icon_choice;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1092,6 +1109,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
     let stored = StoredPreferences {
+        app_icon: icon_choice.then(|| preferences.app_icon.storage_name().to_owned()),
         show_hidden_files: hidden_choices.then_some(preferences.show_hidden_files),
         mask_selection: mask_choices.then(|| StoredMaskSelection {
             pattern: preferences.mask_selection.pattern.clone(),
@@ -1151,7 +1169,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if panel_choices {
+        version: if icon_choice {
+            36
+        } else if panel_choices {
             35
         } else if thumbnailer_choices || glyph_choices {
             34

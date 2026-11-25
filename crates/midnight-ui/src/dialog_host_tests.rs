@@ -77,6 +77,38 @@ fn exhausted_sessions_never_reuse_an_identity() {
 }
 
 #[test]
+fn tool_windows_follow_the_owner_icon_at_creation_and_while_open() {
+    ui(|_| {
+        let main = crate::MainWindow::new().unwrap();
+        main.set_app_icon_index(2);
+        main.show().unwrap();
+        let mut sessions = DialogSessions::default();
+        let (find, host) = DialogHost::create_tool(
+            sessions.allocate().unwrap(),
+            DialogOwner::new(&main),
+            crate::FindWindow::new,
+        )
+        .unwrap();
+        let icon = || {
+            i_slint_core::window::WindowInner::from_pub(find.window())
+                .window_item()
+                .unwrap()
+                .as_pin_ref()
+                .icon()
+        };
+        let opening_icon = main.get_current_app_icon();
+        assert_eq!(icon(), opening_icon);
+        host.show(find.window()).unwrap();
+        main.set_app_icon_index(3);
+        assert_ne!(main.get_current_app_icon(), opening_icon);
+        assert_eq!(icon(), main.get_current_app_icon());
+        main.set_app_icon_index(2);
+        assert_eq!(icon(), opening_icon);
+        host.close(find.window());
+    });
+}
+
+#[test]
 fn nested_modal_lease_restores_only_after_last_child() {
     ui(|_| {
         let main = crate::MainWindow::new().unwrap();

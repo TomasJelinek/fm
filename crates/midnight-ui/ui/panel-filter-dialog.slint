@@ -29,18 +29,22 @@ export component PanelFilterDialog inherits Rectangle {
     callback move-dialog(length, length);
     // Move focus once when the compact layout begins (it can clip the focused
     // field); resizing inside it must not take focus from the edited field.
-    private property <bool> compact: root.width < 400px || root.height < 280px;
+    private property <bool> short: root.height < 220px;
+    private property <bool> compact: root.width < 400px || root.short;
     changed compact => { if root.input-enabled && root.compact { footer.focus-dismiss(); } }
     public function begin() {
         mode.current-index = root.model.mode;
         expression.text = root.model.expression;
         names.checked = root.model.case-sensitive;
-        history.current-index = 0;
         if !root.input-enabled { return; }
         if root.compact { footer.focus-dismiss(); }
         else { expression.focus-value(); }
     }
     private property <length> field-height: max(32px, Theme.control-height, field-metrics.preferred-height + 10px);
+    // Use regular padding to size a fresh dialog. Manual resizing still takes
+    // precedence, with the fields scrolling above the footer when space is tight.
+    out property <length> natural-height: 32px + header.regular-height + fields.preferred-height
+        + 20px + footer.regular-height;
     field-metrics := Text {
         visible: false; text: "Clear";
         font-family: Theme.effective-font-family; font-size: Theme.font-size;
@@ -49,7 +53,7 @@ export component PanelFilterDialog inherits Rectangle {
     border-width: 1px; border-color: Theme.active-frame;
     FocusScope {
         capture-key-pressed(event) => {
-            if root.input-enabled && event.modifiers.alt && event.text == Key.DownArrow {
+            if history.enabled && event.modifiers.alt && event.text == Key.DownArrow {
                 history.open(); return accept;
             }
             reject
@@ -61,19 +65,32 @@ export component PanelFilterDialog inherits Rectangle {
             return reject;
         }
         VerticalLayout {
-            padding: root.height < 280px ? 8px : 16px; spacing: root.height < 280px ? 4px : 8px;
-            DialogHeader { title: "Panel filter"; fallback-icon: FallbackIcons.filter; compact: root.height < 280px;
+            padding-left: root.width < 400px ? 8px : 16px; padding-right: self.padding-left;
+            padding-top: root.short ? 8px : 16px; padding-bottom: self.padding-top;
+            spacing: root.short ? 4px : 10px;
+            header := DialogHeader { title: "Panel filter"; fallback-icon: FallbackIcons.filter; compact: root.short;
                 enabled: root.input-enabled;
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
             VScrollView {
                 min-height: 0px; vertical-stretch: 1;
-                VerticalLayout {
+                content-width: self.visible-width;
+                fields := VerticalLayout {
                     spacing: 8px; alignment: start;
-                    mode := HintedComboBox {
-                        model: ["Masks", "Regex", "Expression"]; enabled: root.input-enabled && !root.model.busy; min-height: Theme.control-height;
-                        accessible-label: "Filter mode";
-                        hint: "Masks and Regex match names and keep folders visible. Expression tests captured metadata and can also filter folders.";
+                    HorizontalLayout {
+                        spacing: 8px; cross-axis-alignment: center;
+                        Text {
+                            text: mode.current-index == 2 ? "Filter expression"
+                                : mode.current-index == 1 ? "Regular expression" : "File name masks";
+                            color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
+                            min-width: 0px; horizontal-stretch: 1; overflow: elide;
+                        }
+                        mode := HintedComboBox {
+                            model: ["Masks", "Regex", "Expression"];
+                            enabled: root.input-enabled && !root.model.busy; min-height: Theme.control-height;
+                            accessible-label: "Filter mode";
+                            hint: "Masks and Regex match names and keep folders visible. Expression tests captured metadata and can also filter folders.";
+                        }
                     }
                     HorizontalLayout {
                         spacing: 0px; cross-axis-alignment: center;
@@ -101,30 +118,31 @@ export component PanelFilterDialog inherits Rectangle {
                                 compact: true;
                                 enabled: root.input-enabled && !root.model.busy;
                                 hint: "Clear the draft text. The applied panel filter is unchanged until OK.";
-                                clicked => { expression.text = ""; history.current-index = 0; expression.focus-value(); }
+                                clicked => { expression.text = ""; expression.focus-value(); }
                             }
                         }
                         history := CompactPicker {
                             model: root.model.history-labels;
                             enabled: root.input-enabled && !root.model.busy && root.model.history.length > 0;
                             accessible-name: "Filter history";
-                            hint: "Choose a previously applied filter to edit (Alt+Down). OK applies it to this panel.";
-                            // An arrow beside the edit is the history affordance; its
-                            // popup keeps complete mode/case labels for each draft.
+                            hint: root.model.history.length == 0 ? "Applied filters will appear here."
+                                : "Choose a recent filter (Alt+Down). OK applies it to this panel.";
                             label: ""; show-row-icons: false;
-                            width: root.field-height; control-height: root.field-height;
+                            width: root.field-height;
+                            control-height: root.field-height;
                             minimum-control-width: 0px; horizontal-stretch: 0;
-                            popup-align-right: true; popup-width: 420px;
+                            popup-align-right: true; popup-width: expression.width + self.width;
+                            fill-available-height: true;
                             selected(index) => {
-                                self.current-index = index;
-                                if index > 0 && index <= root.model.history.length {
-                                    let item = root.model.history[index - 1];
+                                if index >= 0 && index < root.model.history.length {
+                                    let item = root.model.history[index];
                                     mode.current-index = item.mode;
                                     expression.text = item.expression;
                                     names.checked = item.case-sensitive;
-                                    // Return confirms history only, never applies the filter.
+                                    expression.focus-value();
                                 }
                             }
+                            dismissed => { if root.input-enabled && !root.model.busy { expression.focus-value(); } }
                         }
                     }
                     names := WrappingCheckBox {
@@ -136,7 +154,7 @@ export component PanelFilterDialog inherits Rectangle {
                 }
             }
             footer := DialogFooter {
-                compact-height: root.height < 280px;
+                compact-height: root.short;
                 dismiss-enabled: root.input-enabled;
                 dismiss => { root.cancel(); }
                 HintedActionButton {

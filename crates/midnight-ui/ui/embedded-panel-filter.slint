@@ -88,7 +88,7 @@ export component EmbeddedPanelFilter inherits Rectangle {
         filter-frame := DialogFrame {
             x: 0px; y: 0px; width: root.width; height: root.height;
             desired-width: max(540px, Theme.font-size * 28);
-            desired-height: max(320px, Theme.control-height * 6 + 100px);
+            desired-height: form.natural-height;
             dim: true; dismiss-on-outside: false;
             private property <string> occurrence;
             private property <string> help-occurrence: PanelFilterPresentation.help-token;

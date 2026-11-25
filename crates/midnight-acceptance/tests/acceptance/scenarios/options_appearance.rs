@@ -1,5 +1,5 @@
-//! Options › Appearance: theme, spacing, font family, desktop and touch font sizes and
-//! text rendering, each with its visible effect; Cancel restores the previewed theme,
+//! Options › Appearance: theme, application icon, spacing, font family, desktop and touch
+//! font sizes and text rendering, each with its visible effect; Cancel restores previews,
 //! OK saves, a restart shows the saved appearance and Reset to defaults restores it.
 use crate::{
     Context,
@@ -12,6 +12,7 @@ use std::{path::Path, sync::Arc};
 
 const SPACING_DESKTOP: &str = "Desktop / mouse · compact";
 const SPACING_TOUCH: &str = "Touch · larger controls";
+const ICON_PICKER: &str = "Application icon";
 /// The theme ids `Theme.scheme` uses (PreferenceTheme order).
 const BLUE: i32 = 0;
 const DARK: i32 = 1;
@@ -38,10 +39,21 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         ));
     }
     let blue_luma = Frame::of(&mut app).mean_luma();
+    let moon = app.window.get_current_app_icon();
 
-    // Theme preview, then Cancel: the previous theme returns and nothing is saved.
+    // Preview a theme and icon, then Cancel to restore the previous appearance.
     options::open(&mut app)?;
     options::page(&mut app, "Appearance")?;
+    if options::value(&app, AccessibleRole::Combobox, ICON_PICKER).as_deref()
+        != Some("Midnight Moon")
+    {
+        return Err("the default application icon is not Midnight Moon".into());
+    }
+    options::choose(&mut app, ICON_PICKER, "Harvest Navigator")?;
+    let harvest = app.window.get_current_app_icon();
+    if harvest == moon {
+        return Err("Harvest Navigator did not replace the window artwork".into());
+    }
     options::choose(&mut app, "Theme", "Light")?;
     app.until("the Light theme preview", |app| {
         app.window.get_theme_index() == LIGHT
@@ -56,6 +68,9 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     app.until("Cancel to restore the Blue theme", |app| {
         app.window.get_theme_index() == BLUE
     });
+    if app.window.get_current_app_icon() != moon {
+        return Err("Cancel did not restore the Midnight Moon artwork".into());
+    }
     app.idle(std::time::Duration::from_millis(300));
     let restored = Frame::of(&mut app).mean_luma();
     if (restored - blue_luma).abs() > 2.0 || store.saves() != 0 {
@@ -83,6 +98,17 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         return Err(format!(
             "the theme preview is not visible: panel luma {light_list:.1} in Light, {dark_list:.1} in Dark"
         ));
+    }
+
+    options::choose(&mut app, ICON_PICKER, "Origami Trail")?;
+    let origami = app.window.get_current_app_icon();
+    if origami == moon || origami == harvest {
+        return Err("Origami Trail repeated a previous window icon".into());
+    }
+    options::choose(&mut app, ICON_PICKER, "Interleave")?;
+    let interleave = app.window.get_current_app_icon();
+    if interleave == moon || interleave == harvest || interleave == origami {
+        return Err("Interleave repeated a previous window icon".into());
     }
 
     // Desktop font size: rows grow with the text.
@@ -148,6 +174,9 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         return Err("OK did not save the appearance".into());
     }
     let saved = store.current();
+    if saved.app_icon.storage_name() != "interleave" {
+        return Err(format!("OK saved application icon {:?}", saved.app_icon));
+    }
     if saved.theme != PreferenceTheme::Dark
         || saved.density != UiDensity::Touch
         || saved.font_family != "DejaVu Sans Mono"
@@ -176,6 +205,9 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     drop(app);
     let mut app = App::start(config(&folder, &store));
     app.idle(std::time::Duration::from_millis(300));
+    if app.window.get_current_app_icon() != interleave {
+        return Err("the restarted window did not restore the Interleave artwork".into());
+    }
     if app.window.get_theme_index() != DARK
         || app.window.get_density_index() != 1
         || (row_height(&app) - final_rows).abs() > 0.5
@@ -194,6 +226,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     });
     for (label, wanted) in [
         ("Theme", "Dark"),
+        (ICON_PICKER, "Interleave"),
         ("Spacing", SPACING_TOUCH),
         ("Font family", "DejaVu Sans Mono"),
         ("Desktop font", "16"),
@@ -221,6 +254,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     });
     for (label, wanted) in [
         ("Theme", "Blue"),
+        (ICON_PICKER, "Midnight Moon"),
         ("Spacing", SPACING_DESKTOP),
         ("Font family", "Application default"),
         ("Desktop font", "12"),
@@ -234,10 +268,28 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
             ));
         }
     }
+    if app.window.get_current_app_icon() != moon {
+        return Err("Reset to defaults did not preview the Midnight Moon artwork".into());
+    }
+    let before_cancel = store.saves();
+    options::cancel(&mut app)?;
+    if app.window.get_current_app_icon() != interleave || store.saves() != before_cancel {
+        return Err(
+            "cancelling Reset did not restore the saved Interleave icon without a write".into(),
+        );
+    }
+    options::open(&mut app)?;
+    options::press(&mut app, "Reset to defaults")?;
     if !options::ok(&mut app, &store)? {
         return Err("OK after Reset to defaults saved nothing".into());
     }
     let saved = store.current();
+    if saved.app_icon.storage_name() != "moon" {
+        return Err(format!(
+            "Reset to defaults saved application icon {:?}",
+            saved.app_icon
+        ));
+    }
     if saved.theme != PreferenceTheme::Blue
         || saved.density != UiDensity::Desktop
         || !saved.font_family.is_empty()
@@ -255,6 +307,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
             saved.glyph_fitting
         ));
     }
+    context.note("All four icon choices displayed distinct window artwork. OK saved Interleave, restart restored it, cancelling Reset kept it, and accepting Reset saved Midnight Moon.");
     context.note("Appearance: Cancel restored the previewed theme; Light/Dark, 16 px desktop and 18 px touch fonts, touch spacing and the font face changed the panels; OK saved them with smooth text rendering; a restart showed them; Reset to defaults restored Blue/Desktop/12/15/Sharp. Text rendering configures the FemtoVG renderer at startup; the software renderer used here ignores it, so it is verified by storage and its display after the restart");
     app.shutdown()
 }

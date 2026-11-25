@@ -188,9 +188,9 @@ pub struct TreeDisplayIndex {
     /// Visible root aliases for constant-time focus and initial disclosure adoption.
     /// These map original listing identities, never descendant operation authority.
     pub root_rows: HashMap<EntryId, TreeRowId>,
-    /// Sorted visible native root-file aliases, excluding unavailable or errored rows.
+    /// Sorted visible native and readable archive root-file aliases, excluding unavailable or errored rows.
     /// Numeric metadata only; consumers still resolve paths from `root_actions`.
-    pub native_root_files: Arc<[EntryId]>,
+    pub comparison_root_files: Arc<[EntryId]>,
     /// Rendering/search compatibility only. Never a native operation selection scope.
     pub directory: Arc<DirectoryIndex>,
 }
@@ -345,7 +345,7 @@ impl TreeProjection {
             .enumerate()
             .filter_map(|(position, row)| row.search_match.then_some(position))
             .collect();
-        let mut native_root_files: Vec<_> = rows
+        let mut comparison_root_files: Vec<_> = rows
             .iter()
             .filter(|row| {
                 row.depth == 0
@@ -354,12 +354,17 @@ impl TreeProjection {
                     && !row.context_only
                     && row.error.is_none()
                     && row.entry.kind == EntryKind::File
-                    && row.entry.native_path().is_some()
+                    && (row.entry.native_path().is_some()
+                        || row
+                            .entry
+                            .virtual_node
+                            .as_ref()
+                            .is_some_and(|node| node.readable))
             })
             .filter_map(|row| row.original_root_entry)
             .collect();
-        native_root_files.sort_unstable_by_key(|id| id.0);
-        let native_root_files: Arc<[EntryId]> = native_root_files.into();
+        comparison_root_files.sort_unstable_by_key(|id| id.0);
+        let comparison_root_files: Arc<[EntryId]> = comparison_root_files.into();
         let directory = Arc::new(DirectoryIndex::from_entry_refs(
             rows.iter().map(|row| &row.entry),
         ));
@@ -367,7 +372,7 @@ impl TreeProjection {
             .saturating_add(map_bytes(&row_positions))
             .saturating_add(map_bytes(&root_rows))
             .saturating_add(size_of_val(search_rows.as_ref()))
-            .saturating_add(size_of_val(native_root_files.as_ref()))
+            .saturating_add(size_of_val(comparison_root_files.as_ref()))
             .saturating_add(ARC_HEADER)
             .saturating_add(ARC_HEADER)
             .saturating_add(directory_bytes(&directory));
@@ -384,7 +389,7 @@ impl TreeProjection {
                 row_positions,
                 search_rows,
                 root_rows,
-                native_root_files,
+                comparison_root_files,
                 directory,
             }),
             hidden: 0,

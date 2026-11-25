@@ -22,6 +22,9 @@ impl Presenter {
         self.operations
             .unconfirmed
             .retain(|id| !removed.contains(id));
+        self.operations
+            .creation_panes
+            .retain(|id, _| !removed.contains(id));
         let results: Vec<_> = self
             .operations
             .metadata_results

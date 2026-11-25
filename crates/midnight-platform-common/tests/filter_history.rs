@@ -1,8 +1,11 @@
 use midnight_core::{FilterMode, PanelFilter, UserPreferences};
-use midnight_platform_common::settings::{decode_preferences, encode_preferences};
+use midnight_platform_common::settings::{
+    encode_preferences, publish_atomic, read_preferences_for_acceptance,
+};
+use std::fs::File;
 
 #[test]
-fn filter_history_round_trips_mode_case_and_order_without_enabling_panel_filters() {
+fn reopening_saved_preferences_restores_filter_history_without_enabling_panel_filters() {
     let history = vec![
         PanelFilter {
             enabled: true,
@@ -21,7 +24,16 @@ fn filter_history_round_trips_mode_case_and_order_without_enabling_panel_filters
         panel_filter_history: history.clone(),
         ..Default::default()
     };
-    let restored = decode_preferences(&encode_preferences(preferences).unwrap()).unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("preferences.json");
+    publish_atomic(
+        &path,
+        &encode_preferences(preferences).unwrap(),
+        |temporary| File::create_new(temporary),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let restored = read_preferences_for_acceptance(File::open(path).unwrap()).unwrap();
     assert_eq!(restored.panel_filter_history, history);
     assert!(restored.panel_filters.iter().all(|filter| !filter.enabled));
 }

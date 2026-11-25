@@ -26,7 +26,6 @@ export component ChecksumWindow inherits ToolWindow {
         if root.page == 0 && !root.show-details { results.focus(); } else { root.focus-content(); }
     }
     title: "Checksums · Midnight Explorer";
-    icon: FallbackIcons.checksums;
     in property <[ChecksumDisplayRow]> rows;
     in property <bool> running;
     in property <bool> stopping;

@@ -17,6 +17,44 @@ code or a green subset into complete qualification.
 
 ## Current checkpoint
 
+### Application icon selection — 25 November 2026
+
+Options → Appearance offers Midnight Moon and the three [saved designs](../assets/branding/README.md#icon-shortlist).
+The toolbar and app windows preview the selected artwork. OK saves the choice for
+the next launch. Cancel restores the previous icon. Existing profiles use Midnight Moon.
+
+On Windows, the `options_appearance` scenario passed selection, Cancel, save,
+restart and Reset through the visible controls. The native `WM_GETICON` test
+verified both the title-bar and taskbar artwork on first display and after a live
+change. All 69 settings codec tests passed. The Linux shell surfaces were not
+tested in this run.
+
+### Windows release signing — 25 November 2026
+
+Scoped implementation added locally: a separate manual workflow signs an existing
+draft-release Windows ZIP through Azure Artifact Signing, verifies publisher and
+timestamps, preserves external runtime bytes/notices, refreshes inventories and
+the final checksum, builds and separately signs an MSI from the signed payload,
+and leaves publication manual. The HTML CEF bootstrap/client pair must retain the
+same primary signer. The MSI is per-user, defaults to
+`%LOCALAPPDATA%\Programs\Midnight Explorer`, and offers only destination-folder
+selection. Store packaging is outside scope.
+See the [operator/setup guide](developer/WINDOWS_RELEASE_SIGNING.md).
+
+Local verification: 80 targeted Python tests ran, 71 passed and nine skipped;
+after MSI review fixes its seven-test group ran again with six passes and one
+symlink-privilege skip. A real fixture MSI passed native database/CAB byte parity,
+version/language metadata, pre-install actions, profile-folder resolution, Unicode
+folder override, machine-scope refusal and unsigned-installer rejection. Four
+PowerShell scripts parsed successfully. See the exact commands, review fixes and
+limits in the [verification receipt](verification/2026-11-25-windows-release-signing.md).
+No Azure account provisioning,
+identity validation, OIDC/environment configuration, live signing, public-trust
+acceptance, downloaded signed release or installed Windows smoke result has been
+verified. The paid service requires external setup; current Public Trust identity
+rules limit individuals to the US/Canada, while eligible EU organizations are
+supported. The implementation does not create resources or approve billing.
+
 **ACTIVE — explicitly resumed by the user on 15 November 2026:** implement all
 designed app features, test each deeply and polish all UI. Copy/Move convergence
 comes first; role work still requires scoped acceptance and exclusive ownership.

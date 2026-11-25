@@ -94,6 +94,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         },
         editor: EditorPreferences::default(),
         theme: PreferenceTheme::Light,
+        app_icon: midnight_core::AppIcon::OrigamiTrail,
         density: UiDensity::Touch,
         windows_shell: WindowsShell::Cmd,
         font_family: "Stored 文档 e\u{301} 🧪".into(),

@@ -33,9 +33,14 @@ export component DialogFooter inherits Rectangle {
     }
     // Only when the actions at their natural width do not fit beside the dismiss
     // button; a short dialog keeps one row and scrolls its actions instead.
-    private property <bool> stacked: !root.compact-height && actions.preferred-width > root.inline-room;
+    private property <bool> needs-second-row: actions.preferred-width > root.inline-room;
+    private property <bool> stacked: !root.compact-height && root.needs-second-row;
     private property <length> control-height: max(Theme.control-height,
         dismiss-button.preferred-height, actions.preferred-height);
+    // A content-sized dialog needs the height before the compact layout is chosen.
+    out property <length> regular-height: root.control-height + (root.needs-second-row
+        ? root.control-height + 8px + (actions.min-width > root.width ? FluentScrollMetrics.overlay-size : 0px)
+        : 0px);
     private property <bool> overflowing: actions.min-width > action-scroll.width;
     private property <length> action-height: root.control-height + (root.overflowing ? FluentScrollMetrics.overlay-size : 0px);
     min-width: 0px; preferred-width: 0px; horizontal-stretch: 1;

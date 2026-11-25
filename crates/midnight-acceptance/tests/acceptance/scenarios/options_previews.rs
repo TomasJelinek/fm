@@ -6,10 +6,12 @@ use crate::{
     app::{App, Config},
     input, inspect,
     options_support::{self as options, SettingsStore},
-    panel,
+    panel, viewers_stage,
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::PaneId;
+use midnight_ui::ViewerPluginsView;
+use slint::{ComponentHandle, Model};
 use std::{fs, path::Path, sync::Arc, time::Duration};
 
 const PREVIEWS: &str = "Show image and video previews";
@@ -24,6 +26,17 @@ fn config(folder: &Path, store: &Arc<SettingsStore>) -> Config {
 
 fn row_height(app: &App) -> f32 {
     app.window.get_left_view_row_height()
+}
+
+// "Archives" is also a topic button. Its section tab is to the right of it.
+fn plugin_tab(app: &mut App, name: &str) -> Result<(), String> {
+    let rect = inspect::find_all(app.slint(), AccessibleRole::Button, name)
+        .into_iter()
+        .map(|item| inspect::rect(&item))
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .ok_or_else(|| format!("the Plugins page has no {name} section"))?;
+    options::click_rect(app, rect);
+    Ok(())
 }
 
 pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
@@ -119,14 +132,6 @@ pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
         "plugins-viewers",
         "Options › Plugins › Viewers",
     );
-    // "Archives" is also a topic button; the section tab is the one to its right.
-    let tab = |app: &App, tab: &str| -> Result<inspect::Rect, String> {
-        inspect::find_all(app.slint(), AccessibleRole::Button, tab)
-            .into_iter()
-            .map(|item| inspect::rect(&item))
-            .max_by(|a, b| a.0.total_cmp(&b.0))
-            .ok_or_else(|| format!("the Plugins page has no {tab} section"))
-    };
     let mut empty = Vec::new();
     for (name, empty_text) in [
         ("Viewers", "No viewer plugins are installed"),
@@ -134,8 +139,7 @@ pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
         ("Archives", "No archive plugins are installed"),
         ("Thumbnailers", "No thumbnailer plugins are installed"),
     ] {
-        let rect = tab(&app, name)?;
-        options::click_rect(&mut app, rect);
+        plugin_tab(&mut app, name)?;
         if !options::texts_with(&app, empty_text).is_empty() {
             empty.push(name);
         }
@@ -144,8 +148,7 @@ pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
     app.until_for("the rescan to finish", Duration::from_secs(30), |app| {
         options::texts_with(app, "Rescanning").is_empty()
     });
-    let rect = tab(&app, "Archives")?;
-    options::click_rect(&mut app, rect);
+    plugin_tab(&mut app, "Archives")?;
     options::press(&mut app, "Archive associations…")?;
     app.until("the Archives page", |app| {
         app.window.get_options_topic_index() == 7
@@ -180,5 +183,88 @@ pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
     context.note(format!(
         "Previews: 192 px grew Thumbnails rows by 96 px, previews off disabled the dependent switches, OK saved all four values, Cancel restored a 64 px preview, a restart kept them. Plugins: sections without staged plugins show their empty state ({empty:?}); Rescan finished; Archive associations… opened the Archives page"
     ));
+    app.shutdown()
+}
+
+pub const ARCHIVE_LAYOUT_TIMEOUT: Duration = Duration::from_secs(180);
+
+pub fn archive_plugin_layout(context: &mut Context) -> Result<(), String> {
+    viewers_stage::run(context, ARCHIVE_LAYOUT_TIMEOUT, installed_archive_layout)
+}
+
+fn installed_archive_layout(context: &mut Context) -> Result<(), String> {
+    let mut app = App::start(Config::new(&context.work, &context.work));
+    options::open(&mut app)?;
+    options::page(&mut app, "Plugins")?;
+    plugin_tab(&mut app, "Archives")?;
+    app.until("the installed archive catalog", |app| {
+        !app.window.global::<ViewerPluginsView>().get_pending()
+    });
+    options::click_row(
+        &mut app,
+        "Archive plugins",
+        "installed archive filesystem",
+        &|name| name.starts_with("Archive filesystem"),
+    )?;
+    let catalog = app.window.global::<ViewerPluginsView>();
+    let selected = usize::try_from(catalog.get_archive_selected())
+        .ok()
+        .and_then(|index| catalog.get_archive_rows().row_data(index))
+        .ok_or("the selected archive has no details")?;
+    if selected.id != "midnight.fs.archive"
+        || selected.status != "Installed"
+        || !selected.description.contains("ZIP")
+        || selected.location.is_empty()
+    {
+        return Err(format!(
+            "incomplete installed archive details: {selected:?}"
+        ));
+    }
+    let button = "Archive associations…";
+    let mut wrapped = false;
+    for (width, height) in [(1024, 700), (560, 560)] {
+        app.resize(width, height);
+        let action = options::reveal(&mut app, AccessibleRole::Button, button)?;
+        let action_top = inspect::rect(&action).1;
+        let mut previous_bottom = None;
+        let mut heights = Vec::new();
+        app.screenshot(
+            context,
+            &format!("archive-plugin-{width}"),
+            "Installed archive plugin details and associations button",
+        );
+        for text in [&selected.description, &selected.status, &selected.location] {
+            let item = options::find_where(&app, &|item| {
+                options::text_of(item).as_deref() == Some(text.as_str())
+            })
+            .ok_or_else(|| format!("the installed archive does not show {text:?}"))?;
+            let (_, top, _, h) = inspect::rect(&item);
+            if h <= 0.0 || previous_bottom.is_some_and(|bottom| top < bottom - 0.5) {
+                return Err(format!(
+                    "at {width}×{height}, {text:?} occupies {top}..{} after {previous_bottom:?}",
+                    top + h
+                ));
+            }
+            previous_bottom = Some(top + h);
+            heights.push(h);
+            if top + h > action_top - 1.0 {
+                return Err(format!(
+                    "at {width}×{height}, {text:?} ends at {:.1} but {button} starts at {action_top:.1}",
+                    top + h
+                ));
+            }
+        }
+        wrapped |= heights[0] > 1.5 * heights[1];
+    }
+    if !wrapped {
+        return Err("the declared archive formats did not wrap at either tested width".into());
+    }
+    options::press(&mut app, button)?;
+    app.until(
+        "the Archives page after pressing Archive associations",
+        |app| app.window.get_options_topic_index() == 7,
+    );
+    options::cancel(&mut app)?;
+    context.note("Installed archive format list, installation status and package path remained above the associations button at 1024×700 and 560×560. The formats wrapped and the button opened Archives.");
     app.shutdown()
 }

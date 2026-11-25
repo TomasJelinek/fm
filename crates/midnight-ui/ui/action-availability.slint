@@ -7,6 +7,6 @@ export global ActionAvailability {
             && (action != "panel.folder-sizes" || folder-sizes)
             && (action != "files.make-list" || selection)
             && (action != "command.insert-full-path" || native)
-            && (native || !action.starts-with("files.") || action == "files.view" || action == "files.view-basic" || action == "files.copy-to" || action == "files.make-list");
+            && (native || !action.starts-with("files.") || action == "files.view" || action == "files.view-basic" || action == "files.compare" || action == "files.copy-to" || action == "files.make-list");
     }
 }

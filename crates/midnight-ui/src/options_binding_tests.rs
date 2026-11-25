@@ -223,6 +223,67 @@ fn reset_to_defaults_updates_controls_the_user_already_changed() {
 }
 
 #[test]
+fn application_icon_picker_previews_restores_and_saves_the_selected_artwork() {
+    use i_slint_core::{items::WindowItem, window::WindowInner};
+    use midnight_core::AppIcon;
+
+    let mut h = Harness::options(
+        UserPreferences {
+            app_icon: AppIcon::HarvestNavigator,
+            ..Default::default()
+        },
+        1,
+    );
+    let root = ItemRc::new_root(WindowInner::from_pub(h.window.window()).component());
+    let window = root.downcast::<WindowItem>().unwrap();
+    let icon = || window.as_pin_ref().icon();
+    let label = "Application icon";
+    let chooser = AccessibleRole::Combobox;
+    let saved = icon();
+    assert_eq!(h.value(label, chooser), "Harvest Navigator");
+    h.choose(label, 1);
+    assert_eq!(h.value(label, chooser), "Origami Trail");
+    let origami = icon();
+    assert_ne!(origami, saved);
+    let preview = h.item("Origami Trail icon preview", AccessibleRole::Image);
+    assert_eq!(
+        preview
+            .downcast::<i_slint_core::items::ImageItem>()
+            .unwrap()
+            .as_pin_ref()
+            .source(),
+        origami
+    );
+    h.activate("Reset to defaults", AccessibleRole::Button);
+    assert_eq!(h.value(label, chooser), "Midnight Moon");
+    assert_ne!(icon(), origami);
+    h.activate("Cancel", AccessibleRole::Button);
+    assert_eq!(icon(), saved);
+    assert!(
+        !h.sent
+            .borrow()
+            .iter()
+            .any(|c| matches!(c, Command::SavePreferences { .. }))
+    );
+
+    h.window.invoke_show_options();
+    h.window.set_options_topic_index(1);
+    h.settle();
+    assert_eq!(h.value(label, chooser), "Harvest Navigator");
+    h.choose(label, 2);
+    assert_eq!(h.value(label, chooser), "Interleave");
+    assert_ne!(icon(), saved);
+    h.activate("OK", AccessibleRole::Button);
+    let commands = h.sent.borrow();
+    let mut writes = commands.iter().filter_map(|c| match c {
+        Command::SavePreferences { preferences, .. } => Some(preferences.app_icon),
+        _ => None,
+    });
+    assert_eq!(writes.next(), Some(AppIcon::Interleave));
+    assert_eq!(writes.next(), None);
+}
+
+#[test]
 fn archive_chooser_and_filter_follow_show_builtin() {
     let mut h = Harness::options(UserPreferences::default(), 7);
     h.choose("Archive format", 1);

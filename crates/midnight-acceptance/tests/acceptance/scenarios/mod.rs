@@ -1,6 +1,7 @@
 //! The scenario registry. Add a scenario by writing `fn(&mut Context) -> Result<(), String>`
 //! in a module here and listing it in [`all`] (docs/developer/ACCEPTANCE.md).
 pub mod about_box;
+pub mod archive_compare;
 pub mod checksums;
 pub mod create_rename;
 pub mod files_archive;
@@ -487,6 +488,13 @@ pub fn all() -> &'static [Scenario] {
                 timeout: viewers_controls::TIMEOUT,
             },
             Scenario {
+                name: "viewers_archive_native_compare",
+                area: "viewers",
+                summary: "Compare files across an archive and a native panel in either direction using same-name lookup, actual rendered differences, and verified identical bytes.",
+                run: archive_compare::compare,
+                timeout: archive_compare::TIMEOUT,
+            },
+            Scenario {
                 name: "viewers_compare",
                 area: "viewers",
                 summary: "Compare marked files (Ctrl+Shift+C): identical, three differences navigated with N/P/F7/Alt+Home/Alt+End and the button, a 3.5 MiB log, two encodings, images in three modes; binaries in the hex view (summary, the same keys between regions); the 4.25 MiB log as text and with Hex; Escape and Close.",
@@ -590,6 +598,13 @@ pub fn all() -> &'static [Scenario] {
                 summary: "Comparators: built-in text and external-program overrides saved and listed; an invalid expression is refused; restart.",
                 run: options_comparators::comparators,
                 timeout: minutes(5),
+            },
+            Scenario {
+                name: "options_archive_plugin_layout",
+                area: "options",
+                summary: "Installed archive plugin details and a wrapped format list stay above the Archive associations button at two window widths.",
+                run: options_previews::archive_plugin_layout,
+                timeout: options_previews::ARCHIVE_LAYOUT_TIMEOUT,
             },
             Scenario {
                 name: "options_previews_plugins",

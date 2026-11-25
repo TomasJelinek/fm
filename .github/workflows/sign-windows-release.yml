@@ -1,0 +1,130 @@
+name: Sign Windows draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag (for example v0.3.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-signing-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    environment: windows-release
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PYTHONUTF8: '1'
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+      AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+      AZURE_SIGNING_CERTIFICATE_PROFILE: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE }}
+      WINDOWS_SIGNING_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER }}
+    steps:
+      # Only reviewed default-branch scripts execute; the release tag is data.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate configuration and download draft asset
+        run: ./scripts/github-windows-release.ps1 -Operation Prepare
+      - name: Reject foreign signatures before signing
+        run: >-
+          ./scripts/verify-windows-release.ps1
+          -Plan _build/windows-signing/work/signing-plan.json
+          -Publisher $env:WINDOWS_SIGNING_PUBLISHER -BeforeSigning
+      - name: Azure login with environment-scoped OIDC
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign only the explicit first-party catalog
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE }}
+          files-catalog: ${{ github.workspace }}\_build\windows-signing\work\signing-files.txt
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          append-signature: 'false'
+          cache-dependencies: 'false'
+          exclude-environment-credential: 'true'
+          exclude-azure-cli-credential: 'false'
+      - name: Verify publisher, timestamp and CEF executable pair
+        run: >-
+          ./scripts/verify-windows-release.ps1
+          -Plan _build/windows-signing/work/signing-plan.json
+          -Publisher $env:WINDOWS_SIGNING_PUBLISHER
+      - name: Rebuild signed portable ZIP and checksums
+        run: |
+          python -B scripts/windows-release-signing.py finalize --work-dir _build/windows-signing/work
+          if ($LASTEXITCODE -ne 0) { throw 'Final packaging failed.' }
+      - name: Build per-user MSI from the verified signed payload
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          $stem = "midnight-explorer-$version-x86_64-pc-windows-msvc"
+          ./scripts/build-windows-msi.ps1 -Source "_build/windows-signing/work/package/$stem" `
+            -Version $version -Output "_build/windows-signing/work/output/$stem.msi"
+          "installer=$env:GITHUB_WORKSPACE\_build\windows-signing\work\output\$stem.msi" >> $env:GITHUB_OUTPUT
+        id: installer
+      - name: Sign the installer
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ steps.installer.outputs.installer }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          append-signature: 'false'
+          cache-dependencies: 'false'
+          exclude-environment-credential: 'true'
+          exclude-azure-cli-credential: 'false'
+      - name: Verify installer signature and write its checksum and audit
+        env:
+          INSTALLER_PATH: ${{ steps.installer.outputs.installer }}
+        run: |
+          ./scripts/verify-windows-release.ps1 -Installer $env:INSTALLER_PATH `
+            -Publisher $env:WINDOWS_SIGNING_PUBLISHER
+      - name: Replace assets on the same draft release
+        run: ./scripts/github-windows-release.ps1 -Operation Upload
+      - name: Retain signing evidence and recovery files
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-signing-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            _build/windows-signing/release-state.json
+            _build/windows-signing/input/
+            _build/windows-signing/work/signing-plan.json
+            _build/windows-signing/work/verification.json
+            _build/windows-signing/work/output/*.zip
+            _build/windows-signing/work/output/*.msi
+            _build/windows-signing/work/output/*.sha256
+            _build/windows-signing/work/output/*.json
+            _build/windows-signing/work/output/SHA256SUMS

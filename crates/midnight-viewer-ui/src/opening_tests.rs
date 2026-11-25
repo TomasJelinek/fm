@@ -12,14 +12,18 @@ impl Platform for TestPlatform {
     }
 }
 
-pub(super) fn opening(
-    ready: OpenReady,
-) -> (
+type Opening = (
     image_presentation_tests::TestRuntime,
     ViewerWindows,
     Rc<OpenWindow>,
     Service,
-) {
+);
+
+pub(super) fn opening(ready: OpenReady) -> Opening {
+    opening_with(ready, |_| {})
+}
+
+fn opening_with(ready: OpenReady, configure: impl FnOnce(&ViewerWindows)) -> Opening {
     slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
     let runtime = image_presentation_tests::TestRuntime::new();
     let (release, capture) = std::sync::mpsc::channel::<()>();
@@ -35,6 +39,7 @@ pub(super) fn opening(
         }),
     );
     let manager = ViewerWindows::new(service.clone());
+    configure(&manager);
     let path = std::env::temp_dir().join("unavailable-generated-viewer.txt");
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
     manager
@@ -69,6 +74,25 @@ pub(super) fn opening(
     let open = manager.windows.borrow()[0].clone();
     drop(release);
     (runtime, manager, open, service)
+}
+
+#[test]
+fn host_icon_is_applied_at_open_and_updates_the_live_window() {
+    let initial = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(2, 2));
+    let changed = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(3, 3));
+    let (_runtime, manager, open, _service) = opening_with(Box::new(|_| {}), |manager| {
+        manager.set_app_icon(initial.clone())
+    });
+    let displayed_at_open = open.window.get_app_icon();
+    let initial_palette = open.session.palette_revision();
+    manager.set_app_icon(changed.clone());
+    let displayed_after_change = open.window.get_app_icon();
+    let final_palette = open.session.palette_revision();
+    manager.close_all();
+    assert!(open.closed.get());
+    assert_eq!(displayed_at_open, initial);
+    assert_eq!(displayed_after_change, changed);
+    assert_eq!(final_palette, initial_palette);
 }
 
 #[test]

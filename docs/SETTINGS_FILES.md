@@ -82,7 +82,7 @@ described in [Settings from another operating system](#settings-from-another-ope
 An accepted file is previewed like other Options edits:
 
 - Every Options page shows the imported settings at once, including the theme,
-  fonts and keyboard remaps. Unfinished page edits are discarded.
+  application icon, fonts and keyboard remaps. Unfinished page edits are discarded.
 - **OK** saves the whole file. Only after that save succeeds are the settings
   outside Options applied: the panels open the imported tabs, as at startup; the
   hot paths, panel split, view modes, filters, viewer settings and terminal choice
@@ -145,8 +145,10 @@ settings file: `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, o
 - The document is one JSON object in UTF-8. Exports are indented and end with a
   newline. The whole file is at most 4 MiB.
 - `version` is the number of the settings schema. This version reads schema
-  versions 1 to 35. When exporting, it writes the lowest version that can hold the
-  settings, at most 35.
+  versions 1 to 36. When exporting, it writes the lowest version that can hold the
+  settings, at most 36.
+- Version 36 introduced the `app_icon` field. Its identifiers are `moon`,
+  `harvest-navigator`, `origami-trail`, and `interleave`. Older files use Midnight Moon.
 - The other top-level fields belong to that schema version. A field that the
   version does not define is an error, not ignored.
 - Native paths are stored losslessly. A path that is valid Unicode is a JSON string.
