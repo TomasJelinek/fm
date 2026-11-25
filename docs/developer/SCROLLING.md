@@ -550,6 +550,11 @@ so each Wayland frame rebuilt its pipelines and wheel scrolling ran at 30 frames
 second. The vendored FemtoVG keeps pipelines across flushes, up to a cap
 ([vendor notes](../../vendor/README.md),
 [verification](../verification/2026-11-25-wayland-pipeline-retention.md)).
+With a discrete GPU's driver 615, FIFO presentation itself stalls on native Wayland:
+frames committed with a commit-timing target were presented up to a second late.
+Mailbox presentation avoided this in a private experiment, but Slint 1.18.1's
+FemtoVG-WGPU adapter always selects FIFO
+([FIFO presentation record](../verification/2026-11-25-wayland-fifo-presentation.md)).
 
 File lists remain virtualized. Scrolling must not regenerate or format every
 entry in a directory. Rendering caches, if enabled, belong to the visible

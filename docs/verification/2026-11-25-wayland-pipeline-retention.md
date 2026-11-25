@@ -54,7 +54,9 @@ WGPU_BACKEND=vulkan <test executable> renderer::wgpu:: --ignored --test-threads=
   GPU. The library's non-ignored tests: 74 passed, 0 failed, 15 ignored.
 - Adapter: Mesa lavapipe, Vulkan on the CPU, selected with
   `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. The discrete GPU could not be used
-  for these runs (see Not verified).
+  for these runs: its driver's libraries had been upgraded to 615.71.09 while the 595.99.02
+  kernel module stayed loaded, so until a reboot new processes fell back to software
+  rendering.
 
 ## Probe: pipelines created
 
@@ -98,12 +100,32 @@ The remaining gaps came from FIFO presentation. Mailbox presentation, which the 
 offers but Slint's FemtoVG-WGPU adapter does not select, brought the gap p95 to 17.8–18.0 ms
 in two runs. That needs a Slint change and is not part of this one.
 
+## Discrete-GPU timings on driver 615
+
+After a reboot into the GPU driver 615.71.09, the same two probe builds ran on the discrete
+GPU. Before is `ad9557bd` and after is this change, both with the per-flush counter. The
+setup is otherwise as in the lavapipe table. Times are in ms.
+
+| Trial | Pipelines created, before | after | Redraw p50, before | after |
+| --- | ---: | ---: | ---: | ---: |
+| Wayland, long, run 1 | 2,440 in 308 flushes | 22 in 30 | 27.7 | 2.6 |
+| Wayland, long, run 2 | 1,724 in 220 flushes | 22 in 220 | 27.8 | 1.4 |
+| Wayland, short | 670 in 116 flushes | 22 in 60 | 17.7 | 1.3 |
+| XWayland, long | 586 in 321 flushes | 22 in 342 | 6.8 | 15.8 |
+
+- **Redraws.** The change removes about 26 ms of pipeline creation from every native
+  Wayland redraw.
+- **XWayland pacing.** It improved: frame gaps p50/p95/max went from 16.2/27.5/31.3 ms
+  before to 16.6/17.6/22.5 ms after. The higher redraw median after the change is FIFO
+  presentation blocking for the next refresh inside the redraw, once frames are cheap enough
+  to keep up with every refresh.
+- **Native Wayland pacing.** Frame pacing did not improve on this driver. Every run, before
+  and after, had stalls of 0.9–1.2 s. The median gap stayed at about 33 ms. One after run
+  on each file was aborted by the probe for too few moving frames. That is the driver's FIFO
+  presentation, recorded in [FIFO presentation on Wayland](2026-11-25-wayland-fifo-presentation.md).
+
 ## Not verified
 
-- **Discrete-GPU timings for this change.** At 17:44 the GPU driver's libraries were upgraded to
-  615.71.09 while the 595.99.02 kernel module stayed loaded. Until a reboot, new processes
-  could not use the GPU, and Slint fell back to its software renderer. Before/after timings
-  on the discrete GPU, native Wayland and XWayland, are pending on driver 615.
 - **Builds and platforms.** Not checked: a release (fat-LTO) build, the installed
   application, and Windows/DX12, where the single flush per frame now also keeps pipelines
   a frame did not use.
