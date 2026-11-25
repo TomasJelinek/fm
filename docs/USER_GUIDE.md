@@ -3,9 +3,9 @@
 A dual-pane desktop file manager for Windows and Linux, written in Rust with Slint and
 Tokio.
 
-Product version **0.5** (Cargo SemVer `0.5.3`); the native window title shows
-`Midnight Explorer 0.5 — File Manager`. The displayed version is derived from the
-package version.
+Version **0.5.3**; the native window title shows
+`Midnight Explorer 0.5.3 — File Manager`. The displayed version is the package
+version without a trailing `.0`.
 
 Prebuilt Windows/Linux previews are published on the
 [GitHub Releases page](https://github.com/TomasJelinek/fm/releases). Published
@@ -84,7 +84,7 @@ archive member keeps the modified time its archive records. Compressed and Encry
 as the destination folder decides; ownership, permissions lists (ACLs), alternate data
 streams and a kept link's own times are not copied. The option works for any number of
 items. It starts as Options › General › File operations › **Preserve times and
-attributes in Copy and Move** says (off unless you turn it on). A destination that cannot
+attributes in Copy and Move** says (on unless you turn it off). A destination that cannot
 store a time or attribute keeps the copy as it is: the job asks once whether to
 **Continue**, **Skip all this warning type** for the rest of the job, or cancel, names
 each such item in its details and ends "Completed with warnings". FAT and exFAT drives
@@ -102,7 +102,7 @@ desktop automounting does; this is not yet verified on a live mount. See
 
 Copy/Move pauses for supported Retry/Skip/Cancel decisions on I/O errors, including
 an unavailable destination or a full disk. Retry preserves the verification policy
-captured when the job started; Skip All applies only to the same error type and
+captured when the job started; **Skip all this error type** applies only to the same error type and
 phase in that job. Decide later keeps the pending decision available from Jobs. On
 Linux and Windows, a file or folder inside a copied folder that cannot be opened (for
 example one you may not read) pauses on its own: Retry opens it again, and Skip leaves
@@ -187,7 +187,8 @@ Provision 4 GB of total RAM (6 GB for Ubuntu 26.04), preferably 8 GB, with 1 GiB
 available for the application. These are provisional budgets, not measured minima;
 building the project needs much more memory.
 
-Release builds use full optimization, fat LTO and one code-generation unit, and keep
+Release builds use full optimization (the generated UI bindings are optimized for
+size), fat LTO and one code-generation unit, and keep
 overflow checks; see [release settings and verification](RELEASE_BUILD.md).
 
 For Windows, or to run Cargo directly, install
@@ -312,7 +313,7 @@ Ubuntu and Mint, network discovery and SMB share browsing use
 computers, and a known server can also be entered as `smb://server/` in a panel's path.
 
 On Linux, open a protected SMB device or share from Network Neighborhood to get
-the **Sign in** dialog. Enter your username, password and, if required, your
+the **Network sign-in** dialog. Enter your username, password and, if required, your
 domain or workgroup. **Sign in** retries opening that location. **Cancel** returns
 to the panel you were browsing. The app does not save the password. A device and
 one of its shares can each ask you to sign in.
@@ -1008,7 +1009,8 @@ current keys.
   General holds the filename search filter, hidden files, readable or exact-byte
   sizes, full SHA-256 or quick copy verification, whether the Copy and Move dialogs
   start with Preserve times and attributes checked, the number of simultaneous disk
-  operations (Automatic, up to 4, or 1–32) and command history persistence/Clear.
+  operations (Automatic, up to 4, or 1–32), command history persistence/Clear and
+  the Updates choices (check at startup, include preview releases).
   Appearance offers 26 themes including Slate Blue, Slate Teal and Slate Violet,
   Desktop/Touch spacing, an installed font family and independent Desktop/Touch
   base sizes (8–32px). Appearance → **Text rendering**
@@ -1198,9 +1200,10 @@ current keys.
   can be ignored too. Matching metadata does **not** verify file contents: **Content**
   reads same-sized files byte by byte. **Compare subfolders** compares same-named
   folders with everything inside them and selects a folder that differs anywhere
-  inside in both panels; every compared row then shows a badge at the end of its
-  name: **=** matches, **≠** differs, **+** exists in this panel only, **?** could not
-  be compared; expand a folder to see which subfolders and files differ. Point at a
+  inside in both panels. After every comparison, each compared row shows a badge at the
+  end of its name: **=** matches, **≠** differs, **+** exists in this panel only, **?**
+  could not be compared; with Compare subfolders, expand a folder to see which
+  subfolders and files differ. Point at a
   badge to see what differs for that row ("Newer here: … vs … (2 d)", "Larger here:
   … vs … bytes", "Differs inside: 3 files and 1 folder differ, 2 only here", "Not
   verified: …"). The badges stay until you clear them: the × at the right end of
@@ -1225,7 +1228,9 @@ current keys.
   list selects several results (Ctrl+click, Shift+click, Shift with the cursor
   keys, Space, Insert, Ctrl+A, Ctrl+D); Ctrl+C and the list's context menu copy
   their full paths, names or row details, the status line counts them and their
-  size, and Feed to panel brings them marked into the panel. See
+  size, and Feed to panel brings them marked into the panel. A search keeps at most
+  100,000 results. The filename field remembers the last 30 masks (Down lists them),
+  and Find remembers its window size and position (Wayland places windows itself). See
   [Find](developer/FIND.md).
 - Ctrl+F12 opens a saved per-panel file filter. Choose wildcard masks, a Rust
   regular expression, or the supported metadata expression language, with explicit
@@ -1392,7 +1397,7 @@ lists defaults. Numbered tab and Hot Path bindings use physical digits across la
 
 Options, tabs, Hot Paths, panel filters, enabled command history, viewer preferences
 and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through
-40; see [settings files](SETTINGS_FILES.md)) in the native
+43; see [settings files](SETTINGS_FILES.md)) in the native
 `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
 `~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
@@ -1647,6 +1652,7 @@ The application workspace (`crates/`):
 | `midnight-thumbnail-host` | Scheduling, broker and persistent cache of the thumbnail workers |
 | `midnight-compare-engine` | Bounded read-only text, image and byte comparison on workers |
 | `midnight-compare-ui` | File comparison windows |
+| `midnight-update` | Update checks, signed downloads, staging and the installation swap with rollback; the application's only network code |
 | `midnight-acceptance` | Opt-in end-to-end acceptance suite |
 
 The public APIs and SDKs (`api/`, `filesystem-api/`, `image-viewer-api/`,
