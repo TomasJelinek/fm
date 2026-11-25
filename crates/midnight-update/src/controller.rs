@@ -498,6 +498,9 @@ impl Worker {
         if let Err(error) = fs::create_dir_all(&folder) {
             return self.fail(format!("The download folder cannot be created: {error}"));
         }
+        // Only this version's download can be resumed: the folders that downloads of other
+        // versions left (stopped, failed or never installed) go now.
+        remove_other_downloads(&folder);
         self.update(|snapshot| {
             snapshot.phase = Phase::Downloading {
                 received: 0,
@@ -617,6 +620,25 @@ impl Worker {
         self.update(|snapshot| snapshot.phase = Phase::Ready);
     }
 }
+
+/// Remove the folders beside `current` in the download folder: downloads of other versions
+/// that were stopped, failed or never installed. Failures are ignored; the next download
+/// tries again.
+fn remove_other_downloads(current: &std::path::Path) {
+    let Some(Ok(entries)) = current.parent().map(fs::read_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path != current && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let _ = remove_tree(&path);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "controller_downloads_tests.rs"]
+mod downloads_tests;
 
 /// The state file is kept beside the downloads.
 pub fn check_state(private_folder: &std::path::Path) -> CheckState {
