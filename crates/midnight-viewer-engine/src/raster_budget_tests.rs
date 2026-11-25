@@ -49,6 +49,24 @@ fn body_and_gutter_owners_both_hold_the_bytes_without_the_budget_retaining_pixel
     assert_eq!(budget.strip_bytes(owner), 0);
 }
 
+/// A strip's `Weak` keeps its allocation, pixels included, after its last owner dropped
+/// it: until a reap or the next reservation forgets it.
+#[test]
+fn a_released_strip_is_tracked_until_it_is_reaped() {
+    let budget = Arc::new(Budget::default());
+    let owner = budget.owner();
+    let body: Arc<[u8]> = vec![1; 16].into();
+    budget
+        .reserve_strip(owner, 16)
+        .unwrap()
+        .commit(&body, None)
+        .unwrap();
+    drop(body);
+    assert_eq!(budget.entries(), 1, "nothing reaped the released strip yet");
+    budget.reap();
+    assert_eq!(budget.entries(), 0);
+}
+
 #[test]
 fn a_strip_larger_than_its_reservation_is_refused() {
     let budget = Arc::new(Budget::default());

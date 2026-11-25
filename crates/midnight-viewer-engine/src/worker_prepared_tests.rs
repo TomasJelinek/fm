@@ -1307,10 +1307,9 @@ fn a_small_source_file_stalls_no_frame_and_prepares_nothing() {
     }
 }
 
-/// Opening an image after a text view gives the text's prepared strips back to the
-/// budget: an image, PDF, HTML, Office or video view never paints them again.
-#[test]
-fn opening_an_image_after_text_releases_its_prepared_strips() {
+/// A worker showing a Text page with its prepared strips painted and published: the frames
+/// are still in the mailbox.
+fn prepared_text_worker() -> (Worker, Mailbox) {
     let (mut worker, output) = super::worker();
     let size = geometry(1312, 720, 1.0);
     let page = text_page(rows(600, 60), false, &worker.appearance);
@@ -1322,12 +1321,20 @@ fn opening_an_image_after_text_releases_its_prepared_strips() {
     assert!(worker.set_page(page, &output));
     worker.paint(&output).unwrap();
     prepare_all(&mut worker, &output);
+    assert!(worker.raster.strip_count() > 1, "the text prepared strips");
+    assert!(worker.raster_budget.strip_bytes(worker.raster_owner) > 0);
+    (worker, output)
+}
+
+/// Opening an image after a text view gives the text's prepared strips back to the
+/// budget: an image, PDF, HTML, Office or video view never paints them again.
+#[test]
+fn opening_an_image_after_text_releases_its_prepared_strips() {
+    let (mut worker, output) = prepared_text_worker();
     // The window's copies of the strips are dropped as it presents them.
     output.take();
     let budget = worker.raster_budget.clone();
     let owner = worker.raster_owner;
-    assert!(worker.raster.strip_count() > 1, "the text prepared strips");
-    assert!(budget.strip_bytes(owner) > 0);
 
     let directory = tempfile::tempdir().unwrap();
     let image = directory.path().join("next.png");
@@ -1350,8 +1357,29 @@ fn opening_an_image_after_text_releases_its_prepared_strips() {
     output.take();
     assert_eq!(worker.raster.strip_count(), 0);
     assert_eq!(
+        budget.entries(),
+        0,
+        "the dropped strips' allocations are freed, not only uncharged"
+    );
+    assert_eq!(
         budget.strip_bytes(owner),
         0,
         "the image view holds no text pixels"
     );
+}
+
+/// A closing worker's last frames, which the window never took, die with Closed; their
+/// strips' allocations are freed then, not at another viewer's next reservation.
+#[test]
+fn closing_frees_the_strips_of_frames_no_window_took() {
+    let (worker, output) = prepared_text_worker();
+    let budget = worker.raster_budget.clone();
+    drop(worker);
+    assert!(
+        budget.entries() > 0,
+        "the pending frames still hold the strips"
+    );
+    publish_closed(&output, &budget);
+    assert!(matches!(output.take().as_slice(), [ViewerOutput::Closed]));
+    assert_eq!(budget.entries(), 0);
 }

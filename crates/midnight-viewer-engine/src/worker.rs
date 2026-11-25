@@ -573,12 +573,19 @@ pub(crate) fn run(
     let web_cleanup = worker.finish_web();
     let raster_budget = worker.raster_budget.clone();
     drop(worker);
-    raster_budget.reap();
     // The window opens another viewer as soon as it sees Closed; the service must no
     // longer count this one by then.
     drop(window);
-    output.put(ViewerOutput::Closed);
+    publish_closed(output, &raster_budget);
     video_cleanup.and(web_cleanup)
+}
+
+/// Tell the window that the worker ended, then forget the strips nobody holds any more:
+/// Closed replaces the frames still pending, and their strips' allocations would otherwise
+/// stay until another viewer reserves strips.
+fn publish_closed(output: &Mailbox, raster_budget: &crate::raster_budget::Budget) {
+    output.put(ViewerOutput::Closed);
+    raster_budget.reap();
 }
 
 fn bounded_geometry(mut geometry: ViewerGeometry) -> ViewerGeometry {
@@ -805,13 +812,13 @@ impl Worker {
             // Strips are reused only by a text view that paints the same rows again; an
             // image, PDF, HTML, Office or video view would hold them until text returns.
             if !raster::prepared_text_mode(self.mode) {
-                self.raster.clear_strips();
+                self.drop_strips();
             }
             self.select_opening(opening, output)
         })();
         if let Err(error) = result {
             // A failed opening shows no text either.
-            self.raster.clear_strips();
+            self.drop_strips();
             self.error(error, output);
         }
     }
@@ -1096,7 +1103,7 @@ impl Worker {
             self.invalidate_source_target();
             self.raster.enabled = enabled;
             if !enabled {
-                self.raster.clear_strips();
+                self.drop_strips();
             }
             self.source_viewport_parameters_changed();
             if self.mode != VIEWER_MODE_VIDEO && self.web.is_none() && self.image.is_none() {

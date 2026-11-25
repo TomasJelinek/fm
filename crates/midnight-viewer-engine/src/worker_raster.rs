@@ -498,9 +498,15 @@ impl Worker {
         self.raster.selection_valid = self.raster.selected_text.is_some();
     }
 
+    /// Drop the prepared strips and free the allocations of those nobody else holds.
+    pub(super) fn drop_strips(&mut self) {
+        self.raster.clear_strips();
+        self.raster_budget.reap();
+    }
+
     pub(super) fn raster_page_loaded(&mut self, continuing: Option<[f64; 2]>, restored: [f32; 2]) {
         if !self.retained_active() {
-            self.raster.clear_strips();
+            self.drop_strips();
             if self.raster.enabled {
                 self.raster.reset(self.origin);
                 // Its frames carry no raster but still copy the shown selection.

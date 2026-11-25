@@ -11,7 +11,9 @@ pub(crate) const MAX_TOTAL_STRIP_BYTES: usize = midnight_core::VIEWER_PREPARED_T
 
 /// Shared by every worker opened through a Service, including replaced/closed windows.
 /// A strip's bytes stay charged until its last pixel owner (a worker's cache, a frame, a
-/// window's delivery) is dropped; `Weak<[u8]>` itself retains no pixels.
+/// window's delivery) is dropped. A strip's `Weak<[u8]>` still keeps its allocation, pixels
+/// included, until [`Budget::reap`] or the next reservation forgets it: whoever drops
+/// strips reaps (`Worker::drop_strips`, the worker's close).
 pub(crate) struct Budget {
     strips: Mutex<Vec<Strip>>,
     next_owner: AtomicU64,
@@ -116,6 +118,12 @@ impl Budget {
             ticket,
             committed: false,
         })
+    }
+
+    /// Strips the budget tracks, released or not: each keeps its pixels' allocation.
+    #[cfg(test)]
+    pub(crate) fn entries(&self) -> usize {
+        self.lock().len()
     }
 
     /// Bytes of prepared text strips `owner`'s pixels still hold.
