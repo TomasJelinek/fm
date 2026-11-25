@@ -217,6 +217,16 @@ fn listing_operations_on_one_hundred_thousand_rows() {
     let plain = listing(&rows);
     report("clone Vec<Entry>", best(|| (), |()| plain.clone()));
     report("drop Vec<Entry>", best(|| plain.clone(), drop));
+    // An engine re-sort copies the shared committed rows into a new snapshot.
+    let shared: Arc<[Entry]> = plain.clone().into();
+    report(
+        "copy Arc<[Entry]> via Vec (to_vec, Arc::from)",
+        best(|| (), |()| Arc::<[Entry]>::from(shared.to_vec())),
+    );
+    report(
+        "copy Arc<[Entry]> directly (collect)",
+        best(|| (), |()| shared.iter().cloned().collect::<Arc<[Entry]>>()),
+    );
     report(
         "DirectoryIndex::from_entries",
         best(|| (), |()| DirectoryIndex::from_entries(&plain)),

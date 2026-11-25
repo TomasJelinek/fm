@@ -1579,7 +1579,9 @@ fn list_directory(task: ListingTask) {
         watch,
     } = task;
     if let Some(source) = source {
-        let entries = source.entries.to_vec();
+        // Cloned straight into the new snapshot's one allocation: no second copy of
+        // the rows through a Vec, nor both buffers held at once.
+        let entries: Arc<[Entry]> = source.entries.iter().cloned().collect();
         publish_listing(
             &outbox,
             &snapshots,
@@ -1590,7 +1592,7 @@ fn list_directory(task: ListingTask) {
             CommittedSnapshot {
                 navigation,
                 path,
-                entries: Arc::from(entries),
+                entries,
                 sizes: source.sizes,
             },
             None,
