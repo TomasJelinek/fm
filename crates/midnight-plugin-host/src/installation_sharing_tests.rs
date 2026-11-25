@@ -144,6 +144,108 @@ mod unix {
     }
 }
 
+/// Securing changes only objects at their real location inside the installation: symbolic
+/// links below it, and a folder on the way swapped for one, never redirect a mode change to
+/// the user's files outside it.
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+    use crate::trust::repair::secure_entry;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+    fn mode(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().mode() & 0o7777
+    }
+
+    fn set_mode(path: &Path, mode: u32) {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// A folder outside the installation with a file, both writable by everyone.
+    fn outside(base: &Path) -> (PathBuf, PathBuf) {
+        let folder = base.join("outside");
+        fs::create_dir(&folder).unwrap();
+        let file = folder.join("NOTICE.txt");
+        fs::write(&file, b"private").unwrap();
+        set_mode(&file, 0o666);
+        set_mode(&folder, 0o777);
+        (folder, file)
+    }
+
+    #[test]
+    fn links_below_the_installation_leave_their_targets_unchanged_and_are_reported() {
+        let base = base();
+        let folder = base.path().join("app");
+        install(&folder);
+        let (outside_folder, outside_file) = outside(base.path());
+        symlink(&outside_file, folder.join("file-link")).unwrap();
+        symlink(&outside_folder, folder.join("viewers/folder-link")).unwrap();
+        let secured = secure_installation(&folder).unwrap();
+        assert_eq!(mode(&outside_file), 0o666);
+        assert_eq!(mode(&outside_folder), 0o777);
+        let links = secured
+            .sharing
+            .refused
+            .iter()
+            .filter(|reason| reason.ends_with("is a link"))
+            .count();
+        assert_eq!(links, 2, "{secured:?}");
+        assert!(!secured.sharing.is_private());
+        // Asked directly, a link is refused rather than followed.
+        let canonical = folder.canonicalize().unwrap();
+        let error =
+            secure_entry(&folder.join("file-link"), &canonical.join("file-link")).unwrap_err();
+        assert!(error.0.ends_with("is a link"), "{error:?}");
+        assert_eq!(mode(&outside_file), 0o666);
+    }
+
+    #[test]
+    fn a_folder_on_the_way_swapped_for_a_link_out_of_the_installation_is_refused() {
+        let base = base();
+        let folder = base.path().join("app");
+        install(&folder);
+        let canonical = folder.canonicalize().unwrap();
+        let (outside_folder, outside_file) = outside(base.path());
+        // What another account that can write in the installation does between the walk's
+        // listing and the change: replace a folder on the way with a link to a folder of the
+        // user's elsewhere, which holds a file of the expected name.
+        fs::rename(folder.join("viewers"), base.path().join("viewers-aside")).unwrap();
+        symlink(&outside_folder, folder.join("viewers")).unwrap();
+        let path = folder.join("viewers").join("NOTICE.txt");
+        let error = secure_entry(&path, &canonical.join("viewers").join("NOTICE.txt")).unwrap_err();
+        assert!(
+            error.0.contains("leads out of the installation"),
+            "{error:?}"
+        );
+        assert_eq!(mode(&outside_file), 0o666);
+        assert_eq!(mode(&outside_folder), 0o777);
+    }
+
+    #[test]
+    fn securing_makes_objects_the_user_owns_private() {
+        let base = base();
+        let folder = base.path().join("app");
+        install(&folder);
+        let canonical = folder.canonicalize().unwrap();
+        let file = folder.join("LICENSE.txt");
+        let viewers = folder.join("viewers");
+        set_mode(&file, 0o666);
+        set_mode(&viewers, 0o777);
+        secure_entry(&file, &canonical.join("LICENSE.txt")).unwrap();
+        secure_entry(&viewers, &canonical.join("viewers")).unwrap();
+        assert_eq!(mode(&file), 0o644);
+        assert_eq!(mode(&viewers), 0o755);
+        let notice = viewers.join("basic/notices/NOTICE.txt");
+        set_mode(&notice, 0o666);
+        set_mode(&folder, 0o777);
+        let secured = secure_installation(&folder).unwrap();
+        assert!(secured.sharing.is_private(), "{secured:?}");
+        assert!(secured.failures.is_empty(), "{secured:?}");
+        assert_eq!(mode(&notice), 0o644);
+        assert_eq!(mode(&folder), 0o755);
+    }
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;

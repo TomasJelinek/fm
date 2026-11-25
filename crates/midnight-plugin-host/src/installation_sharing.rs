@@ -120,7 +120,8 @@ fn walk(
 /// permissions: the user, SYSTEM and Administrators with full control. Every object below then
 /// inherits them, keeping its own entries except those that let other accounts change it
 /// (such as the restricted workers' read and execute grants). Linux: removes the group and
-/// other write bits from the folder and every object in it that the user owns.
+/// other write bits from the folder and every object in it that the user owns, each through a
+/// descriptor opened without following links and only at its canonical location.
 ///
 /// Folders above the installation are never changed; the returned report names one that other
 /// accounts can still rename or replace, and objects that could not be changed.

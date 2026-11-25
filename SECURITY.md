@@ -1453,12 +1453,19 @@ classifications.
   folder-wide `TreeResetNamedSecurityInfoW` changes a junction's own permissions, never
   its target's, also for a folder swapped for a junction while it runs (tested with
   junctions; symbolic links, which need Developer Mode or a privilege, were not tested).
-  Linux still changes each object's mode by path after `lstat`. An account that can
-  still write in a folder below (one it owns) could swap an entry, or a folder on the
-  way, for a symbolic link in between; a file of the user's outside the installation
-  then loses its group and other write bits or gets the swapped entry's mode without
-  them, which can make a private file readable by others. On Windows, securing takes a
-  folder's owner as the user's when it is the user or a group that the process token
+  Linux opens the folder and each object below it with `O_PATH | O_NOFOLLOW`, takes the
+  link check, owner and mode from that descriptor (`fstat`), and changes the mode only
+  when the descriptor's location (`readlink` of `/proc/self/fd/<fd>`) is its path in the
+  canonical installation folder, through that `/proc/self/fd` link, which refers to the
+  opened object rather than a name; a link, a location outside the installation or an
+  unavailable `/proc` is reported and nothing below it is visited. Listing a folder still
+  follows a folder swapped for a link meanwhile, but every object found there is then
+  refused by the location check. Up to 0.5.3 Linux changed each object's mode by path
+  after `lstat`, and an account that could still write in a folder below (one it owns)
+  could swap an entry, or a folder on the way, for a symbolic link in between: a file of
+  the user's outside the installation then got the swapped entry's mode without group
+  and other write bits, which could make a private file readable by others. On Windows,
+  securing takes a folder's owner as the user's when it is the user or a group that the process token
   holds enabled (`CheckTokenMembership`):
   an elevated administrator can secure a folder that Administrators owns, as one
   created from an elevated prompt is, while a standard token, whose Administrators group
