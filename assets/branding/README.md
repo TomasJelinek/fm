@@ -1,7 +1,7 @@
 # Midnight Explorer application icon
 
-The default application icon, Harvest Navigator, pairs a coral-and-ivory compass needle
-with a gold crescent on a blue folder. Two painted stripes mark the tab. The transparent
+The default application icon, Harvest Navigator, pairs an amethyst-and-ivory compass needle
+with a gold crescent on a blue folder. It shares Origami Trail's copper and teal tab stripes. The transparent
 background works on both light and dark desktops. This is application branding; file
 and drive icons continue to come from the operating system.
 
@@ -37,9 +37,9 @@ the installed desktop entry. Windows shortcuts can also have their own icon.
 
 | Preview | Icon | Design | Files |
 | --- | --- | --- | --- |
-| <img src="midnight-explorer.png" width="80" alt=""> | Harvest Navigator (default) | A coral-and-ivory compass needle and gold crescent sit on a blue folder with amber and turquoise tab stripes. | [PNG](midnight-explorer.png) · [Windows ICO](midnight-explorer.ico) |
-| <img src="variants/origami-trail/midnight-explorer.png" width="80" alt=""> | Origami Trail | A purple folder with a gold fold frames two lavender file panes beneath a shared title bar. | [PNG](variants/origami-trail/midnight-explorer.png) · [Windows ICO](variants/origami-trail/midnight-explorer.ico) |
-| <img src="variants/interleave/midnight-explorer.png" width="80" alt=""> | Interleave | Two overlapping teal folds suggest paired panes. A narrow gold crescent appears where they meet. | [PNG](variants/interleave/midnight-explorer.png) · [Windows ICO](variants/interleave/midnight-explorer.ico) |
+| <img src="midnight-explorer.png" width="80" alt=""> | Harvest Navigator (default) | An amethyst-and-ivory compass needle and gold crescent sit on a blue folder with two closely spaced tab stripes. | [PNG](midnight-explorer.png) · [Windows ICO](midnight-explorer.ico) |
+| <img src="variants/origami-trail/midnight-explorer.png" width="80" alt=""> | Origami Trail | The split window pairs a thumbnail grid with a file list. An angular gold fold crosses the violet cover. | [PNG](variants/origami-trail/midnight-explorer.png) · [Windows ICO](variants/origami-trail/midnight-explorer.ico) |
+| <img src="variants/interleave/midnight-explorer.png" width="80" alt=""> | Interleave | Smooth turquoise and deep teal sheets interlock around a gold fold engraved with a tiny crescent. | [PNG](variants/interleave/midnight-explorer.png) · [Windows ICO](variants/interleave/midnight-explorer.ico) |
 
 To use a design on a Windows desktop shortcut, open **Properties → Shortcut →
 Change Icon** and select its ICO file. To rebuild an alternate design's PNG and ICO
