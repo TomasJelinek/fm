@@ -34,13 +34,11 @@ impl Archive {
         }
         for index in 0..zip.len() {
             let raw = zip.by_index_raw(index).map_err(zip_error)?;
-            let name = raw.name_raw().to_vec();
             // Each entry must be the last record the walk indexed under its name.
-            let merged = match records.get(name.as_slice()) {
+            let merged = match records.get(raw.name_raw()) {
                 Some(record) if record.last == raw.central_header_start() => record.count > 1,
                 _ => return Err(ambiguous()),
             };
-            let display = raw.name().to_owned();
             let kind = if raw.is_symlink() {
                 Kind::Link
             } else if raw.is_dir() {
@@ -69,9 +67,10 @@ impl Archive {
             }
             let size = raw.size();
             let modified = timestamps::zip_modified(raw.extra_data_fields(), raw.last_modified());
-            drop(raw);
             let access = Access { encryption, reason };
-            let id = self.add(&name, &display, kind, None, access)?;
+            // The index copies both names from the entry; `raw` borrows only `zip`.
+            let id = self.add(raw.name_raw(), raw.name(), kind, None, access)?;
+            drop(raw);
             let Some(member) = self.member_mut(id) else {
                 continue;
             };
