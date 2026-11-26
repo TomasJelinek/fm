@@ -6,7 +6,12 @@ use std::{
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
+    time::SystemTime,
 };
+
+#[path = "icon_snapshot_collection.rs"]
+mod collection;
+pub use collection::{COLLECTION_GRACE, collect, referenced_names};
 
 pub const ICON_EDGE: u32 = 128;
 const MAX_PNG_BYTES: usize = 128 * 128 * 4 + 4096;
@@ -134,9 +139,53 @@ fn publish_with_limit(
 ) -> io::Result<PathBuf> {
     active(cancel)?;
     let destination = directory.join(&snapshot.name);
-    if same_contents(open_existing(&destination)?, &snapshot.bytes)? {
+    // A recently written or refreshed snapshot is reused without the lock: collection
+    // removes only snapshots older than its grace period, far beyond this window.
+    if let Some(existing) = open_existing(&destination)? {
+        verify_contents(&existing, &snapshot.bytes)?;
+        if collection::recently_modified(&existing, SystemTime::now()) {
+            collection::issued(&snapshot.name);
+            return Ok(destination);
+        }
+    }
+    let lock = acquire_lock(directory, &mut create_exclusive, &mut open_existing)?;
+    let _unlock = Unlock(&lock);
+    active(cancel)?;
+    if let Some(existing) = open_existing(&destination)? {
+        verify_contents(&existing, &snapshot.bytes)?;
+        // Reusing an older snapshot restarts its grace period, so that another running
+        // instance whose saved settings do not name it yet does not collect it.
+        let _ = existing.set_modified(SystemTime::now());
+        collection::issued(&snapshot.name);
         return Ok(destination);
     }
+    let mut count = 0;
+    for entry in fs::read_dir(directory)? {
+        active(cancel)?;
+        if !is_snapshot_name(&entry?.file_name()) {
+            continue;
+        }
+        count += 1;
+        if count >= limit {
+            return Err(invalid("The managed command icon directory is full."));
+        }
+    }
+    crate::settings::publish_atomic(&destination, &snapshot.bytes, create_exclusive, |path| {
+        active(cancel)?;
+        same_contents(open_existing(path)?, &snapshot.bytes).map(|_| ())
+    })?;
+    collection::issued(&snapshot.name);
+    active(cancel)?;
+    Ok(destination)
+}
+
+/// Takes the folder's `.snapshot.lock` without waiting: publication and collection
+/// never interleave, also across processes. A busy lock is `WouldBlock`.
+fn acquire_lock(
+    directory: &Path,
+    create_exclusive: &mut impl FnMut(&Path) -> io::Result<File>,
+    open_existing: &mut impl FnMut(&Path) -> io::Result<Option<File>>,
+) -> io::Result<File> {
     let lock_path = directory.join(".snapshot.lock");
     let lock = match create_exclusive(&lock_path) {
         Ok(file) => file,
@@ -156,28 +205,7 @@ fn publish_with_limit(
         ),
         std::fs::TryLockError::Error(error) => error,
     })?;
-    let _unlock = Unlock(&lock);
-    active(cancel)?;
-    if same_contents(open_existing(&destination)?, &snapshot.bytes)? {
-        return Ok(destination);
-    }
-    let mut count = 0;
-    for entry in fs::read_dir(directory)? {
-        active(cancel)?;
-        if !is_snapshot_name(&entry?.file_name()) {
-            continue;
-        }
-        count += 1;
-        if count >= limit {
-            return Err(invalid("The managed command icon directory is full."));
-        }
-    }
-    crate::settings::publish_atomic(&destination, &snapshot.bytes, create_exclusive, |path| {
-        active(cancel)?;
-        same_contents(open_existing(path)?, &snapshot.bytes).map(|_| ())
-    })?;
-    active(cancel)?;
-    Ok(destination)
+    Ok(lock)
 }
 
 /// Releases the publication lock when a publication ends, explicitly rather than by
@@ -196,6 +224,12 @@ fn same_contents(file: Option<File>, expected: &[u8]) -> io::Result<bool> {
     let Some(file) = file else {
         return Ok(false);
     };
+    verify_contents(&file, expected)?;
+    Ok(true)
+}
+
+/// An existing snapshot must be a bounded regular file with exactly these bytes.
+fn verify_contents(file: &File, expected: &[u8]) -> io::Result<()> {
     if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_PNG_BYTES as u64 {
         return Err(invalid(
             "A managed command icon is not a bounded regular file.",
@@ -209,7 +243,7 @@ fn same_contents(file: Option<File>, expected: &[u8]) -> io::Result<bool> {
             "A managed command icon has changed; it was not replaced.",
         ));
     }
-    Ok(true)
+    Ok(())
 }
 fn active(cancel: &Cancellation) -> io::Result<()> {
     if cancel.is_cancelled() {

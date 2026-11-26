@@ -3,10 +3,12 @@ use midnight_core::Cancellation;
 use midnight_platform_common::icon_snapshot::SnapshotPixels;
 use rustix::fs::{Mode, OFlags, mkdirat, open, openat};
 use std::{
+    collections::BTreeSet,
     fs::{self, File},
     io,
     os::{fd::AsRawFd, unix::fs::DirBuilderExt},
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 pub(crate) fn save(
@@ -39,6 +41,56 @@ fn open_existing(path: &Path) -> io::Result<Option<File>> {
     }
     Ok(Some(file))
 }
+fn create_exclusive(path: &Path) -> io::Result<File> {
+    open(
+        path,
+        OFlags::WRONLY
+            | OFlags::CREATE
+            | OFlags::EXCL
+            | OFlags::NOFOLLOW
+            | OFlags::NONBLOCK
+            | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .map(File::from)
+    .map_err(io::Error::from)
+}
+/// The modification time of a regular file; links and special files are `None`.
+fn plain_file_modified(path: &Path) -> io::Result<Option<SystemTime>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return Ok(None);
+    }
+    metadata.modified().map(Some)
+}
+
+/// After the preferences beside `icons` were saved: removes the snapshots they do not
+/// name (`icon_snapshot::collect`). A missing folder has nothing to collect.
+pub(crate) fn collect_at(parent: &Path, referenced: &BTreeSet<String>) -> io::Result<usize> {
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let parent_fd = match open(parent, directory_flags, Mode::empty()) {
+        Err(error) if error == rustix::io::Errno::NOENT => return Ok(0),
+        result => result?,
+    };
+    private_directory(&parent_fd)?;
+    let directory = match openat(&parent_fd, "icons", directory_flags, Mode::empty()) {
+        Err(error) if error == rustix::io::Errno::NOENT => return Ok(0),
+        result => result?,
+    };
+    private_directory(&directory)?;
+    // As in publication, every entry resolves through the owned directory descriptor;
+    // unlink removes the entry itself, so a link that replaced a checked file is removed
+    // without touching its target.
+    let scope = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    midnight_platform_common::icon_snapshot::collect(
+        &scope,
+        referenced,
+        create_exclusive,
+        open_existing,
+        plain_file_modified,
+        |path| fs::remove_file(path),
+    )
+}
 fn save_at(parent: &Path, pixels: &SnapshotPixels, cancel: &Cancellation) -> io::Result<PathBuf> {
     let snapshot = midnight_platform_common::icon_snapshot::encode(pixels, cancel)?;
     fs::DirBuilder::new()
@@ -70,20 +122,7 @@ fn save_at(parent: &Path, pixels: &SnapshotPixels, cancel: &Cancellation) -> io:
         &scope,
         &snapshot,
         cancel,
-        |path| {
-            open(
-                path,
-                OFlags::WRONLY
-                    | OFlags::CREATE
-                    | OFlags::EXCL
-                    | OFlags::NOFOLLOW
-                    | OFlags::NONBLOCK
-                    | OFlags::CLOEXEC,
-                Mode::RUSR | Mode::WUSR,
-            )
-            .map(File::from)
-            .map_err(io::Error::from)
-        },
+        create_exclusive,
         open_existing,
     )?;
     let name = result
@@ -137,6 +176,54 @@ mod tests {
         let linked = root.path().join("linked");
         symlink(&application, &linked).unwrap();
         assert!(save_at(&linked, &pixels, &Cancellation::default()).is_err());
+    }
+
+    /// Collection removes only old regular snapshot files: a symbolic link under a
+    /// snapshot name and its target stay, also when the link itself is old.
+    #[test]
+    fn collection_leaves_links_and_their_targets_alone() {
+        use std::time::{Duration, SystemTime};
+        let root = tempfile::tempdir().unwrap();
+        let application = root.path().join("配置 文档");
+        let pixels = SnapshotPixels::new(1, 1, vec![20, 40, 60, 255]).unwrap();
+        save_at(&application, &pixels, &Cancellation::default()).unwrap();
+        let icons = application.join("icons");
+        let outside = root.path().join("outside.png");
+        fs::write(&outside, b"untouched").unwrap();
+        let name = |index: u8| icons.join(format!("{index:064x}.png"));
+        symlink(&outside, name(1)).unwrap();
+        // Ages the link itself (to 1970), never its target.
+        let epoch = rustix::fs::Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        rustix::fs::utimensat(
+            rustix::fs::CWD,
+            name(1),
+            &rustix::fs::Timestamps {
+                last_access: epoch,
+                last_modification: epoch,
+            },
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
+        fs::write(name(2), b"plain").unwrap();
+        File::options()
+            .write(true)
+            .open(name(2))
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(30 * 24 * 60 * 60))
+            .unwrap();
+
+        assert_eq!(collect_at(&application, &BTreeSet::new()).unwrap(), 1);
+        assert!(!name(2).exists(), "the old plain snapshot was collected");
+        assert!(fs::symlink_metadata(name(1)).unwrap().is_symlink());
+        assert_eq!(fs::read(&outside).unwrap(), b"untouched");
+        // A profile without an icons folder has nothing to collect and creates none.
+        let fresh = root.path().join("fresh");
+        fs::create_dir(&fresh).unwrap();
+        assert_eq!(collect_at(&fresh, &BTreeSet::new()).unwrap(), 0);
+        assert!(!fresh.join("icons").exists());
     }
 
     /// An access ACL makes the group bits its mask, so a 0775 private-group

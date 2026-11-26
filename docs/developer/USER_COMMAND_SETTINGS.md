@@ -105,6 +105,9 @@ is no background migration job. Every new choice uses managed storage.
 The toolbar backend loads images;
 this editor performs no filesystem or image loading.
 
+Pictures are stored and removed as described in
+[managed icon snapshots](#managed-icon-snapshots).
+
 Browse buttons use the backend's native program, directory and image pickers.
 Change icon uses the CommandIconResource native chooser; Browse image uses
 CommandIconImage, leaving unrelated Image pickers unchanged. Both return the
@@ -193,3 +196,37 @@ accessibility actions in software windows. Evidence:
 [settings record](../verification/2026-11-07-custom-command-settings.md),
 [refactor record](../verification/2026-11-07-user-menu-refactor.md) and
 [compact list record](../verification/2026-11-12-compact-custom-commands.md).
+
+## Managed icon snapshots
+
+Managed storage is the `icons` folder beside the preferences file. Each distinct
+picture is one snapshot named by the SHA-256 of its PNG (`<64 hex digits>.png`), so
+commands that chose the same picture share one file. The folder holds at most 1,024
+snapshots; an import beyond that fails with "The managed command icon directory is
+full." Publication and collection take the folder's `.snapshot.lock` without waiting,
+so they never interleave, also across running instances.
+
+Snapshots that nothing uses are removed after each successful preferences save
+(`icon_snapshot::collect`, called by the Windows and Linux settings adapters). Under the
+lock, a snapshot is removed only when all of these hold:
+
+- its name is a snapshot name and it is a regular file: links, junctions, other
+  reparse points, folders and every other entry stay, and so do link targets;
+- the preferences just saved do not name it. Names come from every Custom Command's
+  icon (by file name, wherever the path points) and from any snapshot name in a
+  command kept for the other operating system;
+- this process has not handed it to a picker. A pick that an open Options draft holds,
+  or that was cancelled, stays until the application exits; a later session frees it;
+- it was written, or last reused, more than seven days ago (`COLLECTION_GRACE`).
+  Another running instance does not share this process's drafts or unsaved
+  settings; the grace period keeps its recent picks. Reusing a snapshot older than a
+  day restarts its period under the lock.
+
+The rule prefers keeping a file to freeing space: removal errors keep the entry,
+a busy lock skips the collection until a later save, and a save whose referenced
+names and picks have not changed since the last collection does not list the folder
+again. Known limits: a picture removed after a settings file was exported is not in
+that file, which holds only the icon path, so a command imported from it later runs
+without its picture; and an instance that keeps an older copy of the settings for
+more than seven days after another instance added a picture can remove that picture
+when it saves.

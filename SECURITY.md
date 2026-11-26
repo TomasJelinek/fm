@@ -641,6 +641,15 @@ inspected as possibly holding the item; neither is described as unneeded.
   4,096 elements, bounded `<use>` expansion, no external images or fonts).
   Context discovery coalesces refreshes behind one native worker; typed drive
   letters come from the platform adapter, never UI path-prefix inference.
+- Custom Command pictures are 128 × 128 PNG snapshots in the private `icons` folder
+  beside the preferences, opened through a pinned directory (a descriptor on Linux)
+  and never through a link. A different file under a snapshot's name is never
+  replaced. After a preferences save, the folder's `.snapshot.lock` serializes
+  removal of snapshots that the saved preferences do not name, that this process has
+  not handed to a picker and that are more than seven days old; only regular files
+  with a snapshot name are removed, never links, reparse points, folders, their
+  targets or other entries
+  ([managed icon snapshots](docs/developer/USER_COMMAND_SETTINGS.md#managed-icon-snapshots)).
 - Windows icons of every size come from the Shell's system image lists by entry:
   synthetic type names with `SHGFI_USEFILEATTRIBUTES`, stock ids, known-folder PIDLs
   and validated discovered fixed drive roots, so a type lookup opens no file, probes

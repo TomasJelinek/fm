@@ -1,10 +1,12 @@
 use crate::WindowsFileSystem;
 use midnight_core::{ComparatorValidationProof, FsError, SettingsService, UserPreferences};
+use midnight_platform_common::icon_snapshot::referenced_names;
 use midnight_platform_common::settings::{
     dismissed_notices, encode_preferences, encode_preferences_prepared, publish_atomic,
     read_preferences, read_preferences_for_acceptance,
 };
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io,
     os::windows::{
@@ -154,7 +156,22 @@ fn create_exclusive(path: &Path) -> io::Result<File> {
 }
 
 fn save_to(path: &Path, preferences: UserPreferences) -> io::Result<()> {
-    save_encoded(path, &encode_preferences(preferences)?)
+    let referenced = referenced_names(&preferences);
+    save_preferences_encoded(path, &encode_preferences(preferences)?, &referenced)
+}
+
+/// Saves the preferences, then removes the command icon snapshots beside them that the
+/// saved preferences no longer name. Collection is best effort and never fails a save.
+fn save_preferences_encoded(
+    path: &Path,
+    bytes: &[u8],
+    referenced: &BTreeSet<String>,
+) -> io::Result<()> {
+    save_encoded(path, bytes)?;
+    if let Some(parent) = path.parent() {
+        let _ = crate::icon_storage::collect_at(parent, referenced);
+    }
+    Ok(())
 }
 
 fn save_encoded(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -237,9 +254,10 @@ impl SettingsService for WindowsFileSystem {
     ) -> Result<(), FsError> {
         let path = native_preferences_path()
             .map_err(|error| FsError::from_io("resolve preferences", Path::new(""), error))?;
+        let referenced = referenced_names(&preferences);
         let bytes = encode_preferences_prepared(preferences, proof)
             .map_err(|error| FsError::from_io("save preferences", &path, error))?;
-        save_encoded(&path, &bytes)
+        save_preferences_encoded(&path, &bytes, &referenced)
             .map_err(|error| FsError::from_io("save preferences", &path, error))
     }
 }
@@ -459,5 +477,60 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("preferences exceed"));
         assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    /// ICON-01: a full folder of snapshots that no saved setting names no longer refuses
+    /// every further import once the preferences are saved; a named snapshot stays.
+    #[test]
+    fn saving_preferences_frees_unreferenced_snapshots_so_an_import_succeeds_again() {
+        use midnight_core::{
+            Cancellation, UserCommand, UserCommandId, UserCommandInvocation, UserCommandLaunch,
+        };
+        use midnight_platform_common::icon_snapshot::SnapshotPixels;
+        use std::time::{Duration, SystemTime};
+
+        let temporary = crate::test_fixtures::build_temp("fixture-");
+        let application = temporary.path().join(APPLICATION_DIRECTORY);
+        let icons = application.join("icons");
+        fs::create_dir_all(&icons).unwrap();
+        let weeks_ago = SystemTime::now() - Duration::from_secs(30 * 24 * 60 * 60);
+        for index in 0..1024 {
+            let file = File::create(icons.join(format!("{index:064x}.png"))).unwrap();
+            file.set_modified(weeks_ago).unwrap();
+        }
+        let pixels = || SnapshotPixels::new(1, 1, vec![1, 2, 3, 255]).unwrap();
+        let cancel = Cancellation::default();
+        let full = crate::icon_storage::save_test(&application, &pixels(), &cancel).unwrap_err();
+        assert!(full.to_string().contains("is full"), "{full}");
+
+        let named = icons.join(format!("{:064x}.png", 7));
+        let command = UserCommand {
+            output: Default::default(),
+            id: UserCommandId::new("named").unwrap(),
+            name: "Named".into(),
+            enabled: true,
+            toolbar_label: None,
+            icon: Some(named.clone()),
+            working_directory: "${active.path}".into(),
+            launch: UserCommandLaunch::Single,
+            invocation: UserCommandInvocation::Program {
+                executable: std::env::current_exe().unwrap(),
+                arguments: Vec::new(),
+            },
+        };
+        let preferences = UserPreferences {
+            user_commands: vec![command].into(),
+            ..Default::default()
+        };
+        save_to(&application.join("preferences.json"), preferences).unwrap();
+
+        let imported = crate::icon_storage::save_test(&application, &pixels(), &cancel).unwrap();
+        assert!(imported.is_file());
+        assert!(named.is_file(), "a snapshot a saved command names stays");
+        let snapshots = fs::read_dir(&icons)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path().extension() == Some("png".as_ref()))
+            .count();
+        assert_eq!(snapshots, 2);
     }
 }

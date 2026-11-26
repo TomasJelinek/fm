@@ -37,6 +37,11 @@ A settings file is a complete snapshot of everything Midnight Explorer saves:
 A settings file contains folder paths, hot paths and command history. Treat it as
 personal data.
 
+Custom command pictures are not in the file: it names each picture's file in the
+application data's `icons` folder. Saving settings removes pictures that no saved
+command has used for seven days, so a command imported from an older file can come
+back without its picture ([managed icon snapshots](developer/USER_COMMAND_SETTINGS.md#managed-icon-snapshots)).
+
 ## Export configuration
 
 1. Choose **Export configuration…** and pick a destination. The suggested name is

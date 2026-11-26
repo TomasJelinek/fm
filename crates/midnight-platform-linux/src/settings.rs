@@ -1,11 +1,13 @@
 use crate::LinuxFileSystem;
 use midnight_core::{ComparatorValidationProof, FsError, SettingsService, UserPreferences};
+use midnight_platform_common::icon_snapshot::referenced_names;
 use midnight_platform_common::settings::{
     dismissed_notices, encode_preferences, encode_preferences_prepared, publish_atomic,
     read_preferences, read_preferences_for_acceptance,
 };
 use rustix::fs::{Mode, OFlags, open};
 use std::{
+    collections::BTreeSet,
     ffi::OsString,
     fs::{self, File},
     io,
@@ -120,7 +122,22 @@ fn create_exclusive(path: &Path) -> io::Result<File> {
 }
 
 fn save_to(path: &Path, preferences: UserPreferences) -> io::Result<()> {
-    save_encoded(path, &encode_preferences(preferences)?)
+    let referenced = referenced_names(&preferences);
+    save_preferences_encoded(path, &encode_preferences(preferences)?, &referenced)
+}
+
+/// Saves the preferences, then removes the command icon snapshots beside them that the
+/// saved preferences no longer name. Collection is best effort and never fails a save.
+fn save_preferences_encoded(
+    path: &Path,
+    bytes: &[u8],
+    referenced: &BTreeSet<String>,
+) -> io::Result<()> {
+    save_encoded(path, bytes)?;
+    if let Some(parent) = path.parent() {
+        let _ = crate::icon_storage::collect_at(parent, referenced);
+    }
+    Ok(())
 }
 
 fn save_encoded(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -208,9 +225,10 @@ impl SettingsService for LinuxFileSystem {
     ) -> Result<(), FsError> {
         let path = preferences_path(std::env::var_os("XDG_CONFIG_HOME"), self.home.as_deref())
             .map_err(|error| FsError::from_io("resolve preferences", Path::new(""), error))?;
+        let referenced = referenced_names(&preferences);
         let bytes = encode_preferences_prepared(preferences, proof)
             .map_err(|error| FsError::from_io("save preferences", &path, error))?;
-        save_encoded(&path, &bytes)
+        save_preferences_encoded(&path, &bytes, &referenced)
             .map_err(|error| FsError::from_io("save preferences", &path, error))
     }
 }
