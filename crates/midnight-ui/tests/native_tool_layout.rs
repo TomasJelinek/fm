@@ -332,9 +332,18 @@ fn embedded_hot_paths_keeps_actions_artwork_and_compact_close() {
             form::assert_unclipped(&host.visible_item(AccessibleRole::Button, label), label);
         }
         // A labelled button shows the shared tinted glyph; the host's (magenta) artwork
-        // for Add current never replaces it.
-        let magenta = pixels
-            .iter()
+        // for Add current never replaces it. Only the button is checked: the main
+        // window's own artwork (the application icon) may hold such colours.
+        let button = host.visible_item(AccessibleRole::Button, "Add current");
+        let geometry = button.geometry();
+        let origin = button.map_to_native_window(geometry.origin);
+        let (left, top) = (origin.x.max(0.0) as usize, origin.y.max(0.0) as usize);
+        let right = ((origin.x + geometry.width()).ceil() as usize).min(1040);
+        let bottom = ((origin.y + geometry.height()).ceil() as usize).min(720);
+        assert!(left < right && top < bottom, "Add current is on screen");
+        let magenta = (top..bottom)
+            .flat_map(|y| (left..right).map(move |x| y * 1040 + x))
+            .map(|index| pixels[index])
             .filter(|pixel| {
                 i16::from(pixel.r) > i16::from(pixel.g) + 40
                     && i16::from(pixel.b) > i16::from(pixel.g) + 40
