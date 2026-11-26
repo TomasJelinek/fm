@@ -322,6 +322,7 @@ their versions vary by installation.
 | GnuPG | Build-time check of FFmpeg's source signature in a temporary keyring; not shipped | GPL-3.0-or-later |
 | CMake and Ninja | Build tools of the HTML viewer's CEF wrapper; not shipped | BSD-3-Clause and Apache-2.0 |
 | GNU binutils (strip) | Linux release build tool to strip staged CEF binaries; not shipped | GPL-3.0-or-later |
+| Windows Installer (`msi.dll`), `makecab.exe` and `expand.exe` | Windows release build tools of the MSI (`scripts/package-msi.py`); part of Windows, not shipped | Microsoft Windows license terms; no fee beyond Windows ([dependency policy](DEPENDENCY_POLICY.md#current-decisions)) |
 | Fontconfig | Linux font discovery | MIT/X11-style notices |
 | FreeType | Linux font stack | FreeType License OR GPL-2.0; keep the FTL credit when choosing FTL ([terms](https://freetype.org/license.html)) |
 | GNU libc (`libc`, `libm`, loader) | Linux runtime | LGPL-2.1-or-later with exceptions ([upstream](https://sourceware.org/glibc/)) |

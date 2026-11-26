@@ -27,6 +27,10 @@ How to read it:
 - **Windows and Linux:** `build.bat` and `build.sh` build the application together with
   every plugin package; release packages contain every viewer, filesystem and
   thumbnailer package.
+- **Windows installer:** from 0.6.1 a per-user MSI (no administrator rights) made from
+  the release ZIP's files installs to `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`
+  with a Start menu shortcut and an Add/Remove Programs entry; a newer MSI replaces an
+  older one, and it updates through a newer MSI rather than the update dialog.
 - **Linux specifics:** native Wayland drag and drop with other applications is new, not
   yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On
   Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which it offers to
@@ -34,7 +38,8 @@ How to read it:
 - **Open:** macOS (PLAT-01); native and manual qualification on other distributions,
   desktops, physical GPUs and live removable or network mounts (PLAT-02); CI jobs for
   the HTML viewer and the bundled-FFmpeg video helper (CI-01); native tests in the
-  release profile (REL-02); signed Windows release binaries (REL-03).
+  release profile (REL-02); signed Windows release binaries and MSI (REL-03); a tested
+  MSI install, upgrade and uninstall and ICE validation (REL-05).
 - **Documents:** [user guide](USER_GUIDE.md#build-and-run) (Build and run),
   [system requirements](SYSTEM_REQUIREMENTS.md), [release build](RELEASE_BUILD.md),
   [test execution](developer/TEST_EXECUTION.md).

@@ -2009,6 +2009,27 @@ file in it or a folder above it that is a link leading elsewhere, or that belong
 an account other than you, the system or administrators (Linux: you or root). See the
 [resolution and security contract](developer/RUNTIME_DISCOVERY.md).
 
+### Windows installer
+
+From 0.6.1 each release also has `midnight-explorer-<version>-x86_64-pc-windows-msvc.msi`,
+an installer for the same files as the ZIP. It installs for your account only, without
+administrator rights, into `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, adds
+**Midnight Explorer** to the Start menu and an entry to **Settings › Apps › Installed
+apps** (Add/Remove Programs), from which you repair or remove it. Removing it deletes
+the installed files and leaves your settings in `%LOCALAPPDATA%\Midnight Explorer`.
+
+- **Updates:** a copy installed this way is updated by downloading and running the newer
+  release's MSI, which replaces the installed version; the update dialog finds the new
+  version but offers its release page instead of installing it. An older MSI refuses to
+  replace a newer installed version.
+- **Check the download:** compare its SHA-256 (`Get-FileHash <file>.msi` in PowerShell)
+  with its line in the release's `SHA256SUMS`, whose signature `SHA256SUMS.minisig`
+  the project's release key makes. The installer is not code-signed, so Windows
+  SmartScreen may warn before it runs.
+- The ZIP stays available for a portable copy or an installation that an administrator
+  manages; the MSI does not install for all users. Install the Visual C++ runtime
+  yourself if `VCRUNTIME140.dll` is missing, as for the ZIP.
+
 ### Shared installations
 
 A release package runs from any folder you extract it to; no script or installer is

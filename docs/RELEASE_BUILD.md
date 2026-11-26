@@ -148,13 +148,14 @@ nothing behind when it is refused.
 
 ## Distribution archives
 
-A release consists of a Windows x64 ZIP and a Linux x86-64 GNU/glibc tar.gz, plus a
-`SHA256SUMS` file and, from 0.5.1 on, its signature `SHA256SUMS.minisig`
+A release consists of a Windows x64 ZIP and a Linux x86-64 GNU/glibc tar.gz, from 0.6.1
+on a Windows installer (MSI) made from that ZIP ([Windows installer](#windows-installer-msi)),
+plus a `SHA256SUMS` file and, from 0.5.1 on, its signature `SHA256SUMS.minisig`
 ([signing](#signing-the-release)): the [0.1.0](releases/0.1.0.md), [0.5.0](releases/0.5.0.md),
 [0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md), [0.5.3](releases/0.5.3.md), [0.5.4](releases/0.5.4.md) and [0.6.0](releases/0.6.0.md) previews. Linux archives
 are built on Ubuntu 24.04; native Fedora, openSUSE and other desktop tests are pending
-(PLAT-02). The Windows executable is unsigned: the archive checksums establish download
-integrity, not code signing.
+(PLAT-02). The Windows executable and the MSI are unsigned (REL-03): the checksums
+establish download integrity, not code signing.
 
 `scripts/package-release.py` packages an already built and tested executable with
 Python 3.11 or later and its standard library. It neither builds nor publishes.
@@ -276,7 +277,8 @@ application keeps its AboutSlint widget. Midnight Explorer is GPL-3.0-or-later, 
 published release must have its corresponding source available: push the release tag
 (`v<version>`) for the packaged commit before publishing the archives.
 
-Before publishing, unpack both archives, compare the executable hashes with the tested
+Before publishing, run `scripts/package-msi.py verify` on the MSI, unpack both archives,
+compare the executable hashes with the tested
 artifacts, run the unpacked executables' filesystem and UI smoke checks, inspect the
 ELF requirements and the archive paths and permissions, and verify `SHA256SUMS`. A
 Windows ZIP carries no NTFS permissions, so the build scripts' read-and-execute grant
@@ -293,28 +295,100 @@ playback helpers. Do not
 include private preferences, caches, toolchains, PDBs or generated intermediate
 objects.
 
+### Windows installer (MSI)
+
+`scripts/package-msi.py` turns the finished Windows ZIP into
+`midnight-explorer-<version>-x86_64-pc-windows-msvc.msi` beside it. It runs on Windows
+with Python 3.11 or later and needs nothing else: it writes the database with the
+Windows Installer API (`msi.dll`) and the cabinet with `makecab.exe`, and checks it with
+`expand.exe`, all part of Windows ([tool choice](DEPENDENCY_POLICY.md#current-decisions)).
+It neither builds nor publishes.
+
+```powershell
+python -B scripts/package-msi.py build `
+    --zip _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.zip
+python -B scripts/package-msi.py verify `
+    --msi _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.msi `
+    --zip _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.zip
+```
+
+`build` writes below the checkout's `_build` (`--output` names another folder there) and
+refuses an existing MSI.
+
+- **Single source:** the files come from the ZIP alone, so the MSI cannot drift from
+  it. `build` first applies the ZIP's own checks: the archive name and the workspace
+  version, one root folder, regular files with portable ASCII names (the database uses
+  code page 1252) and paths of at most 160 characters (so that installed paths stay
+  below Windows' 260-character limit), `BUILD-INFO.json` naming the version, target and executable, the
+  executable's SHA-256, `README.txt` naming the version and its source, `LICENSE.txt`
+  equal to the repository's `LICENSE`, the helper and the notices. The MSI then holds
+  every file of the ZIP except `BUILD-INFO.json`: the application updates in place
+  only a folder with that file ([Updates](developer/UPDATES.md#staging)), and a folder
+  that Windows Installer manages must be updated by a newer MSI instead.
+- **Installation:** per user, without administrator rights or a UAC prompt, into
+  `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)` (the `INSTALLDIR` property);
+  `%LOCALAPPDATA%\Programs\Midnight Explorer` is left to the application's own
+  **Move to my profile…** copy. A Start menu shortcut **Midnight Explorer** starts the
+  executable in the user's profile folder, like the Desktop shortcut of
+  `scripts/deploy-private.ps1`. Add/Remove Programs shows the version, the publisher
+  Tomas Jelinek, the Harvest Navigator icon (`assets/branding/midnight-explorer.ico`)
+  and links to the repository, this release's source and the releases page; it offers
+  Remove and Repair, not Change. The package has no dialogs beyond Windows Installer's
+  progress window, and `msiexec /i <msi> /qn` installs it silently.
+- **Upgrades:** the `UpgradeCode` is fixed in the script and must never change. The
+  product code follows from the version and the package code from the ZIP's SHA-256,
+  so one ZIP always gives the same codes. A newer MSI removes the installed version
+  completely before installing; an older one stops with "A newer version of Midnight
+  Explorer is already installed". Running the installed version's MSI again offers
+  Windows Installer's repair or remove.
+- **Nothing runs code:** there are no custom actions besides two that set properties
+  (the install location shown in Add/Remove Programs and the shortcut's start folder),
+  no `Binary` table and no services. Each folder is one component whose key path is a
+  value under `HKCU\Software\Midnight Explorer Installer`; that key and the installed
+  folders, once empty, are removed on uninstall. Settings, caches and update downloads
+  in `%LOCALAPPDATA%\Midnight Explorer` are never touched.
+- **Not included:** the Visual C++ runtime (as for the ZIP), code signing (REL-03) and a
+  per-machine installation: the package refuses `ALLUSERS`. An administrator who wants
+  **Retry with authorization** installs the extracted ZIP below `C:\Program Files`.
+- **Checks:** `build` writes to a temporary name and keeps the MSI only after the same
+  checks as `verify`: the summary information (x64, schema 500, compressed, no
+  elevation, package code), only the expected tables, every table row as the ZIP
+  defines it, the per-user rules (HKCU key paths, every created folder removed on
+  uninstall), the installed paths, and every file of the embedded cabinet, extracted
+  with `expand.exe`, byte for byte against its ZIP entry. Windows SDK ICE validation
+  (Orca, `msival2`) is not run, and no install, upgrade or uninstall has been tested
+  yet (REL-05); an administrative installation of an MSI made from the 0.6.0 ZIP
+  extracted every file unchanged ([record](verification/2026-11-26-release-msi.md)).
+- **Tests:** `scripts/tests/test_package_msi.py`, in the scripts suite that CI runs on
+  Windows and Linux, checks the payload rules and the database plan on both and, on
+  Windows, builds and verifies an MSI of a small stand-in release. CI does not package
+  releases, so the release MSI itself is built on the owner's machine with the ZIP.
+
 ### Signing the release
 
 The update check installs only releases whose `SHA256SUMS` is signed with the
-project's release key ([Updates](developer/UPDATES.md#trust)). With both archives in
+project's release key ([Updates](developer/UPDATES.md#trust)). With both archives and the MSI in
 one folder, on the owner's machine (Python 3.11 or later, standard library only):
 
 ```powershell
 python -B scripts/release-signing.py checksums `
-    _build/releases/v0.6.0/midnight-explorer-0.6.0-x86_64-pc-windows-msvc.zip `
-    _build/releases/v0.6.0/midnight-explorer-0.6.0-x86_64-unknown-linux-gnu.tar.gz
-python -B scripts/release-signing.py sign --version 0.6.0 `
+    _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.zip `
+    _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.msi `
+    _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-unknown-linux-gnu.tar.gz
+python -B scripts/release-signing.py sign --version 0.6.1 `
     --secret-key <path outside every checkout>\midnight-explorer-release.key `
-    _build/releases/v0.6.0/SHA256SUMS
-python -B scripts/release-signing.py verify --version 0.6.0 _build/releases/v0.6.0/SHA256SUMS
+    _build/releases/v0.6.1/SHA256SUMS
+python -B scripts/release-signing.py verify --version 0.6.1 _build/releases/v0.6.1/SHA256SUMS
 ```
 
-`checksums` writes `SHA256SUMS` (`<sha256>  <archive name>` lines). `sign` asks for the
+`checksums` writes `SHA256SUMS` (`<sha256>  <file name>` lines, one for each archive and
+the MSI). The application's updater uses only its platform's archive line; the MSI's
+line lets users check the installer they download. `sign` asks for the
 key's password, writes `SHA256SUMS.minisig` with the trusted comment
 `timestamp:<now> file:SHA256SUMS release:midnight-explorer-<version>`, verifies it and
 refuses a secret key inside the repository or one that does not belong to
 `packaging/update-signing.pub`. `verify` checks the pair against the repository's
-public key. Upload `SHA256SUMS` and `SHA256SUMS.minisig` with the archives; the asset
+public key. Upload `SHA256SUMS` and `SHA256SUMS.minisig` with the archives and the MSI; the asset
 names must stay exactly these. The version must be the workspace version that the
 archives' `BUILD-INFO.json` reports, and the public key in the tagged commit must be
 the one the release was signed with. The key pair is created once with

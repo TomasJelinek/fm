@@ -81,6 +81,32 @@ or redistributing the action itself would bring them. It uses the repository's G
 Actions cache, which has no fee. GitHub's own actions in the workflow are
 MIT. See [CI time](verification/2026-11-21-ci-time.md).
 
+**Windows installer tooling (26 November 2026):** the release MSI
+([Windows installer](RELEASE_BUILD.md#windows-installer-msi)) is written by
+`scripts/package-msi.py` with the Windows Installer API (`msi.dll`) through Python's
+`ctypes`, and its cabinet with `makecab.exe` and checked with `expand.exe`. All three
+are part of Windows, licensed with it and used unmodified on the packaging machine; no
+installer toolkit is added and nothing of them is shipped. Alternatives considered on
+that date:
+
+- **WiX Toolset v6 and v7** (MS-RL source): the project's binary releases are offered
+  under the Open Source Maintenance Fee agreement (`OSMFEULA.txt` in the WiX
+  repository), whose fee "applies only to Users that use the Software as part of
+  revenue-generating activities and have an annual gross revenue greater than or equal
+  to US$10,000"; the repository's README says "if you use this project to generate
+  revenue, the Maintenance Fee is required", and v7 enforces acceptance of the
+  agreement (`-acceptEula`, `wix eula accept`). Self-compiled binaries are exempt, but
+  building WiX needs Visual Studio 2026 with several workloads. A fee that becomes
+  mandatory for revenue-generating users or forks conflicts with this policy's "no
+  mandatory fees" rule for build tooling, so neither the binaries nor a self-build
+  were chosen.
+- **WiX v3.14 and cargo-wix** (which drives WiX v3): `wixtoolset/wix3` is archived;
+  v3.14.1 (March 2024) is the last release, so it is unmaintained.
+- **msitools `wixl`** (LGPL-2.1-or-later, maintained, 0.106; Ubuntu 24.04 packages
+  0.103): free and suitable, but it needs Linux or MSYS2, while the Windows ZIP is
+  built and checked on Windows. It remains the fallback if the built-in route proves
+  insufficient.
+
 **Native runtimes:** Windows/system graphics libraries remain governed by their
 vendors; their use does not make the operating system open source. Linux libraries
 retain their distribution's licenses. Rust bindings do not relicense native
