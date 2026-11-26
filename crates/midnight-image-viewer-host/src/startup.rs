@@ -13,8 +13,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-const IMAGE_LIMITS: Limits = Limits {
-    memory_bytes: 512 * 1024 * 1024,
+/// 1 GiB, the most the worker SDK grants (owner decision of 26 November 2026; was 512 MiB).
+pub(crate) const IMAGE_LIMITS: Limits = Limits {
+    memory_bytes: 1024 * 1024 * 1024,
     cpu_seconds: 60,
 };
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;

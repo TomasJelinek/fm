@@ -44,9 +44,15 @@ impl Source for midnight_plugin_host::CapturedFile {
 
 /// Longest wait after `Failure` for the worker's reason or the end of its stream.
 const REASON_GRACE: Duration = Duration::from_secs(1);
+/// Source bytes one Open may read, 1 GiB (owner decision of 26 November 2026; was 256 MiB).
+const MAX_OPEN_READ_BYTES: u64 = 1024 * 1024 * 1024;
+/// Read requests one Open may make, scaled with `MAX_OPEN_READ_BYTES` (was 8192).
+const MAX_OPEN_READS: usize = 32_768;
 
 /// One persistent restricted decoder. Creation, rendering, close and Drop are backend-only.
-/// Memory is capped at 512 MiB, retained RGBA at 128 MiB; cumulative process CPU is 60 seconds.
+/// Memory is capped at 1 GiB, retained RGBA at 128 MiB (the published API's
+/// `MAX_DECODED_BYTES`); cumulative process CPU is 60 seconds. Open reads at most 1 GiB of
+/// source in at most 32,768 requests.
 /// Each operation additionally has the supplied wall-clock deadline and cancellation flag.
 pub struct ImageSession {
     owner: WorkerOwner<CapturedSource>,
@@ -200,7 +206,7 @@ impl ImageSession {
                     let mut read_total = 0u64;
                     #[cfg(feature = "startup-diagnostics")]
                     let mut first_read = true;
-                    for _ in 0..8192 {
+                    for _ in 0..MAX_OPEN_READS {
                         check_cancel(cancel)?;
                         check_cancel(stopped)?;
                         match api::read_message(output)? {
@@ -221,7 +227,7 @@ impl ImageSession {
                                         )
                                     })?;
                                 read_total += u64::from(amount);
-                                if read_total > 256 * 1024 * 1024 {
+                                if read_total > MAX_OPEN_READ_BYTES {
                                     return Err(io::Error::other(
                                         "Image source-read budget exhausted",
                                     ));
@@ -655,5 +661,23 @@ mod failure_text_tests {
             rejected(true, Some(&reason)).to_string(),
             "This document needs a password."
         );
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    /// Owner decision of 26 November 2026: the image workers' limit is 1 GiB.
+    #[test]
+    fn image_workers_have_one_gib_of_memory_and_of_source_reads() {
+        let limits = crate::startup::IMAGE_LIMITS;
+        assert_eq!(limits.memory_bytes, 1 << 30);
+        assert!(limits.validate().is_ok(), "the worker SDK grants it");
+        assert_eq!(MAX_OPEN_READ_BYTES, 1 << 30);
+        // As before, the requests reach the byte budget at an average of 32 KiB each.
+        assert_eq!(MAX_OPEN_READ_BYTES / MAX_OPEN_READS as u64, 32 * 1024);
+        // The decoded RGBA bound stays the published API's.
+        assert_eq!(api::MAX_DECODED_BYTES, 128 << 20);
     }
 }

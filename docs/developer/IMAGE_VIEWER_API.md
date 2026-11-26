@@ -359,9 +359,9 @@ Windows AppContainer or Linux restriction succeeds. API 0.3.0 adds `FailureReaso
 | PDF encoded source | 128 MiB, checked before allocation or source reads |
 | Broker read/reply | `MAX_READ_BYTES = 256 * 1024` |
 | Failure reason | `MAX_REASON_BYTES = 160` printable ASCII bytes, at most one, after `Failure` |
-| Total source reads during Open | 256 MiB and at most 8192 response-loop iterations |
+| Total source reads during Open | 1 GiB and at most 32,768 response-loop iterations (host) |
 | Embedded ICC profile | 4 MiB |
-| Worker process | 512 MiB memory, 60 cumulative CPU seconds |
+| Worker process | 1 GiB memory (the worker SDK maximum), 60 cumulative CPU seconds |
 | Per Open/render response | Caller-supplied wall-clock timeout and cancellation |
 | Scale | `MIN_SCALE = 1 / 32768`, `MAX_SCALE = 64` |
 
