@@ -130,22 +130,82 @@ class Plan(Workspace):
         payload = package_msi.read_payload(write_release(self.folder, files or release_files()))
         return payload, package_msi.plan(payload)
 
-    def test_installs_per_user_below_the_profile_with_a_start_menu_shortcut(self):
+    def test_dual_purpose_per_user_by_default_or_for_all_users(self):
         payload, tables = self.plan()
         directories = {row[0]: row for row in tables["Directory"]}
-        self.assertEqual(directories["INSTALLDIR"][1:], ("UserProgramsFolder", "MIDNIG~1|Midnight Explorer (MSI)"))
-        self.assertEqual(directories["UserProgramsFolder"][1], "LocalAppDataFolder")
+        # Per machine: Program Files. Per user: the earlier per-user MSI's folder, set first.
+        self.assertEqual(directories["INSTALLDIR"][1:], ("ProgramFiles64Folder", "MIDNIG~1|Midnight Explorer (MSI)"))
+        self.assertNotIn("LocalAppDataFolder", directories)
+        actions = {row[0]: row for row in tables["CustomAction"]}
+        self.assertEqual(actions["SetUserInstallFolder"][2:],
+                         ("INSTALLDIR", "[LocalAppDataFolder]Programs\\Midnight Explorer (MSI)\\"))
+        execute = {row[0]: row for row in tables["InstallExecuteSequence"]}
+        self.assertEqual(execute["SetUserInstallFolder"][1:],
+                         (f"NOT INSTALLDIR AND ({package_msi.PER_USER})", execute["CostFinalize"][2] - 10))
+        self.assertEqual(execute["SetShortcutWorkingFolder"][1], package_msi.PER_USER)
         properties = dict(tables["Property"])
-        self.assertNotIn("ALLUSERS", properties)
+        self.assertEqual((properties["ALLUSERS"], properties["MSIINSTALLPERUSER"]), ("2", "1"))
+        self.assertEqual(properties["MEUSERPROFILE"], "%USERPROFILE%")
         self.assertEqual(properties["Manufacturer"], "Tomas Jelinek")
         self.assertEqual(properties["ProductVersion"], VERSION)
-        self.assertEqual(properties["UpgradeCode"], package_msi.UPGRADE_CODE)
+        # The 0.6.1 per-user MSI's upgrade code, so that a per-user installation upgrades it.
+        self.assertEqual(properties["UpgradeCode"], "{DDF2A2BA-6901-484C-97B2-4EF662BF5E72}")
         self.assertEqual(properties["ARPURLINFOABOUT"], f"https://github.com/TomasJelinek/fm/tree/v{VERSION}")
         (shortcut,) = tables["Shortcut"]
         self.assertEqual(shortcut[1:5], ("ProgramMenuFolder", "MIDNIG~1|Midnight Explorer", "StartMenuShortcut",
                                          "[#MainExecutable]"))
         self.assertEqual(shortcut[11], "MEUSERPROFILE")
-        self.assertIn("NOT ALLUSERS", dict(tables["LaunchCondition"]))
+        self.assertNotIn("NOT ALLUSERS", dict(tables["LaunchCondition"]))
+        package_msi.check_scope_rules(tables)
+
+    def test_the_scope_dialog_sets_the_scope_and_folder_of_its_choice(self):
+        _, tables = self.plan()
+        events = {}
+        for dialog, control, event, argument, condition, order in tables["ControlEvent"]:
+            events.setdefault((dialog, control), []).append((order, event, argument, condition))
+        for button in ("InstallUser", "InstallMachine"):
+            self.assertEqual([row[1:] for row in sorted(events[("ScopeDlg", button)])], [
+                ("[ALLUSERS]", "2", "1"),
+                ("[MSIINSTALLPERUSER]", "1", 'ME_SCOPE = "user"'),
+                ("[MSIINSTALLPERUSER]", "{}", 'ME_SCOPE = "machine"'),
+                ("[INSTALLDIR]", "[LocalAppDataFolder]Programs\\Midnight Explorer (MSI)\\", 'ME_SCOPE = "user"'),
+                ("[INSTALLDIR]", "[%ProgramW6432]\\Midnight Explorer (MSI)\\", 'ME_SCOPE = "machine"'),
+                ("EndDialog", "Return", "1")])
+        controls = {(row[0], row[1]): row for row in tables["Control"]}
+        self.assertTrue(controls[("ScopeDlg", "InstallMachine")][7] & package_msi.ELEVATION_SHIELD)
+        self.assertEqual(controls[("ScopeDlg", "InstallMachine")][3:7], controls[("ScopeDlg", "InstallUser")][3:7])
+        self.assertEqual(controls[("ScopeDlg", "Scope")][8], "ME_SCOPE")
+        radio = {(row[0], row[2]) for row in tables["RadioButton"]}
+        self.assertEqual(radio, {("ME_SCOPE", "user"), ("ME_SCOPE", "machine"),
+                                 ("ME_MAINTENANCE", "Repair"), ("ME_MAINTENANCE", "Remove")})
+        ui = {row[0]: row for row in tables["InstallUISequence"]}
+        self.assertEqual(ui["ScopeDlg"][1], "NOT Installed")
+        self.assertEqual([ui[name][2] for name in ("ExitDlg", "UserExitDlg", "FatalErrorDlg")], [-1, -2, -3])
+        self.assertLess(ui["AppSearch"][2], ui["SetMachineScope"][2])
+        self.assertLess(ui["SetMachineScope"][2], ui["ScopeDlg"][2])
+        dialogs = {row[0] for row in tables["Dialog"]}
+        self.assertTrue({row[0] for row in tables["Control"]} <= dialogs)
+        # Every dialog is shown by the sequence, except the one the progress dialog's Cancel spawns.
+        self.assertEqual(dialogs - set(ui), {"CancelDlg"})
+
+    def test_rules_refuse_a_package_of_one_scope_only(self):
+        _, tables = self.plan()
+        cases = {
+            "per user only": ("Property", lambda rows: [row for row in rows if row[0] != "ALLUSERS"]),
+            "per machine only": ("Property", lambda rows: [row for row in rows if row[0] != "MSIINSTALLPERUSER"]),
+            "HKCU key path": ("Registry", lambda rows: [(row[0], package_msi.HKCU, *row[2:]) for row in rows]),
+            "other upgrade code": ("Property", lambda rows: [
+                (name, "{00000000-0000-0000-0000-000000000000}" if name == "UpgradeCode" else value)
+                for name, value in rows]),
+            "code-running action": ("CustomAction", lambda rows: rows + [("Run", 34, "INSTALLDIR", "x.exe")]),
+            "profile folder": ("Directory", lambda rows: rows + [("LocalAppDataFolder", "TARGETDIR", ".")]),
+            "no machine folder": ("ControlEvent", lambda rows: [row for row in rows if "ProgramW6432" not in row[3]]),
+        }
+        for label, (table, change) in cases.items():
+            with self.subTest(label):
+                changed = dict(tables, **{table: change(list(tables[table]))})
+                with self.assertRaises(ValueError):
+                    package_msi.check_scope_rules(changed)
 
     def test_every_file_of_the_payload_once_in_sequence(self):
         payload, tables = self.plan()
@@ -157,16 +217,17 @@ class Plan(Workspace):
         self.assertEqual(package_msi.installed_paths(tables["Directory"], tables["Component"], files),
                          {row[0]: row[8] for row in files})
 
-    def test_profile_components_use_registry_key_paths_and_remove_their_folders(self):
+    def test_components_use_scoped_registry_key_paths_and_remove_their_folders(self):
         _, tables = self.plan()
         registry = {row[0]: row for row in tables["Registry"]}
         for component in tables["Component"]:
             self.assertTrue(component[3] & package_msi.COMPONENT_REGISTRY_KEY_PATH)
-            self.assertEqual(registry[component[5]][1], package_msi.HKCU)
+            # HKCU per user, HKLM per machine.
+            self.assertEqual(registry[component[5]][1], -1)
             self.assertRegex(component[1], r"^\{[0-9A-F-]{36}\}$")
         removed = {row[3] for row in tables["RemoveFile"]}
-        created = {row[0] for row in tables["Directory"]} - {"TARGETDIR", "LocalAppDataFolder", "ProgramMenuFolder"}
-        self.assertEqual(created - removed, set())
+        created = {row[0] for row in tables["Directory"]} - {"TARGETDIR", "ProgramFiles64Folder", "ProgramMenuFolder"}
+        self.assertEqual(created, removed)
         self.assertTrue(all(row[2] is None and row[4] == 2 for row in tables["RemoveFile"]))
 
     def test_short_names_are_unique_per_folder(self):

@@ -27,10 +27,14 @@ How to read it:
 - **Windows and Linux:** `build.bat` and `build.sh` build the application together with
   every plugin package; release packages contain every viewer, filesystem and
   thumbnailer package.
-- **Windows installer:** from 0.6.1 a per-user MSI (no administrator rights) made from
-  the release ZIP's files installs to `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`
-  with a Start menu shortcut and an Add/Remove Programs entry; a newer MSI replaces an
-  older one, and it updates through a newer MSI rather than the update dialog.
+- **Windows installer:** from 0.6.1 an MSI made from the release ZIP's files, with a
+  Start menu shortcut and an Add/Remove Programs entry; a newer MSI replaces an older
+  one, and it updates through a newer MSI rather than the update dialog. 0.6.1 and 0.6.2
+  install per user only. From the next release the installer asks: **Just for me** (the
+  default, no administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`)
+  or **For all users** (UAC, `C:\Program Files\Midnight Explorer (MSI)`), the copy in
+  which **Retry with authorization** works. Only the built package is checked; no
+  installation of that kind has been run yet (REL-05).
 - **Linux specifics:** native Wayland drag and drop with other applications is new, not
   yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On
   Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which it offers to
@@ -39,7 +43,7 @@ How to read it:
   desktops, physical GPUs and live removable or network mounts (PLAT-02); CI jobs for
   the HTML viewer and the bundled-FFmpeg video helper (CI-01); native tests in the
   release profile (REL-02); signed Windows release binaries and MSI (REL-03); a tested
-  MSI install, upgrade and uninstall and ICE validation (REL-05).
+  MSI install in both scopes, upgrade and uninstall and ICE validation (REL-05).
 - **Documents:** [user guide](USER_GUIDE.md#build-and-run) (Build and run),
   [system requirements](SYSTEM_REQUIREMENTS.md), [release build](RELEASE_BUILD.md),
   [test execution](developer/TEST_EXECUTION.md).

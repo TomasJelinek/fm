@@ -342,7 +342,8 @@ as Administrator or root, the host uses it only from beside an installed `midnig
 standard users cannot change: on Windows a folder on a local fixed drive whose
 permissions only administrators can change, such as one below `C:\Program Files`; on
 Linux a root-owned directory such as `/opt/midnight-explorer` (see
-[Linux desktop launcher](#linux-desktop-launcher)). Build output, the Windows private
+[Linux desktop launcher](#linux-desktop-launcher)). The Windows installer's **For all
+users** choice installs such a copy ([Windows installer](#windows-installer)). Build output, the Windows private
 runtime, anything in a user profile and other user-writable locations are refused,
 and so is a folder created directly below a drive root such as `C:\`, even by an
 administrator, because it inherits Modify permission for all authenticated users. In
@@ -2040,23 +2041,50 @@ an account other than you, the system or administrators (Linux: you or root). Se
 ### Windows installer
 
 From 0.6.1 each release also has `midnight-explorer-<version>-x86_64-pc-windows-msvc.msi`,
-an installer for the same files as the ZIP. It installs for your account only, without
-administrator rights, into `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, adds
-**Midnight Explorer** to the Start menu and an entry to **Settings › Apps › Installed
-apps** (Add/Remove Programs), from which you repair or remove it. Removing it deletes
-the installed files and leaves your settings in `%LOCALAPPDATA%\Midnight Explorer`.
+an installer for the same files as the ZIP. From the release after 0.6.2 it first asks
+who can use Midnight Explorer on this computer (0.6.1 and 0.6.2 install just for you):
+
+- **Just for me** (the default): without administrator rights, into
+  `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, the folder of the earlier per-user
+  installer, which it updates in place. **Retry with authorization** does not work from
+  this copy, because your account can change its files.
+- **For all users of this computer:** into `C:\Program Files\Midnight Explorer (MSI)`;
+  Windows asks for administrator approval (UAC) before installing, and the Install button
+  shows the UAC shield. The folder keeps Program Files' permissions, which only
+  administrators can change, so **Retry with authorization** lists folders you may not
+  open. Pick this if you need that, or if several accounts use the computer.
+
+Either way it adds **Midnight Explorer** to the Start menu (yours, or every account's)
+and an entry to **Settings › Apps › Installed apps** (Add/Remove Programs), from which
+you repair or remove it. Removing it deletes the installed files and leaves your settings
+in `%LOCALAPPDATA%\Midnight Explorer`. Running the installed version's MSI again offers
+**Repair** or **Remove**.
+
+- **Both kinds side by side:** the two are separate installations. Choosing For all users
+  while a copy is installed just for you (or the other way round) installs a second copy;
+  the installer says so, and Installed apps then lists Midnight Explorer twice, as does
+  the Start menu. Remove the one you no longer need there. When only an all-users copy is
+  installed, the installer preselects For all users so that it updates that copy.
+- **Without the dialog:** `msiexec /i <file>.msi /qn` installs just for you. From a
+  PowerShell started with **Run as administrator**, `msiexec /i <file>.msi /qn ALLUSERS=1`
+  installs for all users. `INSTALLDIR=<folder>` chooses another folder in a silent
+  installation; for Retry with authorization it must be one that only administrators can
+  change.
 
 - **Updates:** a copy installed this way is updated by downloading and running the newer
-  release's MSI, which replaces the installed version; the update dialog finds the new
-  version but offers its release page instead of installing it. An older MSI refuses to
-  replace a newer installed version.
+  release's MSI with the same choice, which replaces the installed version; the update
+  dialog finds the new version but offers its release page instead of installing it (an
+  installed MSI has no `BUILD-INFO.json`, and an all-users copy is one you cannot change).
+  An older MSI refuses to replace a newer installed version.
 - **Check the download:** compare its SHA-256 (`Get-FileHash <file>.msi` in PowerShell)
   with its line in the release's `SHA256SUMS`, whose signature `SHA256SUMS.minisig`
   the project's release key makes. The installer is not code-signed, so Windows
   SmartScreen may warn before it runs.
-- The ZIP stays available for a portable copy or an installation that an administrator
-  manages; the MSI does not install for all users. Install the Visual C++ runtime
-  yourself if `VCRUNTIME140.dll` is missing, as for the ZIP.
+- The ZIP stays available for a portable copy. Neither installer folder is the one that
+  **Move to my profile…** copies to or the one this guide names for an administrator's
+  copy of a build, so the copies never overwrite each other. Neither installation shows
+  the shared-installation notice: only you, or only administrators, can change them.
+  Install the Visual C++ runtime yourself if `VCRUNTIME140.dll` is missing, as for the ZIP.
 
 ### Shared installations
 

@@ -37,10 +37,19 @@ UPGRADE_CODE = "{DDF2A2BA-6901-484C-97B2-4EF662BF5E72}"
 # Namespace of the name-based (version 5) product, package and component codes, so the
 # same release ZIP always gives the same codes.
 CODE_NAMESPACE = uuid.UUID("7d5101d9-ee9a-4b46-aa85-1cab4fce4878")
-# %LOCALAPPDATA%\Programs\<INSTALL_FOLDER>. Not "Midnight Explorer": that folder is the
-# destination of the application's own "Move to my profile..." copy, which an installer
-# must neither overwrite nor have replaced under it.
+# One dual-purpose package (ALLUSERS=2 with MSIINSTALLPERUSER): "Just for me" installs into
+# %LOCALAPPDATA%\Programs\<INSTALL_FOLDER> without administrator rights (the default, and
+# the folder of the earlier per-user MSI, which it upgrades in place); "For all users"
+# installs into %ProgramFiles%\<INSTALL_FOLDER>, where Windows Installer asks for UAC
+# consent. Not "Midnight Explorer": per user that folder is the destination of the
+# application's own "Move to my profile..." copy, and below Program Files it is the one the
+# user guide names for an administrator's copy of a build; an installer must neither
+# overwrite them nor have its files replaced under it.
 INSTALL_FOLDER = "Midnight Explorer (MSI)"
+USER_INSTALL_FOLDER = f"[LocalAppDataFolder]Programs\\{INSTALL_FOLDER}\\"
+# Program Files of 64-bit Windows, for the dialog's choice: in a per-user session
+# ProgramFiles64Folder already names the per-user folder.
+MACHINE_INSTALL_FOLDER = f"[%ProgramW6432]\\{INSTALL_FOLDER}\\"
 # The registry key that holds the components' key paths, removed on uninstall.
 REGISTRY_KEY = r"Software\Midnight Explorer Installer"
 # The application's updater replaces only a folder with BUILD-INFO.json ("a package that
@@ -55,7 +64,8 @@ MAXIMUM_PAYLOAD = 2 * 1024 ** 3 - 1
 MAXIMUM_RELATIVE_PATH = 160
 ARCHIVE_NAME = re.compile(r"midnight-explorer-(\d+)\.(\d+)\.(\d+)-x86_64-pc-windows-msvc\.zip")
 
-# Word count: compressed files (2) and no elevated privileges needed (8).
+# Word count: compressed files (2) and no elevated privileges needed (8) for the default
+# per-user installation; choosing all users makes Windows Installer ask for UAC consent.
 WORD_COUNT = 10
 SCHEMA = 500
 
@@ -97,20 +107,57 @@ TABLES = {
                         "PRIMARY KEY `Condition`"),
     "CustomAction": ("`Action` CHAR(72) NOT NULL, `Type` SHORT NOT NULL, `Source` CHAR(72), "
                      "`Target` CHAR(255) PRIMARY KEY `Action`"),
+    "AppSearch": "`Property` CHAR(72) NOT NULL, `Signature_` CHAR(72) NOT NULL PRIMARY KEY `Property`, `Signature_`",
+    "RegLocator": ("`Signature_` CHAR(72) NOT NULL, `Root` SHORT NOT NULL, `Key` CHAR(255) NOT NULL, "
+                   "`Name` CHAR(255), `Type` SHORT PRIMARY KEY `Signature_`"),
+    "TextStyle": ("`TextStyle` CHAR(72) NOT NULL, `FaceName` CHAR(32) NOT NULL, `Size` SHORT NOT NULL, "
+                  "`Color` LONG, `StyleBits` SHORT PRIMARY KEY `TextStyle`"),
+    "Dialog": ("`Dialog` CHAR(72) NOT NULL, `HCentering` SHORT NOT NULL, `VCentering` SHORT NOT NULL, "
+               "`Width` SHORT NOT NULL, `Height` SHORT NOT NULL, `Attributes` LONG, `Title` CHAR(128) "
+               "LOCALIZABLE, `Control_First` CHAR(50) NOT NULL, `Control_Default` CHAR(50), "
+               "`Control_Cancel` CHAR(50) PRIMARY KEY `Dialog`"),
+    "Control": ("`Dialog_` CHAR(72) NOT NULL, `Control` CHAR(50) NOT NULL, `Type` CHAR(20) NOT NULL, "
+                "`X` SHORT NOT NULL, `Y` SHORT NOT NULL, `Width` SHORT NOT NULL, `Height` SHORT NOT NULL, "
+                "`Attributes` LONG, `Property` CHAR(72), `Text` CHAR(0) LOCALIZABLE, `Control_Next` CHAR(50), "
+                "`Help` CHAR(50) LOCALIZABLE PRIMARY KEY `Dialog_`, `Control`"),
+    "ControlEvent": ("`Dialog_` CHAR(72) NOT NULL, `Control_` CHAR(50) NOT NULL, `Event` CHAR(50) NOT NULL, "
+                     "`Argument` CHAR(255) NOT NULL, `Condition` CHAR(255), `Ordering` SHORT "
+                     "PRIMARY KEY `Dialog_`, `Control_`, `Event`, `Argument`, `Condition`"),
+    "ControlCondition": ("`Dialog_` CHAR(72) NOT NULL, `Control_` CHAR(50) NOT NULL, `Action` CHAR(50) NOT NULL, "
+                         "`Condition` CHAR(255) NOT NULL PRIMARY KEY `Dialog_`, `Control_`, `Action`, `Condition`"),
+    "EventMapping": ("`Dialog_` CHAR(72) NOT NULL, `Control_` CHAR(50) NOT NULL, `Event` CHAR(50) NOT NULL, "
+                     "`Attribute` CHAR(50) NOT NULL PRIMARY KEY `Dialog_`, `Control_`, `Event`"),
+    "RadioButton": ("`Property` CHAR(72) NOT NULL, `Order` SHORT NOT NULL, `Value` CHAR(64) NOT NULL, "
+                    "`X` SHORT NOT NULL, `Y` SHORT NOT NULL, `Width` SHORT NOT NULL, `Height` SHORT NOT NULL, "
+                    "`Text` CHAR(0) LOCALIZABLE, `Help` CHAR(50) LOCALIZABLE PRIMARY KEY `Property`, `Order`"),
 }
 SEQUENCE_COLUMNS = ("`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT "
                     "PRIMARY KEY `Action`")
-# Standard action order (the numbers Windows Installer's documentation suggests). The
-# only custom actions only set properties (type 51); nothing runs code.
+# Conditions of the installation scope. Windows Installer installs per user when ALLUSERS
+# is empty or when ALLUSERS=2 and MSIINSTALLPERUSER=1, and per machine otherwise.
+PER_USER = "NOT ALLUSERS OR (ALLUSERS = 2 AND MSIINSTALLPERUSER = 1)"
+PER_MACHINE = "ALLUSERS = 1 OR (ALLUSERS = 2 AND NOT MSIINSTALLPERUSER)"
+# Standard action order (the numbers Windows Installer's documentation suggests), with an
+# optional condition. The only custom actions only set properties (type 51); nothing runs
+# code. The dialogs are the ones below (DIALOGS); the negative numbers are the dialogs
+# shown at the end: success, cancelled and failed.
 SEQUENCES = {
     "InstallUISequence": (
-        ("FindRelatedProducts", 25), ("LaunchConditions", 100), ("ValidateProductID", 700),
-        ("CostInitialize", 800), ("FileCost", 900), ("CostFinalize", 1000),
-        ("MigrateFeatureStates", 1200), ("ExecuteAction", 1300)),
+        ("FindRelatedProducts", 25), ("AppSearch", 50), ("LaunchConditions", 100),
+        ("ValidateProductID", 700), ("CostInitialize", 800), ("FileCost", 900),
+        ("SetUserInstallFolder", 990, f"NOT INSTALLDIR AND ({PER_USER})"),
+        ("CostFinalize", 1000),
+        ("SetMachineScope", 1100, f"{PER_MACHINE} OR (ME_MACHINE_COPY AND NOT ME_USER_COPY)"),
+        ("MigrateFeatureStates", 1200), ("ScopeDlg", 1230, "NOT Installed"),
+        ("MaintenanceDlg", 1250, "Installed AND NOT RESUME AND NOT Preselected"),
+        ("ProgressDlg", 1280), ("ExecuteAction", 1300),
+        ("ExitDlg", -1), ("UserExitDlg", -2), ("FatalErrorDlg", -3)),
     "InstallExecuteSequence": (
         ("FindRelatedProducts", 25), ("LaunchConditions", 100), ("ValidateProductID", 700),
-        ("CostInitialize", 800), ("FileCost", 900), ("CostFinalize", 1000),
-        ("SetInstallLocation", 1001), ("SetShortcutWorkingFolder", 1002),
+        ("CostInitialize", 800), ("FileCost", 900),
+        ("SetUserInstallFolder", 990, f"NOT INSTALLDIR AND ({PER_USER})"),
+        ("CostFinalize", 1000),
+        ("SetInstallLocation", 1001), ("SetShortcutWorkingFolder", 1002, PER_USER),
         ("MigrateFeatureStates", 1200), ("InstallValidate", 1400),
         # Early: the earlier version is removed completely before this one is installed.
         ("RemoveExistingProducts", 1401), ("InstallInitialize", 1500),
@@ -129,12 +176,32 @@ SEQUENCES = {
 }
 CUSTOM_ACTION_SET_PROPERTY = 51
 # Add/Remove Programs shows the install folder; the Start menu shortcut starts in the
-# user's profile folder, as the Desktop shortcut of scripts/windows-shortcut.ps1 does.
+# user's profile folder, as the Desktop shortcut of scripts/windows-shortcut.ps1 does. Per
+# user that is the installing user's; the all-users shortcut keeps the variable
+# (MEUSERPROFILE's default), which the shell expands for whoever starts it. A per-user
+# installation goes to the earlier per-user MSI's folder (Directory: Program Files), and the
+# dialog's default scope follows the command line or an existing all-users copy.
 CUSTOM_ACTIONS = (
     ("SetInstallLocation", CUSTOM_ACTION_SET_PROPERTY, "ARPINSTALLLOCATION", "[INSTALLDIR]"),
     ("SetShortcutWorkingFolder", CUSTOM_ACTION_SET_PROPERTY, "MEUSERPROFILE", "[%USERPROFILE]"),
+    ("SetUserInstallFolder", CUSTOM_ACTION_SET_PROPERTY, "INSTALLDIR", USER_INSTALL_FOLDER),
+    ("SetMachineScope", CUSTOM_ACTION_SET_PROPERTY, "ME_SCOPE", "machine"),
 )
+# Registry root -1: HKCU in a per-user installation, HKLM in a per-machine one.
+USER_OR_MACHINE = -1
 HKCU = 1
+HKLM = 2
+REGISTRY_RAW_64BIT = 2 | 16
+# Control attributes.
+VISIBLE, ENABLED, TRANSPARENT, NO_PREFIX = 1, 2, 0x10000, 0x20000
+PROGRESS_95 = 0x10000
+ELEVATION_SHIELD = 0x800000
+TEXT = VISIBLE | ENABLED | TRANSPARENT | NO_PREFIX
+HIDDEN_TEXT = ENABLED | TRANSPARENT | NO_PREFIX
+CONTROL = VISIBLE | ENABLED
+DIALOG_MODAL = 1 | 2 | 4  # visible, modal, minimizable
+DIALOG_MODELESS = 1 | 4
+WIDTH, HEIGHT = 370, 270
 COMPONENT_REGISTRY_KEY_PATH = 4
 COMPONENT_64BIT = 256
 FILE_VITAL = 512
@@ -304,11 +371,11 @@ def plan(payload):
         if folder:
             directory_ids[folder] = key("d", folder)
     taken = {folder: set() for folder in folders}
+    # Per user, SetUserInstallFolder sets INSTALLDIR before CostFinalize.
     directories = [("TARGETDIR", None, "SourceDir"),
-                   ("LocalAppDataFolder", "TARGETDIR", "."),
+                   ("ProgramFiles64Folder", "TARGETDIR", "."),
                    ("ProgramMenuFolder", "TARGETDIR", "."),
-                   ("UserProgramsFolder", "LocalAppDataFolder", msi_name("Programs", set())),
-                   ("INSTALLDIR", "UserProgramsFolder", msi_name(INSTALL_FOLDER, set()))]
+                   ("INSTALLDIR", "ProgramFiles64Folder", msi_name(INSTALL_FOLDER, set()))]
     for folder in sorted(folders):
         if folder:
             path = PurePosixPath(folder)
@@ -323,7 +390,7 @@ def plan(payload):
         names = sorted(PurePosixPath(relative).name for relative, _ in folders[folder])
         component_code = code(f"component {folder}\n" + "\n".join(names))
         value = "r" + component[1:] if folder else "RootFolderKeyPath"
-        registry.append((value, HKCU, REGISTRY_KEY, component, "#1", component))
+        registry.append((value, USER_OR_MACHINE, REGISTRY_KEY, component, "#1", component))
         components.append((component, component_code, directory_ids[folder],
                            COMPONENT_REGISTRY_KEY_PATH | COMPONENT_64BIT, None, value))
         feature_components.append(("Complete", component))
@@ -338,14 +405,11 @@ def plan(payload):
                           info.file_size, None, None, FILE_VITAL, sequence, relative))
     if executable_key is None:
         raise ValueError(f"The payload has no {EXECUTABLE}")
-    # The installer's own folders below the profile: removed on uninstall when empty.
-    registry.append(("RegistryKeyCleanup", HKCU, REGISTRY_KEY, "*", None, "RootFolder"))
-    remove_files.append(("RemoveProgramsFolder", "RootFolder", None, "UserProgramsFolder",
-                         REMOVE_ON_UNINSTALL))
+    registry.append(("RegistryKeyCleanup", USER_OR_MACHINE, REGISTRY_KEY, "*", None, "RootFolder"))
     components.append(("StartMenuShortcut", code("component start menu shortcut"),
                        "ProgramMenuFolder", COMPONENT_REGISTRY_KEY_PATH | COMPONENT_64BIT, None,
                        "StartMenuShortcutKeyPath"))
-    registry.append(("StartMenuShortcutKeyPath", HKCU, REGISTRY_KEY, "StartMenuShortcut", "#1",
+    registry.append(("StartMenuShortcutKeyPath", USER_OR_MACHINE, REGISTRY_KEY, "StartMenuShortcut", "#1",
                      "StartMenuShortcut"))
     feature_components.append(("Complete", "StartMenuShortcut"))
     shortcut_taken = set()
@@ -366,6 +430,14 @@ def plan(payload):
         ("ARPCOMMENTS", "Dual-pane file manager. Unsigned preview; see README.txt."),
         ("ARPNOMODIFY", "1"),
         ("SecureCustomProperties", "ME_DOWNGRADE_DETECTED;ME_UPGRADE_DETECTED"),
+        # Dual-purpose package: per user unless MSIINSTALLPERUSER is cleared (the dialog's
+        # "For all users", or MSIINSTALLPERUSER="" / ALLUSERS=1 on the command line).
+        ("ALLUSERS", "2"),
+        ("MSIINSTALLPERUSER", "1"),
+        ("MEUSERPROFILE", "%USERPROFILE%"),
+        ("ME_SCOPE", "user"),
+        ("ME_MAINTENANCE", "Repair"),
+        ("DefaultUIFont", "METext"),
     ]
     upgrades = [
         (UPGRADE_CODE, version, None, None, UPGRADE_ONLY_DETECT, None, "ME_DOWNGRADE_DETECTED"),
@@ -375,7 +447,6 @@ def plan(payload):
         ("VersionNT64", f"{PRODUCT} requires 64-bit Windows 10 or later."),
         ("NOT ME_DOWNGRADE_DETECTED",
          f"A newer version of {PRODUCT} is already installed. Uninstall it first to install this one."),
-        ("NOT ALLUSERS", f"This package installs {PRODUCT} for the current user only; do not set ALLUSERS."),
     ]
     return {
         "Property": properties,
@@ -391,8 +462,161 @@ def plan(payload):
         "Upgrade": upgrades,
         "LaunchCondition": launch_conditions,
         "CustomAction": list(CUSTOM_ACTIONS),
-        **{name: [(action, None, number) for action, number in actions]
-           for name, actions in SEQUENCES.items()},
+        # The other installation's registry key, to say that it stays installed.
+        "AppSearch": [("ME_USER_COPY", "UserCopy"), ("ME_MACHINE_COPY", "MachineCopy")],
+        "RegLocator": [("UserCopy", HKCU, REGISTRY_KEY, "RootFolder", REGISTRY_RAW_64BIT),
+                       ("MachineCopy", HKLM, REGISTRY_KEY, "RootFolder", REGISTRY_RAW_64BIT)],
+        **user_interface(),
+        **{name: [(step[0], step[2] if len(step) > 2 else None, step[1]) for step in steps]
+           for name, steps in SEQUENCES.items()},
+    }
+
+
+def _dialog(name, title_text, body, buttons, *, first=None, default=None, cancel=None,
+            modal=True, width=WIDTH, height=HEIGHT, extra=()):
+    """A dialog with a title line, body text, extra controls and buttons on the right."""
+    controls = []
+    if title_text:
+        controls.append((name, "Title", "Text", 15, 10, width - 30, 22, TEXT, None,
+                         "{\\METitle}" + title_text, None, None))
+    if body:
+        controls.append((name, "Body", "Text", 15, 38, width - 30, 40, TEXT, None, body, None, None))
+    controls.extend(extra)
+    controls.append((name, "BottomLine", "Line", 0, height - 36, width, 0, VISIBLE, None, None, None, None))
+    x = width - 10
+    for button, text, attributes, following in reversed(buttons):
+        bw = 66
+        x -= bw
+        controls.append((name, button, "PushButton", x, height - 27, bw, 17, attributes, None, text,
+                         following, None))
+        x -= 6
+    dialog = (name, 50, 50, width, height, DIALOG_MODAL if modal else DIALOG_MODELESS,
+              "[ProductName] Setup", first or buttons[0][0], default, cancel)
+    return dialog, controls
+
+
+def user_interface():
+    """The dialogs: scope choice (or repair/remove), progress, and the closing message."""
+    dialogs, controls = [], []
+    scope_extra = [
+        ("ScopeDlg", "Scope", "RadioButtonGroup", 15, 80, WIDTH - 30, 40, CONTROL, "ME_SCOPE", None,
+         "InstallUser", None),
+        ("ScopeDlg", "UserText", "Text", 15, 124, WIDTH - 30, 30, TEXT, None,
+         "Just for me: into %LOCALAPPDATA%\\Programs\\Midnight Explorer (MSI), without administrator "
+         "rights. Retry with authorization does not work from this copy.", None, None),
+        ("ScopeDlg", "MachineText", "Text", 15, 156, WIDTH - 30, 30, TEXT, None,
+         "For all users: into Program Files\\Midnight Explorer (MSI); Windows asks for administrator "
+         "approval. Only such a copy can Retry with authorization to list a folder you may not open.",
+         None, None),
+        ("ScopeDlg", "UserCopyNote", "Text", 15, 192, WIDTH - 30, 36, HIDDEN_TEXT, None,
+         "Midnight Explorer is also installed just for you. That copy stays installed beside this "
+         "one; remove it in Settings > Apps > Installed apps if you no longer need it.", None, None),
+        ("ScopeDlg", "MachineCopyNote", "Text", 15, 192, WIDTH - 30, 36, HIDDEN_TEXT, None,
+         "Midnight Explorer is also installed for all users. Choose For all users to update that "
+         "copy; Just for me installs a second copy beside it.", None, None),
+    ]
+    dialog, rows = _dialog(
+        "ScopeDlg", "Install [ProductName] [ProductVersion]",
+        "Choose who can use it on this computer. Both choices install the same files, and your "
+        "settings stay in your profile either way.",
+        [("InstallUser", "&Install", CONTROL, "InstallMachine"),
+         ("InstallMachine", "&Install", ENABLED | ELEVATION_SHIELD, "Cancel"),
+         ("Cancel", "Cancel", CONTROL, "Scope")],
+        first="Scope", default="InstallUser", cancel="Cancel", extra=scope_extra)
+    # The two Install buttons share one place; the scope shows one of them.
+    machine_x = next(row[3] for row in rows if row[1] == "InstallMachine")
+    rows = [row[:3] + (machine_x,) + row[4:] if row[1] == "InstallUser" else row for row in rows]
+    dialogs.append(dialog)
+    controls += rows
+    maintenance_extra = [
+        ("MaintenanceDlg", "Choice", "RadioButtonGroup", 15, 80, WIDTH - 30, 40, CONTROL,
+         "ME_MAINTENANCE", None, "Continue", None),
+    ]
+    dialog, rows = _dialog(
+        "MaintenanceDlg", "[ProductName] [ProductVersion] is installed",
+        "Repair restores its files and Start menu entry. Remove uninstalls it; your settings stay.",
+        [("Continue", "&Continue", CONTROL, "Cancel"), ("Cancel", "Cancel", CONTROL, "Choice")],
+        first="Choice", default="Continue", cancel="Cancel", extra=maintenance_extra)
+    dialogs.append(dialog)
+    controls += rows
+    progress_extra = [
+        ("ProgressDlg", "ActionText", "Text", 15, 84, WIDTH - 30, 15, TEXT, None, None, None, None),
+        ("ProgressDlg", "ProgressBar", "ProgressBar", 15, 104, WIDTH - 30, 12, VISIBLE | PROGRESS_95,
+         None, "Progress", None, None),
+    ]
+    dialog, rows = _dialog(
+        "ProgressDlg", "[ProductName] Setup", "Please wait while Setup makes the changes.",
+        [("Cancel", "Cancel", CONTROL, None)], default="Cancel", cancel="Cancel", modal=False,
+        extra=progress_extra)
+    dialogs.append(dialog)
+    controls += rows
+    dialog, rows = _dialog(
+        "CancelDlg", None, None, [("Yes", "&Yes", CONTROL, "No"), ("No", "&No", CONTROL, "Yes")],
+        first="No", default="No", cancel="No", width=260, height=85,
+        extra=[("CancelDlg", "Text", "Text", 15, 15, 230, 24, TEXT, None,
+                "Cancel [ProductName] Setup? Nothing will be changed.", None, None)])
+    dialogs.append(dialog)
+    controls += rows
+    for name, title, body in (
+            ("ExitDlg", "[ProductName] Setup has finished",
+             "Start [ProductName] from the Start menu."),
+            ("UserExitDlg", "Setup was cancelled", "[ProductName] Setup was cancelled. Nothing was changed."),
+            ("FatalErrorDlg", "Setup failed",
+             "[ProductName] Setup ended because of an error, and nothing was changed. To record the "
+             "reason, run msiexec /i <installer> /l*v <log file>.")):
+        dialog, rows = _dialog(name, title, body, [("Finish", "&Finish", CONTROL, None)],
+                               default="Finish", cancel="Finish")
+        dialogs.append(dialog)
+        controls += rows
+    install = [
+        ("[ALLUSERS]", "2", "1", 1),
+        ("[MSIINSTALLPERUSER]", "1", 'ME_SCOPE = "user"', 2),
+        ("[MSIINSTALLPERUSER]", "{}", 'ME_SCOPE = "machine"', 3),
+        ("[INSTALLDIR]", USER_INSTALL_FOLDER, 'ME_SCOPE = "user"', 4),
+        ("[INSTALLDIR]", MACHINE_INSTALL_FOLDER, 'ME_SCOPE = "machine"', 5),
+        ("EndDialog", "Return", "1", 6),
+    ]
+    events = [("ScopeDlg", button, *event) for button in ("InstallUser", "InstallMachine") for event in install]
+    events += [
+        ("ScopeDlg", "Cancel", "EndDialog", "Exit", "1", 1),
+        ("MaintenanceDlg", "Continue", "Reinstall", "ALL", 'ME_MAINTENANCE = "Repair"', 1),
+        ("MaintenanceDlg", "Continue", "ReinstallMode", "ecmus", 'ME_MAINTENANCE = "Repair"', 2),
+        ("MaintenanceDlg", "Continue", "Remove", "ALL", 'ME_MAINTENANCE = "Remove"', 3),
+        ("MaintenanceDlg", "Continue", "EndDialog", "Return", "1", 4),
+        ("MaintenanceDlg", "Cancel", "EndDialog", "Exit", "1", 1),
+        ("ProgressDlg", "Cancel", "SpawnDialog", "CancelDlg", "1", 1),
+        ("CancelDlg", "Yes", "EndDialog", "Exit", "1", 1),
+        ("CancelDlg", "No", "EndDialog", "Return", "1", 1),
+        ("ExitDlg", "Finish", "EndDialog", "Return", "1", 1),
+        ("UserExitDlg", "Finish", "EndDialog", "Exit", "1", 1),
+        ("FatalErrorDlg", "Finish", "EndDialog", "Exit", "1", 1),
+    ]
+    conditions = [
+        ("ScopeDlg", "InstallUser", "Show", 'ME_SCOPE = "user"'),
+        ("ScopeDlg", "InstallUser", "Hide", 'ME_SCOPE <> "user"'),
+        ("ScopeDlg", "InstallUser", "Default", 'ME_SCOPE = "user"'),
+        ("ScopeDlg", "InstallMachine", "Show", 'ME_SCOPE = "machine"'),
+        ("ScopeDlg", "InstallMachine", "Hide", 'ME_SCOPE <> "machine"'),
+        ("ScopeDlg", "InstallMachine", "Default", 'ME_SCOPE = "machine"'),
+        ("ScopeDlg", "UserCopyNote", "Show", 'ME_SCOPE = "machine" AND ME_USER_COPY'),
+        ("ScopeDlg", "UserCopyNote", "Hide", 'ME_SCOPE <> "machine" OR NOT ME_USER_COPY'),
+        ("ScopeDlg", "MachineCopyNote", "Show", 'ME_SCOPE = "user" AND ME_MACHINE_COPY'),
+        ("ScopeDlg", "MachineCopyNote", "Hide", 'ME_SCOPE <> "user" OR NOT ME_MACHINE_COPY'),
+    ]
+    return {
+        "TextStyle": [("METext", "Segoe UI", 9, None, 0), ("METitle", "Segoe UI", 12, None, 1)],
+        "Dialog": dialogs,
+        "Control": controls,
+        "ControlEvent": events,
+        "ControlCondition": conditions,
+        "EventMapping": [("ProgressDlg", "ActionText", "ActionText", "Text"),
+                         ("ProgressDlg", "ProgressBar", "SetProgress", "Progress")],
+        "RadioButton": [
+            ("ME_SCOPE", 1, "user", 0, 0, WIDTH - 30, 16, "&Just for me (no administrator rights)", None),
+            ("ME_SCOPE", 2, "machine", 0, 22, WIDTH - 30, 16, "For &all users of this computer", None),
+            ("ME_MAINTENANCE", 1, "Repair", 0, 0, WIDTH - 30, 16, "&Repair", None),
+            ("ME_MAINTENANCE", 2, "Remove", 0, 22, WIDTH - 30, 16, "Re&move", None),
+        ],
     }
 
 
@@ -404,7 +628,7 @@ def summary(payload):
         msi.PID_SUBJECT: f"{PRODUCT} {payload.version}",
         msi.PID_AUTHOR: PUBLISHER,
         msi.PID_KEYWORDS: "Installer",
-        msi.PID_COMMENTS: f"Installs {PRODUCT} {payload.version} for the current user.",
+        msi.PID_COMMENTS: f"Installs {PRODUCT} {payload.version} for the current user or all users.",
         msi.PID_TEMPLATE: "x64;1033",
         msi.PID_REVNUMBER: package_code(payload.version, payload.archive_sha256),
         msi.PID_PAGECOUNT: SCHEMA,
@@ -519,6 +743,53 @@ def installed_paths(directories, components, files):
             for row in files}
 
 
+def check_scope_rules(tables):
+    """The rules of the dual-purpose package, independent of `plan`; raises ValueError for
+    the first problem. Per user by default (ALLUSERS=2, MSIINSTALLPERUSER=1) into the earlier
+    per-user MSI's folder, per machine below Program Files; every key path and registry value
+    follows the scope (root -1), nothing else is in a profile, and nothing runs code."""
+    properties = dict(tables["Property"])
+    if properties.get("ALLUSERS") != "2" or properties.get("MSIINSTALLPERUSER") != "1":
+        raise ValueError("The package must be dual-purpose: ALLUSERS=2 and MSIINSTALLPERUSER=1")
+    if properties.get("UpgradeCode") != UPGRADE_CODE:
+        raise ValueError(f"The upgrade code must stay {UPGRADE_CODE}")
+    if any(row[0] != UPGRADE_CODE for row in tables["Upgrade"]):
+        raise ValueError("The package may only upgrade its own product")
+    if any(row[1] != CUSTOM_ACTION_SET_PROPERTY for row in tables["CustomAction"]):
+        raise ValueError("Custom actions may only set properties")
+    actions = {row[0]: row for row in tables["CustomAction"]}
+    if actions.get("SetUserInstallFolder", (None,) * 4)[2:] != ("INSTALLDIR", USER_INSTALL_FOLDER):
+        raise ValueError("A per-user installation must go to the per-user MSI's folder")
+    directories = {row[0]: row for row in tables["Directory"]}
+    if directories.get("INSTALLDIR", (None, None))[1] != "ProgramFiles64Folder":
+        raise ValueError("INSTALLDIR must be below ProgramFiles64Folder")
+    system_folders = {"TARGETDIR", "ProgramFiles64Folder", "ProgramMenuFolder"}
+    if set(directories) & {"LocalAppDataFolder", "AppDataFolder", "PersonalFolder"}:
+        raise ValueError("Only the per-user folder custom action may name a profile folder")
+    registry = {row[0]: row for row in tables["Registry"]}
+    if any(row[1] != USER_OR_MACHINE for row in tables["Registry"]):
+        raise ValueError("Every registry value must follow the installation scope (root -1)")
+    for component in tables["Component"]:
+        path = registry.get(component[5])
+        if (not component[3] & COMPONENT_REGISTRY_KEY_PATH or path is None
+                or path[1] != USER_OR_MACHINE or path[5] != component[0]):
+            raise ValueError(f"Component {component[0]} needs a key path that follows the scope")
+    if any(row[1] != "ProgramMenuFolder" for row in tables["Shortcut"]):
+        raise ValueError("Shortcuts belong in the Start menu's Programs folder")
+    removed = {row[3] for row in tables["RemoveFile"] if row[2] is None}
+    created = set(directories) - system_folders
+    if created != removed:
+        raise ValueError(f"Folders removed on uninstall must be exactly the package's own: "
+                         f"{sorted(created ^ removed)}")
+    install = {(row[2], row[3], row[4]) for row in tables["ControlEvent"]
+               if row[0] == "ScopeDlg" and row[1] in ("InstallUser", "InstallMachine")}
+    for event in (("[MSIINSTALLPERUSER]", "{}", 'ME_SCOPE = "machine"'),
+                  ("[INSTALLDIR]", MACHINE_INSTALL_FOLDER, 'ME_SCOPE = "machine"'),
+                  ("[INSTALLDIR]", USER_INSTALL_FOLDER, 'ME_SCOPE = "user"')):
+        if event not in install:
+            raise ValueError(f"The scope dialog must set {event[0]} for its choice")
+
+
 def check(msi_path, payload, work):
     """Checks an MSI against its release payload; raises ValueError for the first problem."""
     import msi_database as msi
@@ -540,26 +811,10 @@ def check(msi_path, payload, work):
             rows = sorted((row[:8] if name == "File" else tuple(row) for row in rows), key=repr)
             if actual.get(name) != rows:
                 raise ValueError(f"Table {name} differs from the release payload")
-        properties = dict(actual["Property"])
-        if "ALLUSERS" in properties or "MSIINSTALLPERUSER" in properties:
-            raise ValueError("The package must install per user without ALLUSERS")
-        if any(row[1] != CUSTOM_ACTION_SET_PROPERTY for row in actual["CustomAction"]):
-            raise ValueError("Custom actions may only set properties")
+        check_scope_rules(actual)
         if database.rows("SELECT `Name` FROM `Icon`") != [("ProductIcon.ico",)]:
             raise ValueError("The product icon is missing")
-        components = actual["Component"]
-        registry = {row[0]: row for row in actual["Registry"]}
-        for component in components:
-            path = registry.get(component[5])
-            if (not component[3] & COMPONENT_REGISTRY_KEY_PATH or path is None
-                    or path[1] != HKCU or path[5] != component[0]):
-                raise ValueError(f"Component {component[0]} needs an HKCU key path")
-        removed = {row[3] for row in actual["RemoveFile"] if row[2] is None}
-        created = {row[0] for row in actual["Directory"]} - {"TARGETDIR", "LocalAppDataFolder",
-                                                              "ProgramMenuFolder"}
-        if created - removed:
-            raise ValueError(f"Folders not removed on uninstall: {sorted(created - removed)}")
-        paths = installed_paths(actual["Directory"], components, actual["File"])
+        paths = installed_paths(actual["Directory"], actual["Component"], actual["File"])
         wanted_paths = {row[0]: row[8] for row in expected["File"]}
         if paths != wanted_paths:
             raise ValueError("The installed file paths differ from the release payload")

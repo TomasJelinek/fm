@@ -265,7 +265,8 @@ authority; image decoding also runs in the required restricted worker.
 **Retry with authorization** uses the shipped `midnight-elevated-listing` only when an
 administrator (Windows, for example below `C:\Program Files`) or root (Linux, for
 example `/opt/midnight-explorer`) installs the extracted folder where standard users
-cannot change it; the bundled README explains this. In a private per-user installation,
+cannot change it, or chooses **For all users** in the Windows MSI; the bundled README
+explains this. In a private per-user installation,
 including `build.bat`'s, and in an extracted folder that its user can change, the retry
 is still offered but refused with that requirement. Packages built before this check
 used the shipped helper from such a folder; see
@@ -325,40 +326,92 @@ refuses an existing MSI.
   every file of the ZIP except `BUILD-INFO.json`: the application updates in place
   only a folder with that file ([Updates](developer/UPDATES.md#staging)), and a folder
   that Windows Installer manages must be updated by a newer MSI instead.
-- **Installation:** per user, without administrator rights or a UAC prompt, into
-  `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)` (the `INSTALLDIR` property);
-  `%LOCALAPPDATA%\Programs\Midnight Explorer` is left to the application's own
-  **Move to my profile…** copy. A Start menu shortcut **Midnight Explorer** starts the
-  executable in the user's profile folder, like the Desktop shortcut of
-  `scripts/deploy-private.ps1`. Add/Remove Programs shows the version, the publisher
-  Tomas Jelinek, the Harvest Navigator icon (`assets/branding/midnight-explorer.ico`)
-  and links to the repository, this release's source and the releases page; it offers
-  Remove and Repair, not Change. The package has no dialogs beyond Windows Installer's
-  progress window, and `msiexec /i <msi> /qn` installs it silently.
+- **Installation:** one dual-purpose package (Windows Installer's single package
+  authoring: `ALLUSERS=2` with `MSIINSTALLPERUSER=1`; from the release after 0.6.2, whose
+  MSI was per user only). Its first dialog, **ScopeDlg**, asks who can use the
+  application:
+  - **Just for me** (default): per user, without administrator rights or a UAC prompt,
+    into `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, the 0.6.1 per-user MSI's
+    folder. `%LOCALAPPDATA%\Programs\Midnight Explorer` is left to the application's
+    own **Move to my profile…** copy.
+  - **For all users:** per machine into `C:\Program Files\Midnight Explorer (MSI)`;
+    the Install button carries the UAC shield and Windows Installer asks for consent
+    when installation starts. Not `C:\Program Files\Midnight Explorer`, which the
+    user guide names for an administrator's copy of a build. The package sets no
+    permissions, so the folder inherits Program Files' (only administrators can
+    change it) and **Retry with authorization** accepts its helper
+    ([SECURITY.md](../SECURITY.md#directory-authorization-helper)).
+
+  The `INSTALLDIR` property follows the scope: `Directory` puts it below
+  `ProgramFiles64Folder`, and the property-setting action `SetUserInstallFolder` sets the
+  per-user folder before `CostFinalize` when the installation is per user and no
+  `INSTALLDIR` is given; the dialog's Install button sets `ALLUSERS=2`,
+  `MSIINSTALLPERUSER` (`1` or empty) and `INSTALLDIR` (`[LocalAppDataFolder]Programs\...`
+  or `[%ProgramW6432]\...`) for its choice, because the folder properties of the
+  dialog's session do not change with the scope. Without the dialog,
+  `msiexec /i <msi> /qn` installs per user and `msiexec /i <msi> /qn ALLUSERS=1` (or
+  `MSIINSTALLPERUSER=""`) per machine from an elevated prompt; the dialog's Install
+  overrides an `INSTALLDIR` from the command line. A Start menu shortcut **Midnight
+  Explorer**, in the user's or the all-users Start menu, starts the executable in the
+  user's profile folder, like the Desktop shortcut of `scripts/deploy-private.ps1`: per
+  user `[%USERPROFILE]`, per machine the literal `%USERPROFILE%`, which the shell
+  expands for whoever starts it. Add/Remove Programs (HKCU or HKLM, as Windows
+  Installer chooses for the scope) shows the version, the publisher Tomas Jelinek, the
+  Harvest Navigator icon (`assets/branding/midnight-explorer.ico`) and links to the
+  repository, this release's source and the releases page; it offers Remove and
+  Repair, not Change. Running the installed version's MSI again shows **MaintenanceDlg**
+  (Repair or Remove). The other dialogs are the progress window (with a cancel
+  question) and the closing messages for success, cancellation and failure; error
+  messages use Windows Installer's own message box.
+- **Scopes side by side:** Windows Installer keeps per-user and per-machine
+  installations of one product apart, and an upgrade finds only the installation of
+  its own scope. A per-user installation therefore upgrades the 0.6.1/0.6.2 per-user
+  MSI in place (same `UpgradeCode`), while choosing For all users installs a second,
+  separate copy, and Add/Remove Programs lists both. The dialog reads both scopes'
+  registry key (`AppSearch`/`RegLocator`, `Software\Midnight Explorer Installer` in HKCU
+  and HKLM) and then says that the other copy stays installed; with only an all-users
+  copy present it preselects For all users. An extracted ZIP, the Move to my profile
+  copy and an administrator's copy of a build use other folders.
 - **Upgrades:** the `UpgradeCode` is fixed in the script and must never change. The
   product code follows from the version and the package code from the ZIP's SHA-256,
   so one ZIP always gives the same codes. A newer MSI removes the installed version
   completely before installing; an older one stops with "A newer version of Midnight
   Explorer is already installed". Running the installed version's MSI again offers
   Windows Installer's repair or remove.
-- **Nothing runs code:** there are no custom actions besides two that set properties
-  (the install location shown in Add/Remove Programs and the shortcut's start folder),
-  no `Binary` table and no services. Each folder is one component whose key path is a
-  value under `HKCU\Software\Midnight Explorer Installer`; that key and the installed
-  folders, once empty, are removed on uninstall. Settings, caches and update downloads
-  in `%LOCALAPPDATA%\Midnight Explorer` are never touched.
-- **Not included:** the Visual C++ runtime (as for the ZIP), code signing (REL-03) and a
-  per-machine installation: the package refuses `ALLUSERS`. An administrator who wants
-  **Retry with authorization** installs the extracted ZIP below `C:\Program Files`.
+- **Nothing runs code:** there are no custom actions besides four that set properties
+  (the install location shown in Add/Remove Programs, the shortcut's start folder, the
+  per-user `INSTALLDIR` and the dialog's preselected scope), no `Binary` table and no
+  services. Each folder is one component whose key path is a value under
+  `Software\Midnight Explorer Installer` with registry root -1: HKCU per user, HKLM per
+  machine. That key and the installed folders, once empty, are removed on uninstall.
+  Settings, caches and update downloads in `%LOCALAPPDATA%\Midnight Explorer` are never
+  touched.
+- **Updates:** the application updates in place only a folder with `BUILD-INFO.json`,
+  which the MSI leaves out, so both scopes' copies offer the release page in the update
+  dialog; an all-users copy is also one its users cannot change.
+- **Not included:** the Visual C++ runtime (as for the ZIP), code signing (REL-03) and
+  permissions of its own.
 - **Checks:** `build` writes to a temporary name and keeps the MSI only after the same
   checks as `verify`: the summary information (x64, schema 500, compressed, no
-  elevation, package code), only the expected tables, every table row as the ZIP
-  defines it, the per-user rules (HKCU key paths, every created folder removed on
-  uninstall), the installed paths, and every file of the embedded cabinet, extracted
-  with `expand.exe`, byte for byte against its ZIP entry. Windows SDK ICE validation
-  (Orca, `msival2`) is not run, and no install, upgrade or uninstall has been tested
-  yet (REL-05); an administrative installation of an MSI made from the 0.6.0 ZIP
-  extracted every file unchanged ([record](verification/2026-11-26-release-msi.md)).
+  elevation for the default per-user installation, package code), only the expected
+  tables, every table row (dialogs included) as the ZIP defines it, the dual-purpose
+  rules (`ALLUSERS=2` and `MSIINSTALLPERUSER=1`, the fixed `UpgradeCode`, `INSTALLDIR`
+  below `ProgramFiles64Folder` with the per-user folder action, key paths and registry
+  values with root -1, no profile folder in `Directory`, shortcuts in
+  `ProgramMenuFolder`, exactly the package's own folders removed on uninstall, the
+  dialog's scope and folder events, property-setting custom actions only), the
+  installed paths, and every file of the embedded cabinet, extracted with `expand.exe`,
+  byte for byte against its ZIP entry. Windows SDK ICE validation (Orca, `msival2`) is
+  not run, and no install, upgrade or uninstall of the dual-purpose package has been
+  tested yet (REL-05); an administrative installation of an MSI made from the 0.6.0 ZIP
+  extracted every file unchanged ([record](verification/2026-11-26-release-msi.md)), as
+  did one of a dual-purpose stand-in, whose per-user costing resolved the per-user
+  folders ([record](verification/2026-11-26-dual-scope-msi.md)).
+- **Release notes:** describe the one MSI with both choices: Just for me (no
+  administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, updates an
+  installed per-user MSI) and For all users (administrator approval,
+  `C:\Program Files\Midnight Explorer (MSI)`, needed for Retry with authorization; an
+  existing per-user copy stays installed beside it).
 - **Tests:** `scripts/tests/test_package_msi.py`, in the scripts suite that CI runs on
   Windows and Linux, checks the payload rules and the database plan on both and, on
   Windows, builds and verifies an MSI of a small stand-in release. CI does not package

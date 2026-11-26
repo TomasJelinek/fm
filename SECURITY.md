@@ -739,6 +739,12 @@ also trusts the current user, does not decide this.
   root, are not symbolic links and are writable by neither group nor others, and its
   filesystem is not mounted `nosuid` (removable or user-mounted storage).
 
+The Windows installer's **For all users** choice installs into
+`C:\Program Files\Midnight Explorer (MSI)`, which inherits Program Files' permissions: the
+package sets no permissions of its own, so the helper qualifies there. Its default **Just
+for me** installation, in `%LOCALAPPDATA%\Programs`, does not
+([Windows installer](docs/RELEASE_BUILD.md#windows-installer-msi)).
+
 Any other location, such as build output, the per-user Windows private runtime or
 `$HOME/.local/bin`, refuses authorization; the retry is still offered there. The
 Cannot open folder message after the retry states the requirement, both when no
