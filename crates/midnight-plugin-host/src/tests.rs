@@ -574,7 +574,7 @@ fn native_loader_refuses_wrong_abi_descriptor() {
 
 #[test]
 #[ignore = "requires HOST_TEST_PLUGIN pointing to separately built basic DLL/SO"]
-fn sixteen_sessions_of_one_plugin_open_at_once_and_closed_sessions_release_retained_output() {
+fn twenty_four_sessions_of_one_plugin_open_at_once_and_closed_sessions_release_retained_output() {
     let _guard = NATIVE_SESSIONS.lock().unwrap();
     let library = std::env::var_os("HOST_TEST_PLUGIN").expect("HOST_TEST_PLUGIN");
     let root = fixture_root();
@@ -585,10 +585,10 @@ fn sixteen_sessions_of_one_plugin_open_at_once_and_closed_sessions_release_retai
     let captured = CapturedFile::capture(&path).unwrap();
     let runtime = Runtime::discover(root.path()).unwrap();
     let other = Runtime::discover(root.path()).unwrap();
-    // Sixteen text viewers of one plugin, through two runtimes: the host refuses none (it
-    // refused the fifth). Sixteen is the published SDK's own instance limit per loaded
-    // library (`api/midnight-plugin-sdk` `plugin::create`), which a 17th session still meets.
-    let sessions: Vec<_> = (0..16)
+    // Twenty-four text viewers of one plugin, through two runtimes: the host refuses none (it
+    // refused the fifth), and neither does the basic plugin's SDK 0.2.1 (0.1.0 and 0.2.0
+    // refused a 17th instance per loaded library with QUEUE_FULL).
+    let sessions: Vec<_> = (0..24)
         .map(|generation| {
             let owner = if generation % 2 == 0 {
                 &runtime
