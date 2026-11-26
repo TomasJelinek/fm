@@ -241,10 +241,21 @@ playback helper.
 
   - Warm openings did not change (9 each, before → after): text 64 → 61 ms, source
     72 → 74 ms, and in a separate run text 63 → 61 ms and PNG 1080p 118 → 120 ms.
-  - Probe fault: in scroll mode, 3 source processes (one before the change, two after)
-    ended with a panic in Slint's timer list ("RefCell already borrowed") after at least
-    one scroll was recorded. This was not seen without scroll mode and was not
-    investigated further.
+  - Probe fault, since fixed: in scroll mode, 3 source processes (one before the change,
+    two after) ended with a panic in Slint's timer list ("RefCell already borrowed").
+    It happened after at least one scroll had been recorded. The symbolized backtrace
+    shows the cause:
+    - The probe's scroll timer callback owned the viewer's `ViewerWindow` handle.
+    - The probe's tick timer dropped the scroll timer while both had expired in the same
+      batch. Slint then dropped the scroll callback inside
+      `TimerList::activate_expired`, with its timer list borrowed.
+    - Dropping the window's last handle unregistered its accessibility tree, which
+      starts a timer (`AccessKitAdapter::invoke_later` → `Timer::single_shot`), so the
+      borrow panicked.
+
+    The probe's callback now holds a weak handle. The application's timer callbacks (all
+    `Timer::start` uses outside tests and examples) hold weak handles or no component,
+    so they cannot drop a component there.
 - **Image spare:** unchanged. One source-free helper while fewer than four helpers are
   live, retired after 60 s unused (see the [image viewer API](../developer/IMAGE_VIEWER_API.md)).
 - **No other prewarming was added.**

@@ -380,6 +380,11 @@ fn scroll(
 ) -> Option<slint::Timer> {
     use midnight_viewer_ui::acceptance_seams::{NativeWheel, wheel};
     let manager = Rc::downgrade(manager);
+    // Weak: Slint drops a timer's callback inside its timer list when the timer is dropped
+    // while it waits in the same expiry batch (here, by the tick that closes the viewer).
+    // A callback owning the window's last handle would drop the component there, and its
+    // accessibility teardown starts a timer while the list is borrowed: a panic.
+    let window = window.as_weak();
     let begun = Instant::now();
     let last = Cell::new(begun);
     let longest = Cell::new(Duration::ZERO);
@@ -394,7 +399,9 @@ fn scroll(
             }
             let now = Instant::now();
             longest.set(longest.get().max(now - last.replace(now)));
-            if let Some(manager) = manager.upgrade() {
+            if let Some(manager) = manager.upgrade()
+                && let Some(window) = window.upgrade()
+            {
                 let _ = wheel(
                     &manager,
                     &window,
