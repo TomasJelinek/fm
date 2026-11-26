@@ -3,8 +3,8 @@
 A dual-pane desktop file manager for Windows and Linux, written in Rust with Slint and
 Tokio.
 
-Version **0.6.0**. The native window title shows
-`Midnight Explorer 0.6 — File Manager`. The displayed version is the package
+Version **0.6.1**. The native window title shows
+`Midnight Explorer 0.6.1 — File Manager`. The displayed version is the package
 version without a trailing `.0`.
 
 Prebuilt Windows/Linux previews are published on the

@@ -7,7 +7,7 @@ comparison tools and checksums, and keeps every file name's Unicode intact. View
 filesystems and thumbnailers are separate plugin packages that run isolated from the
 application.
 
-Current version: **0.6.0** (preview).
+Current version: **0.6.1** (preview).
 
 ## Features
 
