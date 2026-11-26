@@ -243,9 +243,21 @@ pub(super) fn capture(
     cancel: &Cancellation,
 ) -> Result<Arc<Parent>, FsError> {
     checked(cancel, path)?;
+    let physical = physical_path(file).map_err(|e| error(path, e))?;
+    capture_physical(file, path, physical, cancel)
+}
+
+/// `capture` of a folder whose physical path (`physical_path` of `file`) the caller has
+/// just read, so that it is not read through the mount manager a second time.
+pub(super) fn capture_physical(
+    file: &File,
+    path: &Path,
+    physical: PathBuf,
+    cancel: &Cancellation,
+) -> Result<Arc<Parent>, FsError> {
+    checked(cancel, path)?;
     let expected = identity(file, path)?;
     let pool = PARENTS.get_or_init(Default::default);
-    let physical = physical_path(file).map_err(|e| error(path, e))?;
     if let Some(found) = pooled(pool, expected, |found: &Parent| {
         found.physical() == physical
     }) {

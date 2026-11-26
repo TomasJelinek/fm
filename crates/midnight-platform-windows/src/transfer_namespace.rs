@@ -1179,7 +1179,7 @@ impl Mutation<'_> {
         let _batch = TransferNamespaceRefreshBatch::begin();
         let old = self.held_binding(source, cancel)?;
         let path = parent::physical_path(parent_file).map_err(|e| error(Path::new(""), e))?;
-        let directory = parent::capture(parent_file, &path, cancel)?;
+        let directory = parent::capture_physical(parent_file, &path, path.clone(), cancel)?;
         directory.validate(cancel)?;
         let target = binding(directory, &path, name, cancel)?;
         self.announce(&[old, target], false, &path.join(name), cancel)
@@ -1298,7 +1298,8 @@ impl Mutation<'_> {
         let batch = TransferNamespaceRefreshBatch::begin();
         let old = self.held_binding(source, cancel).map_err(as_io)?;
         let path = parent::physical_path(parent_file)?;
-        let directory = parent::capture(parent_file, &path, cancel).map_err(as_io)?;
+        let directory =
+            parent::capture_physical(parent_file, &path, path.clone(), cancel).map_err(as_io)?;
         directory.validate(cancel).map_err(as_io)?;
         let target = binding(directory.clone(), &path, name, cancel).map_err(as_io)?;
         self.announce(&[old.clone(), target], false, &path.join(name), cancel)
