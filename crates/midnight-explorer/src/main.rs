@@ -58,6 +58,23 @@ const ENGINE_MINIMUM_GRACE: Duration = Duration::from_millis(500);
 /// the bounded runtime shutdown instead of keeping the hidden process alive.
 const RECLAIM_GRACE: Duration = Duration::from_millis(500);
 
+/// The SHA-256 of the authorization helper that this executable ships with, recorded by
+/// build.rs (empty without `MIDNIGHT_ELEVATED_LISTING`). Kept in the executable as one
+/// marked record so that release packaging can compare it with the packaged helper
+/// (`recorded_helper_digest` in scripts/package-release.py).
+#[used]
+static AUTHORIZATION_HELPER_RECORD: &str = concat!(
+    "MIDNIGHT_AUTHORIZATION_HELPER_SHA256=",
+    env!("MIDNIGHT_ELEVATED_LISTING_SHA256"),
+    ";"
+);
+
+fn recorded_authorization_helper() -> Option<&'static str> {
+    // Read through `black_box` so the record is not folded away and stays findable.
+    let (_, digest) = std::hint::black_box(AUTHORIZATION_HELPER_RECORD).split_once('=')?;
+    digest.strip_suffix(';').filter(|digest| !digest.is_empty())
+}
+
 struct Options {
     explicit_paths: [bool; 2],
     left: PathBuf,
@@ -604,9 +621,7 @@ fn run_window(
         .configure_elevated_directories()
         .map_err(|error| error.to_string())?
         .install(Arc::new(midnight_elevation::ElevatedDirectories::new(
-            // Recorded by build.rs from the helper that the release ships (RELEASE_BUILD.md).
-            option_env!("MIDNIGHT_ELEVATED_LISTING_SHA256")
-                .and_then(midnight_elevation::parse_helper_digest),
+            recorded_authorization_helper().and_then(midnight_elevation::parse_helper_digest),
         )));
     engine
         .configure_navigation_fallback()

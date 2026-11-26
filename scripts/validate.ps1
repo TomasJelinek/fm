@@ -717,10 +717,18 @@ try {
     Add-Step @{ Id = 'x11-dnd'; Job = 'check'; Title = 'Native X11 drag and drop (isolated display)'; Platform = 'linux' }
     Add-Step @{ Id = 'x11-clipboard'; Job = 'check'; Title = 'Native X11 clipboard (isolated display)'; Platform = 'linux' }
     Add-Step @{ Id = 'host-build'; Job = 'release'; Title = "Host build ($profileName)"; Body = {
-        if ($BuildProfile -eq 'release') {
-            cargo build -p midnight-explorer -p midnight-elevation --locked --release
-        } else {
-            cargo build -p midnight-explorer -p midnight-elevation --locked
+        # The explorer records the SHA-256 of the authorization helper it ships with
+        # (RELEASE_BUILD.md): the helper first, then both with the variable naming it.
+        $profileFlag = if ($BuildProfile -eq 'release') { @('--release') } else { @() }
+        cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked @profileFlag
+        if ($LASTEXITCODE -ne 0) { throw 'Authorization helper build failed' }
+        $helper = if ($IsWindows) { 'midnight-elevated-listing.exe' } else { 'midnight-elevated-listing' }
+        $previousHelper = $env:MIDNIGHT_ELEVATED_LISTING
+        $env:MIDNIGHT_ELEVATED_LISTING = Join-Path $CargoTarget "$BuildProfile/$helper"
+        try {
+            cargo build -p midnight-explorer -p midnight-elevation --locked @profileFlag
+        } finally {
+            $env:MIDNIGHT_ELEVATED_LISTING = $previousHelper
         }
         if ($LASTEXITCODE -ne 0) { throw 'Host build failed' }
     } }

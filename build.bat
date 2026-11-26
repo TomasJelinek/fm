@@ -63,14 +63,27 @@ if not exist "_build\tmp\" mkdir "_build\tmp"
 if errorlevel 1 goto temporary_failure
 set "TEMP=%CD%\_build\tmp"
 set "TMP=%TEMP%"
+rem The explorer records the SHA-256 of the authorization helper that it ships with
+rem (docs/RELEASE_BUILD.md): the helper is built first, then both packages with the
+rem variable naming it. The same package selection keeps the helper's features, so the
+rem second build reuses it and links only the explorer.
+set "MIDNIGHT_TARGET_DIR=%CD%\_build"
+if defined CARGO_TARGET_DIR for %%I in ("%CARGO_TARGET_DIR%") do set "MIDNIGHT_TARGET_DIR=%%~fI"
+set "MIDNIGHT_ELEVATED_LISTING=%MIDNIGHT_TARGET_DIR%\%MIDNIGHT_VIEWER_PROFILE%\midnight-elevated-listing.exe"
 where cargo >nul 2>nul
 if errorlevel 1 goto local_cargo
+call cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked %MIDNIGHT_BUILD_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto done
 call cargo build -p midnight-explorer -p midnight-elevation --locked %MIDNIGHT_BUILD_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 goto done
 
 :local_cargo
 if not exist ".tools\cargo\bin\cargo.exe" goto missing_cargo
+pwsh.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked %MIDNIGHT_BUILD_PROFILE%
+set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
+if not "%MIDNIGHT_BUILD_EXIT%"=="0" goto done
 pwsh.exe -NoLogo -NoProfile -File scripts\cargo.ps1 build -p midnight-explorer -p midnight-elevation --locked %MIDNIGHT_BUILD_PROFILE%
 set "MIDNIGHT_BUILD_EXIT=%errorlevel%"
 goto done

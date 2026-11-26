@@ -7,6 +7,16 @@ import tempfile
 import unittest
 
 
+def host_build(profile):
+    """The authorization helper first, then the explorer that records its digest."""
+    flag = " --release" if profile == "release" else ""
+    return [f"cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked{flag}",
+            f"cargo build -p midnight-explorer -p midnight-elevation --locked{flag}"]
+
+
+HOST_BUILD_RELEASE = host_build("release")
+
+
 class BuildHookTests(unittest.TestCase):
     # build.bat refuses to start without PowerShell 7; these cases need no pwsh.
     WITHOUT_POWERSHELL = {"test_missing_powershell_seven_fails_before_cargo_or_plugin_builds",
@@ -32,12 +42,15 @@ class BuildHookTests(unittest.TestCase):
                                 BUILD_TEST_NATIVE_EXIT="0", BUILD_TEST_NETWORK_EXIT="0", BUILD_TEST_VIEWER_EXIT="0",
                                 BUILD_TEST_DEPLOY_EXIT="0", BUILD_TEST_THUMBNAIL_EXIT="0",
                                 BUILD_TEST_ARCHIVE_EXIT="0", BUILD_TEST_VALIDATE_EXIT="0")
+        # The helper is named under the checkout's own _build (CARGO_TARGET_DIR would move it).
+        self.environment.pop("CARGO_TARGET_DIR", None)
         if os.name == "nt":
             entry = "build.bat"
             # Every stub also records its working directory when BUILD_TEST_CWD_LOG is set.
             (fake_bin / "cargo.cmd").write_text(
                 '@echo off\n>>"%BUILD_TEST_LOG%" echo cargo %*\n'
                 'if defined BUILD_TEST_CWD_LOG >>"%BUILD_TEST_CWD_LOG%" echo %CD%\n'
+                'if defined BUILD_TEST_HELPER_LOG >>"%BUILD_TEST_HELPER_LOG%" echo %MIDNIGHT_ELEVATED_LISTING%\n'
                 'exit /b %BUILD_TEST_APP_EXIT%\n')
             directory = ('if ($env:BUILD_TEST_CWD_LOG) { Add-Content -LiteralPath $env:BUILD_TEST_CWD_LOG '
                          '(Get-Location).ProviderPath }\n')
@@ -70,6 +83,8 @@ class BuildHookTests(unittest.TestCase):
             directory = '[ -z "${BUILD_TEST_CWD_LOG:-}" ] || pwd -P >> "$BUILD_TEST_CWD_LOG"\n'
             cargo = fake_bin / "cargo"
             cargo.write_text('#!/bin/sh\n' + directory + 'printf "cargo %s\\n" "$*" >> "$BUILD_TEST_LOG"\n'
+                             '[ -z "${BUILD_TEST_HELPER_LOG:-}" ] || '
+                             'printf "%s\\n" "${MIDNIGHT_ELEVATED_LISTING:-}" >> "$BUILD_TEST_HELPER_LOG"\n'
                              'exit "$BUILD_TEST_APP_EXIT"\n')
             cargo.chmod(0o755)
             (self.root / "scripts/build-viewers.sh").write_text(
@@ -108,11 +123,29 @@ class BuildHookTests(unittest.TestCase):
     def test_success_builds_application_then_viewers_for_same_profile(self):
         code, calls = self.run_build()
         self.assertEqual(code, 0, self.build_output)
-        expected = ["cargo build -p midnight-explorer -p midnight-elevation --locked --release", "native release",
+        expected = [*HOST_BUILD_RELEASE, "native release",
                     "network release", "viewer release", "thumbnail release", "archive release"]
         if os.name == "nt":
             expected.append("deploy release")
         self.assertEqual(calls, expected)
+
+    def test_explorer_build_names_the_helper_it_ships(self):
+        # The explorer records the SHA-256 of the helper that the build before it produced.
+        helpers = self.root / "helpers.log"
+        for profile in ("release", "debug"):
+            with self.subTest(profile=profile):
+                for log in (self.log, helpers):
+                    if log.exists():
+                        log.unlink()
+                result = subprocess.run(self.command + [profile], cwd=self.root,
+                                        env=dict(self.environment, BUILD_TEST_HELPER_LOG=str(helpers)),
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                name = "midnight-elevated-listing" + (".exe" if os.name == "nt" else "")
+                expected = os.path.realpath(self.root / "_build" / profile / name)
+                recorded = helpers.read_text().splitlines()[-1].strip()
+                self.assertEqual(os.path.normcase(os.path.realpath(recorded)), os.path.normcase(expected))
+                self.assertEqual(self.log.read_text().splitlines()[:2], host_build(profile))
 
     def test_thumbnail_failure_prevents_deployment_and_is_returned(self):
         code, calls = self.run_build(thumbnail_exit="46")
@@ -162,7 +195,7 @@ class BuildHookTests(unittest.TestCase):
     def test_application_failure_skips_viewer_build(self):
         code, calls = self.run_build(app_exit="35")
         self.assertEqual(code, 35)
-        self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release"])
+        self.assertEqual(calls, HOST_BUILD_RELEASE[:1])
 
     def test_viewer_failure_is_returned_to_caller(self):
         code, calls = self.run_build(viewer_exit="43")
@@ -172,7 +205,7 @@ class BuildHookTests(unittest.TestCase):
     def test_native_failure_skips_viewers_and_private_deployment(self):
         code, calls = self.run_build(native_exit="41")
         self.assertEqual(code, 41, self.build_output)
-        self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release",
+        self.assertEqual(calls, [*HOST_BUILD_RELEASE,
                                  "native release"])
 
     def test_invalid_profile_does_not_start_any_build(self):
@@ -183,7 +216,7 @@ class BuildHookTests(unittest.TestCase):
     def test_network_failure_skips_viewers_and_private_deployment(self):
         code, calls = self.run_build(network_exit="42")
         self.assertEqual(code, 42, self.build_output)
-        self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release",
+        self.assertEqual(calls, [*HOST_BUILD_RELEASE,
                                  "native release", "network release"])
 
     def run_arguments(self, *arguments, validate_exit="0"):
@@ -195,8 +228,7 @@ class BuildHookTests(unittest.TestCase):
 
     @staticmethod
     def validated_build_calls(profile):
-        build = "cargo build -p midnight-explorer -p midnight-elevation --locked"
-        calls = [build + (" --release" if profile == "release" else ""), f"native {profile}",
+        calls = [*host_build(profile), f"native {profile}",
                  f"network {profile}", f"viewer {profile}", f"thumbnail {profile}",
                  f"archive {profile}", f"validate {profile}"]
         if os.name == "nt":
@@ -273,7 +305,7 @@ class BuildHookTests(unittest.TestCase):
     def test_deployment_failure_is_returned_after_app_and_viewers(self):
         code, calls = self.run_build(deploy_exit="47")
         self.assertEqual(code, 47, self.build_output)
-        self.assertEqual(calls, ["cargo build -p midnight-explorer -p midnight-elevation --locked --release",
+        self.assertEqual(calls, [*HOST_BUILD_RELEASE,
                                  "native release", "network release", "viewer release", "thumbnail release", "archive release", "deploy release"])
 
 

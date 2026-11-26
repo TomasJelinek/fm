@@ -132,13 +132,24 @@ if [ "$build_backend" = docker ]; then
     exec sh scripts/build-docker.sh "$@"
 fi
 
+# The explorer records the SHA-256 of the authorization helper that it ships with
+# (docs/RELEASE_BUILD.md): the helper is built first, then both packages with the
+# variable naming it. The same package selection keeps the helper's features, so the
+# second build reuses it and links only the explorer.
+cargo_target=${CARGO_TARGET_DIR:-_build}
+case $cargo_target in /*) ;; *) cargo_target=$build_root/$cargo_target ;; esac
+elevated_listing=$cargo_target/$build_profile/midnight-elevated-listing
+
 if [ "$dry_run" = 1 ]; then
     printf 'Working directory: %s\n' "$build_root"
     if [ "$install_deps" = 1 ]; then
         print_command sh scripts/setup-linux.sh --install --dry-run
         sh scripts/setup-linux.sh --install --dry-run
     fi
-    set -- cargo build -p midnight-explorer -p midnight-elevation --locked
+    set -- cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked
+    if [ "$build_profile" = release ]; then set -- "$@" --release; fi
+    print_command "$@"
+    set -- env "MIDNIGHT_ELEVATED_LISTING=$elevated_listing" cargo build -p midnight-explorer -p midnight-elevation --locked
     if [ "$build_profile" = release ]; then set -- "$@" --release; fi
     print_command "$@"
     print_command bash scripts/build-native-filesystem.sh "$build_profile"
@@ -200,9 +211,11 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 if [ "$build_profile" = release ]; then
-    cargo build -p midnight-explorer -p midnight-elevation --locked --release
+    cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked --release
+    MIDNIGHT_ELEVATED_LISTING=$elevated_listing cargo build -p midnight-explorer -p midnight-elevation --locked --release
 else
-    cargo build -p midnight-explorer -p midnight-elevation --locked
+    cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked
+    MIDNIGHT_ELEVATED_LISTING=$elevated_listing cargo build -p midnight-explorer -p midnight-elevation --locked
 fi
 bash scripts/build-native-filesystem.sh "$build_profile"
 bash scripts/build-network-filesystem.sh "$build_profile"

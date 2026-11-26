@@ -880,6 +880,35 @@ def authorization_helper(binary, target):
     return name, source, metadata
 
 
+# The record that crates/midnight-explorer/src/main.rs keeps in the executable: the
+# SHA-256 that build.rs took from MIDNIGHT_ELEVATED_LISTING, empty when it was unset.
+HELPER_DIGEST_RECORD = re.compile(rb"MIDNIGHT_AUTHORIZATION_HELPER_SHA256=([0-9a-f]{64})?;")
+
+
+def recorded_helper_digest(executable):
+    """The authorization helper digest recorded in the executable's bytes, or None."""
+    recorded = {match.group(1) for match in HELPER_DIGEST_RECORD.finditer(executable)}
+    if len(recorded) != 1:
+        raise ValueError("The application executable must carry exactly one authorization helper "
+                         f"digest record, found {len(recorded)}")
+    digest = recorded.pop()
+    return digest.decode("ascii") if digest else None
+
+
+def check_authorization_helper_digest(binary, helper):
+    """A release ships exactly the helper whose digest its executable records."""
+    with plain_file(binary) as stream:
+        recorded = recorded_helper_digest(stream.read())
+    if recorded is None:
+        raise ValueError("The application executable records no authorization helper digest; "
+                         "build it with MIDNIGHT_ELEVATED_LISTING naming the helper (RELEASE_BUILD.md)")
+    actual = sha256_file(helper)
+    if recorded != actual:
+        raise ValueError(f"The application executable records authorization helper {recorded}, "
+                         f"but the packaged helper is {actual}")
+    return actual
+
+
 HTML_SANDBOX_INSTALLER = "install-html-viewer-apparmor.sh"
 
 
@@ -922,6 +951,15 @@ def main():
         args = parser.parse_args(sys.argv[2:])
         print(json.dumps(validate_runtime_installation(args.source, args.target)))
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "check-authorization-helper":
+        # CI's release job: the built executable records the digest of the helper beside it.
+        parser = argparse.ArgumentParser(description="Check the recorded authorization helper digest")
+        parser.add_argument("--binary", required=True, type=Path)
+        parser.add_argument("--target", required=True)
+        args = parser.parse_args(sys.argv[2:])
+        helper = authorization_helper(args.binary, args.target)[1]
+        print(json.dumps({"authorization_helper_sha256": check_authorization_helper_digest(args.binary, helper)}))
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--metadata", type=Path, required=True)
@@ -958,7 +996,7 @@ def main():
     # Validate every module before creating the stage: a refused input leaves no
     # partial staging directory that would block the next attempt.
     application_executable(args.binary, args.target)
-    authorization_helper(args.binary, args.target)
+    check_authorization_helper_digest(args.binary, authorization_helper(args.binary, args.target)[1])
     copy_viewer_packages(stage, viewers_root, args.target, required_ids=REQUIRED_VIEWERS, validate_only=True)
     copy_filesystem_packages(stage, filesystem_root, args.target, require_native=True, require_network=True,
                              require_archive=True, validate_only=True)
@@ -968,6 +1006,8 @@ def main():
     shutil.copyfile(args.binary, binary)
     binary.chmod(0o755)
     authorization = copy_authorization_helper(stage, args.binary, args.target)
+    # Again for the staged copies, which are what the archive ships.
+    check_authorization_helper_digest(binary, stage / authorization["path"])
     sandbox_installer = copy_html_sandbox_installer(stage, root, args.target)
     shutil.copyfile(args.readme, stage / "README.txt")
     shutil.copyfile(root / "Cargo.lock", stage / "Cargo.lock")

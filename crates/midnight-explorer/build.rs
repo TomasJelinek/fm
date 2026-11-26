@@ -16,12 +16,14 @@ fn main() {
 /// Record the SHA-256 of the authorization helper that this executable ships with, named by
 /// `MIDNIGHT_ELEVATED_LISTING` (the built `midnight-elevated-listing` of the same build): only
 /// a helper with exactly that content may then run with authorization from a folder the user
-/// can change. Without it, only an administrator-managed installation offers authorization.
+/// can change. Without it the recorded digest is empty: only an administrator-managed
+/// installation offers authorization, and release packaging refuses the executable.
 fn record_authorization_helper() {
     use sha2::{Digest, Sha256};
     println!("cargo:rerun-if-env-changed=MIDNIGHT_ELEVATED_LISTING");
     let Some(helper) = std::env::var_os("MIDNIGHT_ELEVATED_LISTING").filter(|v| !v.is_empty())
     else {
+        println!("cargo:rustc-env=MIDNIGHT_ELEVATED_LISTING_SHA256=");
         return;
     };
     let helper = std::path::PathBuf::from(helper);

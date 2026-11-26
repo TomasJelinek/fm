@@ -519,6 +519,34 @@ class AuthorizationHelperPackageTests(unittest.TestCase):
             self.assertEqual(record["sha256"], hashlib.sha256(helper.read_bytes()).hexdigest())
             self.assertTrue(record["executable"])
 
+    def test_recorded_helper_digest_must_match_the_packaged_helper(self):
+        root = Path(__file__).resolve().parents[2] / "_build" / "tmp"
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as temporary:
+            explorer = Path(temporary) / "midnight-explorer.exe"
+            helper = Path(temporary) / "midnight-elevated-listing.exe"
+            helper.write_bytes(b"owned test helper")
+            digest = hashlib.sha256(helper.read_bytes()).hexdigest()
+
+            def record(value):
+                return b"MIDNIGHT_AUTHORIZATION_HELPER_SHA256=" + value + b";"
+
+            explorer.write_bytes(b"\0code\0" + record(digest.encode()) + b"\0data")
+            self.assertEqual(packaging.check_authorization_helper_digest(explorer, helper), digest)
+            # Built without MIDNIGHT_ELEVATED_LISTING: the record is empty.
+            explorer.write_bytes(b"\0" + record(b"") + b"\0")
+            with self.assertRaisesRegex(ValueError, "records no authorization helper digest"):
+                packaging.check_authorization_helper_digest(explorer, helper)
+            # Another helper than the one the executable was built with.
+            explorer.write_bytes(record(hashlib.sha256(b"other helper").hexdigest().encode()))
+            with self.assertRaisesRegex(ValueError, "but the packaged helper is " + digest):
+                packaging.check_authorization_helper_digest(explorer, helper)
+            # No record (an executable from before the record) or conflicting records.
+            for content in (b"no record", record(digest.encode()) + record(b"")):
+                explorer.write_bytes(content)
+                with self.assertRaisesRegex(ValueError, "exactly one authorization helper digest record"):
+                    packaging.check_authorization_helper_digest(explorer, helper)
+
 
 class ProjectLicenseTests(unittest.TestCase):
     """Every archive carries the program's GPL text, the project README and the source."""

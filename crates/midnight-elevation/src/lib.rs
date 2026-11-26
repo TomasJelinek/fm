@@ -167,8 +167,8 @@ fn unavailable_reason(cause: Option<Cause>, shipped: bool) -> String {
         (
             "administrator",
             "administrators",
-            "only administrators can change it, such as C:\\Program Files (the per-machine \
-             installer does this)",
+            "only administrators can change it, such as C:\\Program Files (the installer's \
+             For all users choice does this)",
         )
     } else {
         (
@@ -528,7 +528,10 @@ mod tests {
                 } else {
                     assert!(details.contains("is not owned by SYSTEM"), "{details}");
                     assert!(reason.contains("C:\\Program Files"), "{reason}");
-                    assert!(reason.contains("per-machine installer"), "{reason}");
+                    assert!(
+                        reason.contains("(the installer's For all users choice does this)"),
+                        "{reason}"
+                    );
                 }
             } else {
                 assert!(

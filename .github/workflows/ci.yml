@@ -754,7 +754,20 @@ jobs:
         with:
           build-cache: "true"
       - name: Optimized release build
-        run: cargo build -p midnight-explorer -p midnight-elevation --release --locked
+        shell: pwsh
+        run: |
+          # The explorer records the SHA-256 of the authorization helper it ships with
+          # (RELEASE_BUILD.md): the helper first, then both with the variable naming it.
+          cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --release --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Authorization helper build failed' }
+          $helper = if ($IsWindows) { 'midnight-elevated-listing.exe' } else { 'midnight-elevated-listing' }
+          $env:MIDNIGHT_ELEVATED_LISTING = (Resolve-Path -LiteralPath "_build/release/$helper").Path
+          cargo build -p midnight-explorer -p midnight-elevation --release --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+          $target = if ($IsWindows) { 'x86_64-pc-windows-msvc' } else { 'x86_64-unknown-linux-gnu' }
+          $explorer = if ($IsWindows) { 'midnight-explorer.exe' } else { 'midnight-explorer' }
+          python -B scripts/package-release.py check-authorization-helper --binary "_build/release/$explorer" --target $target
+          if ($LASTEXITCODE -ne 0) { throw 'The release executable does not record its authorization helper' }
       - uses: ./.github/actions/plugin-packages
         with:
           runner-label: ${{ matrix.os }}

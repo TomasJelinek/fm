@@ -473,11 +473,14 @@ step_x11_clipboard() {
         clipboard::tests::x11_ file_clipboard::x11::tests:: --ignored --test-threads=1
 }
 step_host_build() {
-    if [[ $build_profile == release ]]; then
-        cargo build -p midnight-explorer -p midnight-elevation --locked --release
-    else
-        cargo build -p midnight-explorer -p midnight-elevation --locked
-    fi
+    # The explorer records the SHA-256 of the authorization helper it ships with
+    # (RELEASE_BUILD.md): the helper first, then both with the variable naming it.
+    local profile_flag=()
+    [[ $build_profile == release ]] && profile_flag=(--release)
+    cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked "${profile_flag[@]}" ||
+        return
+    MIDNIGHT_ELEVATED_LISTING="$cargo_target/$build_profile/midnight-elevated-listing" \
+        cargo build -p midnight-explorer -p midnight-elevation --locked "${profile_flag[@]}"
 }
 step_smoke_test() {
     local executable="$HOST_TEST_INSTALL_ROOT/midnight-explorer"

@@ -75,8 +75,15 @@ class LinuxBuildSetupTests(unittest.TestCase):
             with self.subTest(profile=profile):
                 result = self.run_script("build.sh", "--dry-run", profile)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("[cargo] [build] [-p] [midnight-explorer] [-p] "
-                              "[midnight-elevation] [--locked]" + release, result.stdout)
+                # The helper first, then the explorer that records its digest.
+                helper = ("Command: [cargo] [build] [-p] [midnight-explorer] [-p] [midnight-elevation] "
+                          f"[--bin] [midnight-elevated-listing] [--locked]{release}\n")
+                listing = f"{os.path.realpath(self.root)}/_build/{profile}/midnight-elevated-listing"
+                explorer = (f"Command: [env] [MIDNIGHT_ELEVATED_LISTING={listing}] [cargo] [build] [-p] "
+                            f"[midnight-explorer] [-p] [midnight-elevation] [--locked]{release}\n")
+                self.assertIn(helper, result.stdout)
+                self.assertIn(explorer, result.stdout)
+                self.assertLess(result.stdout.index(helper), result.stdout.index(explorer))
                 commands = [line for line in result.stdout.splitlines() if line.startswith("Command:")]
                 self.assertEqual(commands[-5:], [
                     f"Command: [bash] [scripts/build-native-filesystem.sh] [{profile}]",

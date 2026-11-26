@@ -277,25 +277,27 @@ their users must replace or delete.
 
 `crates/midnight-explorer/build.rs` records the SHA-256 of the file that the
 `MIDNIGHT_ELEVATED_LISTING` environment variable names in the executable
-(`MIDNIGHT_ELEVATED_LISTING_SHA256`); unset, it records none. The helper must be built
-before the executable that records it, so a release build runs the same Cargo command
-twice, the second time with the variable naming the helper that the first built:
+(`MIDNIGHT_ELEVATED_LISTING_SHA256`), as the marked record
+`MIDNIGHT_AUTHORIZATION_HELPER_SHA256=<digest>;`; unset, the record is empty. The helper
+must be built before the executable that records it, so `build.bat`, `build.sh`, the
+`validate` host build and the CI release job build only the helper first and then both
+packages with the variable naming that helper:
 
 ```powershell
-cargo build -p midnight-explorer -p midnight-elevation --release --locked
+cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --release --locked
 $env:MIDNIGHT_ELEVATED_LISTING = (Resolve-Path _build\release\midnight-elevated-listing.exe).Path
 cargo build -p midnight-explorer -p midnight-elevation --release --locked
 ```
 
-The second run selects the same packages, so the helper and its dependencies keep their
-features and are not rebuilt: only the executable is linked again. The package must then
-ship exactly that helper; a different one is refused at run time as altered (the retry
-is not offered), never trusted. The variable is not a run-time setting, and a digest
-kept in a data file such as `BUILD-INFO.json` would not do: anything beside the
-executable in a per-user installation can be changed by its user. **Status:** the
-packaging scripts and the CI release job do not set the variable yet (a separate build
-tooling change), so their packages currently accept only administrator-managed
-installations.
+Both runs select the same packages, so the helper and its dependencies keep their
+features and are not rebuilt: the second run builds only the executable. The package must
+then ship exactly that helper; a different one is refused at run time as altered (the
+retry is not offered), never trusted. `scripts/package-release.py` refuses an executable
+without a recorded digest or with one that differs from the packaged helper, and
+`package-release.py check-authorization-helper --binary EXECUTABLE --target TARGET`
+(run by the CI release job) checks a build. The variable is not a run-time setting, and
+a digest kept in a data file such as `BUILD-INFO.json` would not do: anything beside the
+executable in a per-user installation can be changed by its user.
 
 The public download page carries the official Slint attribution badge, and the
 application keeps its AboutSlint widget. Midnight Explorer is GPL-3.0-or-later, so each
