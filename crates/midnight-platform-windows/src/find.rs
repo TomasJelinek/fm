@@ -151,16 +151,8 @@ impl FindSource for Source {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.entry.path)?;
         let visible = open_path(&self.entry.path, FILE_READ_ATTRIBUTES)?;
-        if !snapshot(&visible, &self.entry.path)?
-            .0
-            .matches_capture(&self.entry)
-            || !snapshot(&self.file, &self.entry.path)?
-                .0
-                .matches_capture(&self.entry)
-        {
-            return Err(changed(&self.entry.path));
-        }
-        Ok(())
+        unchanged(&self.entry, &snapshot(&visible, &self.entry.path)?.0)?;
+        unchanged(&self.entry, &snapshot(&self.file, &self.entry.path)?.0)
     }
     fn next_child(&mut self, cancel: &Cancellation) -> Result<Option<FindChild>, FsError> {
         if self.entry.kind != EntryKind::Directory {
@@ -212,12 +204,7 @@ impl FindSource for Source {
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             )
             .map_err(|error| FsError::from_io("find content", &self.entry.path, error))?;
-            if !snapshot(&reader, &self.entry.path)?
-                .0
-                .matches_capture(&self.entry)
-            {
-                return Err(changed(&self.entry.path));
-            }
+            unchanged(&self.entry, &snapshot(&reader, &self.entry.path)?.0)?;
             self.reader = Some(reader);
         }
         match &mut self.reader {
@@ -343,6 +330,53 @@ fn changed(path: &Path) -> FsError {
         io::ErrorKind::InvalidData,
         "Find object identity or revision changed.",
     )
+}
+
+/// Ok when `now` is still the `captured` object at the same revision; otherwise the
+/// `changed` error naming each fact that differs, so that a report says what changed.
+fn unchanged(captured: &FindEntry, now: &FindEntry) -> Result<(), FsError> {
+    if now.matches_capture(captured) {
+        return Ok(());
+    }
+    let mut error = changed(&captured.path);
+    let differences = describe_changes(captured, now);
+    if !differences.is_empty() {
+        error.message = format!("{} Changed: {}.", error.message, differences.join(", "));
+    }
+    Err(error)
+}
+
+/// The facts of `revision` (`snapshot`) that differ, as "name before → after".
+fn describe_changes(captured: &FindEntry, now: &FindEntry) -> Vec<String> {
+    let mut differences = Vec::new();
+    if now.path != captured.path {
+        differences.push("path".to_owned());
+    }
+    if now.kind != captured.kind {
+        differences.push(format!("kind {:?} → {:?}", captured.kind, now.kind));
+    }
+    if now.identity != captured.identity {
+        differences.push("file identity".to_owned());
+    }
+    const FACTS: [&str; 6] = [
+        "size",
+        "last write time",
+        "creation time",
+        "attributes",
+        "change time",
+        "reserved",
+    ];
+    for (index, name) in FACTS.iter().enumerate() {
+        let (before, after) = (captured.revision.0[index], now.revision.0[index]);
+        if before != after {
+            differences.push(if *name == "attributes" {
+                format!("{name} {before:#x} → {after:#x}")
+            } else {
+                format!("{name} {before} → {after}")
+            });
+        }
+    }
+    differences
 }
 
 // Verbatim native paths retain reserved-looking names and trailing spaces as
