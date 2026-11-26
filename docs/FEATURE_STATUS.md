@@ -471,7 +471,7 @@ How to read it:
 
 ## Plugin interfaces
 
-- **Implemented:** the viewer C ABI 1.0 with plugin API and SDK 0.2.0; the archive
+- **Implemented:** the viewer C ABI 1.0 with plugin API 0.2.0 and SDK 0.2.1; the archive
   worker API 0.5.0; the native filesystem plugin ABI 1.5 with API and SDK 0.2.0; the
   image viewer API 0.3.0 with SDK 0.4.0; the web viewer API and SDK 0.4.0; the
   thumbnail API 0.1.0 with SDK 0.2.0; the worker SDK 0.2.0. The text, source and

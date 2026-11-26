@@ -112,63 +112,105 @@ pub fn append_registry_package(registry: &Path, line: &[u8], archive: &[u8]) -> 
 
 struct Legacy {
     name: &'static str,
+    version: &'static str,
     archive: &'static [u8],
     index: &'static [u8],
     archive_sha: &'static str,
     index_sha: &'static str,
 }
 
-/// Seed the exact already-released 0.1.0 packages before packaging the current source version.
-/// These bytes are checked-in inputs; no historical checkout, registry service or repacking occurs.
+/// One already-released version: its packages and their original provenance receipt.
+struct Release {
+    version: &'static str,
+    packages: &'static [Legacy],
+    artifacts: &'static [u8],
+}
+
+const RELEASE_0_1_0: [Legacy; 2] = [
+    Legacy {
+        name: "midnight-plugin-api",
+        version: "0.1.0",
+        archive: include_bytes!("../releases/0.1.0/midnight-plugin-api-0.1.0.crate"),
+        index: include_bytes!("../releases/0.1.0/midnight-plugin-api.index.json"),
+        archive_sha: "f264a39c3ee43af518926887a7ef9e4a3751c093f21e924ca0e7f1e3d8009711",
+        index_sha: "017a073a7ab39f31264a46484eeb019e573eeb77c9177cc97c883cf67dada00c",
+    },
+    Legacy {
+        name: "midnight-plugin-sdk",
+        version: "0.1.0",
+        archive: include_bytes!("../releases/0.1.0/midnight-plugin-sdk-0.1.0.crate"),
+        index: include_bytes!("../releases/0.1.0/midnight-plugin-sdk.index.json"),
+        archive_sha: "3cbd8b9bd227807c58ee3467a895e93ee0c59eb88064a8fc694f859233c8220a",
+        index_sha: "62c3f4bb0960423bb830495a94f5890130ee78aae8d2ee8a9884385352f546d5",
+    },
+];
+
+/// SDK 0.2.0 only: API 0.2.0 is still the current API source version, packaged unchanged.
+const RELEASE_0_2_0: [Legacy; 1] = [Legacy {
+    name: "midnight-plugin-sdk",
+    version: "0.2.0",
+    archive: include_bytes!("../releases/0.2.0/midnight-plugin-sdk-0.2.0.crate"),
+    index: include_bytes!("../releases/0.2.0/midnight-plugin-sdk.index.json"),
+    archive_sha: "028b4c02ac88000aab0d4143f01b71caebfcfd3d4e06c4d7f8f75bfbf4f4290e",
+    index_sha: "f83587e6b6f20fe2861942209a5c1d5ed647f3d353be384be3450eb46f770fca",
+}];
+
+const RELEASES: [Release; 2] = [
+    Release {
+        version: "0.1.0",
+        packages: &RELEASE_0_1_0,
+        artifacts: include_bytes!("../releases/0.1.0/artifacts.json"),
+    },
+    Release {
+        version: "0.2.0",
+        packages: &RELEASE_0_2_0,
+        artifacts: include_bytes!("../releases/0.2.0/artifacts.json"),
+    },
+];
+
+/// Seed the exact already-released packages (API/SDK 0.1.0 and SDK 0.2.0) before packaging
+/// the current source versions. These bytes are checked-in inputs; no historical checkout,
+/// registry service or repacking occurs.
 pub fn seed_legacy_releases(output: &Path) -> Result<Vec<Value>> {
-    let packages = [
-        Legacy {
-            name: "midnight-plugin-api",
-            archive: include_bytes!("../releases/0.1.0/midnight-plugin-api-0.1.0.crate"),
-            index: include_bytes!("../releases/0.1.0/midnight-plugin-api.index.json"),
-            archive_sha: "f264a39c3ee43af518926887a7ef9e4a3751c093f21e924ca0e7f1e3d8009711",
-            index_sha: "017a073a7ab39f31264a46484eeb019e573eeb77c9177cc97c883cf67dada00c",
-        },
-        Legacy {
-            name: "midnight-plugin-sdk",
-            archive: include_bytes!("../releases/0.1.0/midnight-plugin-sdk-0.1.0.crate"),
-            index: include_bytes!("../releases/0.1.0/midnight-plugin-sdk.index.json"),
-            archive_sha: "3cbd8b9bd227807c58ee3467a895e93ee0c59eb88064a8fc694f859233c8220a",
-            index_sha: "62c3f4bb0960423bb830495a94f5890130ee78aae8d2ee8a9884385352f546d5",
-        },
-    ];
     let header = include_bytes!("../releases/0.1.0/midnight_plugin_v1.h");
     if digest(header) != "def35c854f09ed1304ecb0ebe7c170e1135ff56bf60cac6e61641a0844625a01" {
         return Err("historical API header checksum mismatch".into());
     }
-    for package in &packages {
-        let record: Value = serde_json::from_slice(package.index)?;
-        if digest(package.archive) != package.archive_sha
-            || digest(package.index) != package.index_sha
-            || record["name"].as_str() != Some(package.name)
-            || record["vers"].as_str() != Some("0.1.0")
-        {
-            return Err("historical release input checksum or identity mismatch".into());
+    for release in &RELEASES {
+        for package in release.packages {
+            let record: Value = serde_json::from_slice(package.index)?;
+            if package.version != release.version
+                || digest(package.archive) != package.archive_sha
+                || digest(package.index) != package.index_sha
+                || record["name"].as_str() != Some(package.name)
+                || record["vers"].as_str() != Some(package.version)
+            {
+                return Err("historical release input checksum or identity mismatch".into());
+            }
         }
     }
-    for package in &packages {
-        append_registry_package(&output.join("registry"), package.index, package.archive)?;
+    let mut records = Vec::new();
+    for release in &RELEASES {
+        for package in release.packages {
+            append_registry_package(&output.join("registry"), package.index, package.archive)?;
+        }
+        let mut receipt: Vec<Value> = serde_json::from_slice(release.artifacts)?;
+        if receipt.len() != release.packages.len() {
+            return Err("historical release provenance count mismatch".into());
+        }
+        for (record, package) in receipt.iter_mut().zip(release.packages) {
+            let archive = format!("{}-{}.crate", package.name, package.version);
+            if record["archive"].as_str() != Some(archive.as_str())
+                || record["sha256"].as_str() != Some(package.archive_sha)
+            {
+                return Err("historical release provenance identity mismatch".into());
+            }
+            record["preserved"] = Value::Bool(true);
+        }
+        records.append(&mut receipt);
     }
     let include = output.join("include/0.1.0");
     fs::create_dir_all(&include)?;
     write_exact(&include.join("midnight_plugin_v1.h"), header)?;
-    let mut records: Vec<Value> =
-        serde_json::from_slice(include_bytes!("../releases/0.1.0/artifacts.json"))?;
-    if records.len() != packages.len() {
-        return Err("historical release provenance count mismatch".into());
-    }
-    for (record, package) in records.iter_mut().zip(packages) {
-        if record["archive"].as_str() != Some(format!("{}-0.1.0.crate", package.name).as_str())
-            || record["sha256"].as_str() != Some(package.archive_sha)
-        {
-            return Err("historical release provenance identity mismatch".into());
-        }
-        record["preserved"] = Value::Bool(true);
-    }
     Ok(records)
 }

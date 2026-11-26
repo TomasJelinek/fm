@@ -231,3 +231,75 @@ fn source_preparation_request_delivers_a_result_before_completed_through_abi_1_0
     assert_eq!(release_buffer(instance, result.payload.id), abi::OK);
     assert_eq!(destroy(instance), abi::OK);
 }
+
+#[test]
+fn forty_live_instances_of_one_library_each_finish_their_own_work() {
+    // There is no instance count limit: the old library allowed 16 at once.
+    const INSTANCES: usize = 40;
+    let (host, state, _) = fixture();
+    state.accept_work.store(true, Ordering::Relaxed);
+    let instances: Vec<u64> = (0..INSTANCES)
+        .map(|_| {
+            let mut instance = 0;
+            assert_eq!(
+                unsafe { create::<TestViewer>(&host.api(), empty(), &mut instance) },
+                abi::OK
+            );
+            assert_ne!(instance, 0);
+            instance
+        })
+        .collect();
+    let mut distinct = instances.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), INSTANCES, "instance handles are unique");
+    let payload = midnight_plugin_api::codec::encode(&midnight_plugin_api::messages::Viewport {
+        source_anchor: 1u64 << 35,
+        backwards: false,
+        max_bytes: 256,
+        max_lines: 32,
+    })
+    .unwrap();
+    for (index, &instance) in instances.iter().enumerate() {
+        let request = abi::Request {
+            id: 100 + index as u64,
+            session: 1 + index as u64,
+            generation: 1,
+            kind: abi::REQUEST_VIEWPORT,
+            flags: 0,
+            payload: abi::ByteSlice {
+                data: payload.as_ptr(),
+                len: payload.len() as u32,
+                reserved: 0,
+            },
+            content: abi::Buffer {
+                bytes: empty(),
+                id: 0,
+            },
+        };
+        assert_eq!(unsafe { submit(instance, &request) }, abi::OK);
+    }
+    for _ in 0..INSTANCES {
+        assert!(state.run_one());
+    }
+    assert!(!state.run_one());
+    for (index, &instance) in instances.iter().enumerate() {
+        let mut event = std::mem::MaybeUninit::<abi::Event>::uninit();
+        let mut count = 0;
+        assert_eq!(
+            unsafe { drain(instance, 1, event.as_mut_ptr(), &mut count) },
+            abi::OK
+        );
+        assert_eq!(count, 1, "instance {index} drains its own completion");
+        let event = unsafe { event.assume_init() };
+        assert_eq!(event.kind, abi::EVENT_COMPLETED);
+        assert_eq!(event.request_id, 100 + index as u64);
+        assert_eq!(event.session, 1 + index as u64);
+        assert_eq!(release_buffer(instance, event.payload.id), abi::OK);
+    }
+    for &instance in &instances {
+        assert_eq!(begin_shutdown(instance), abi::OK);
+        assert_eq!(destroy(instance), abi::OK);
+        assert_eq!(destroy(instance), abi::UNKNOWN_HANDLE);
+    }
+}

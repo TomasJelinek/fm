@@ -1,7 +1,8 @@
 # Viewer protocol reference
 
 The baseline schemas describe public plugin API 0.1.0; API/SDK 0.2.0 adds the
-optional Source preparation extension. The C ABI remains 1.0. Source definitions are
+optional Source preparation extension. SDK 0.2.1 changes no message or schema; it only
+removes the SDK's per-library instance count limit. The C ABI remains 1.0. Source definitions are
 [messages.rs](../../api/midnight-plugin-api/src/messages.rs),
 [viewer.rs](../../api/midnight-plugin-api/src/viewer.rs) and
 [document.rs](../../api/midnight-plugin-api/src/document.rs). See
@@ -121,8 +122,8 @@ that does not negotiate support for a new output model.
 ## Optional Source preparation (0.2 source contract)
 
 Source preparation is part of the viewer API/SDK 0.2. The 0.1 packages stay as
-released, byte for byte; the Basic and Markdown plugins pin SDK `=0.1.0` and the Source
-plugin pins `=0.2.0`. The C and Rust layouts of ABI 1.0 (sizes, alignments and offsets)
+released, byte for byte, and so does SDK 0.2.0; the Basic, Markdown and Source plugins
+and the conformance fixture pin SDK `=0.2.1` (with API 0.2.0). The C and Rust layouts of ABI 1.0 (sizes, alignments and offsets)
 agree.
 
 Prepare uses the request/session/generation identity, zero flags and

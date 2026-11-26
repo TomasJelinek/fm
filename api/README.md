@@ -8,8 +8,11 @@ another plugin, or a source-tree patch. The SDK's ownership/runtime adapters are
 implemented and tested, including an independently exported DLL/SO conformance
 fixture on Windows and Linux. The application loader, LiveValidated content
 broker, viewer window and independent Basic, Source and Markdown viewers are
-implemented and integrated. ABI 1.0 and package version 0.2.0 remain a versioned
-draft, not a long-term compatibility promise. This ABI's `KIND_FILESYSTEM` constant
+implemented and integrated. ABI 1.0, API 0.2.0 and SDK 0.2.1 remain a versioned
+draft, not a long-term compatibility promise. SDK 0.2.1 differs from 0.2.0 only in
+removing the per-library instance count limit (16) and library-wide job total (4096);
+each instance keeps its own bounds. The SDK manifest declares its version, so the
+unchanged API 0.2.0 keeps its released bytes. This ABI's `KIND_FILESYSTEM` constant
 stays reserved and unused: filesystem providers are implemented through separate
 public contracts, the native filesystem ABI 1.5 (`midnight_filesystem_entry_v1`, see
 [the protocol](../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md)) and the restricted

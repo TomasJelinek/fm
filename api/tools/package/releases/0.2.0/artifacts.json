@@ -1,0 +1,14 @@
+[
+  {
+    "archive": "midnight-plugin-sdk-0.2.0.crate",
+    "bytes": 26345,
+    "cargo_archive_sha256": "319be2f8011e649f78b65f7a212914b4f5c66d5c184e1baabf358a2e849b7ece",
+    "sha256": "028b4c02ac88000aab0d4143f01b71caebfcfd3d4e06c4d7f8f75bfbf4f4290e",
+    "vcs": {
+      "git": {
+        "sha1": "224c59de044b2e63dcac43f5245c4c84c4b748b7"
+      },
+      "path_in_vcs": "api/midnight-plugin-sdk"
+    }
+  }
+]

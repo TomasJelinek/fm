@@ -74,8 +74,10 @@ handles never release allocations belonging to another instance.
 
 Per instance: 64 admitted requests, 128 live contexts, 128 jobs, 64 pending reads,
 32 ordinary queued events, 128 ordinary output allocations and 64 reserved terminal
-allocations. The library allows 16 instances and 4096 registered jobs. IDs fail on
-exhaustion instead of wrapping.
+allocations. From SDK 0.2.1 a loaded library has no instance count limit and no
+library-wide job total (0.1.0 and 0.2.0 allowed 16 instances and 4096 registered jobs);
+memory grows only with the instances the host keeps open. IDs fail on exhaustion
+instead of wrapping.
 
 Separate byte budgets cover ordinary output (8 MiB), deferred output (8 MiB), host
 input leases (8 MiB), retained request CBOR (8 MiB), and reserved terminal messages

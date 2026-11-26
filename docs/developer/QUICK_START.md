@@ -29,16 +29,17 @@ The packager runs offline, hence the `cargo fetch` first. Use the printed
 checkout. The bundle contains versioned API/SDK `.crate` archives, a local registry,
 third-party vendor sources, `.cargo/config.toml`, the public C header and
 `artifacts.json` with SHA-256 checksums/provenance. Its registry holds the released
-0.1.0 packages and the current 0.2.0 ones; 0.2.0 adds the optional
-[source coordinates](../../api/SOURCE_POSITION.md) and keeps ABI 1.0. Packaging
+0.1.0 packages, SDK 0.2.0, and the current API 0.2.0 and SDK 0.2.1; 0.2.0 adds the
+optional [source coordinates](../../api/SOURCE_POSITION.md) and keeps ABI 1.0, and SDK
+0.2.1 removes the SDK's per-library instance count limit. Packaging
 does not publish to a remote registry. The `.invalid` registry URL is an offline
 source identity, not a service to contact. Keep the entire bundle together when
 relocating it between machines/operating systems.
 
 An independent plugin declares its own workspace and lockfile, with version-only
-public dependencies. The current SDK is 0.2.0, and a new plugin should depend on it
-(`midnight-plugin-sdk = { version = "=0.2.0", registry = "midnight" }`); plugins built
-on 0.1.0 keep loading. The example below and the
+public dependencies. The current SDK is 0.2.1, and a new plugin should depend on it
+(`midnight-plugin-sdk = { version = "=0.2.1", registry = "midnight" }`); plugins built
+on 0.1.0 or 0.2.0 keep loading. The example below and the
 [tiny viewer](examples/tiny-viewer/) still pin 0.1.0; nothing builds the example in
 CI or validation yet (SDK-05 in the [backlog](../IMPLEMENTATION_BACKLOG.md)). For
 example:

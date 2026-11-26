@@ -1,9 +1,11 @@
 # ABI and lifecycle contract
 
 This page describes native ABI 1.0 (`ABI_MAJOR` 1, `ABI_MINOR` 0) and the public
-API/SDK 0.2.0 (`api/Cargo.toml`), which is 0.1.0 plus the optional source-preparation
-request; plugins built against SDK 0.1.0 (the basic and Markdown viewers, the
-conformance fixture) load unchanged. Read the
+API 0.2.0 with SDK 0.2.1 (`api/`). API/SDK 0.2.0 is 0.1.0 plus the optional
+source-preparation request; SDK 0.2.1 only removes the SDK's per-library instance count
+limit and library-wide job total. The basic, source and Markdown viewers and the
+conformance fixture pin SDK 0.2.1; plugins built against SDK 0.1.0 or 0.2.0 load
+unchanged. Read the
 [architecture and trust model](README.md) before implementing a native consumer.
 The [generated C header](../../api/midnight-plugin-api/include/midnight_plugin_v1.h)
 is the cross-language layout reference. Rust names below come from
@@ -224,7 +226,7 @@ inside each plugin as well. The semantic and per-message limits are listed in
 | Host command/service queues | 32 commands and 32 read-service requests per session; separate native read worker |
 | Host input leases | 32 buffers / 4 MiB per session |
 | Host read-reply channel | 32 chunks, at most 8 MiB, separate from leased input |
-| SDK instances/jobs | 16 instances and 4096 registered jobs per loaded SDK library; the 16 instances are the remaining count limit on open viewers of one SDK plugin (below) |
+| SDK instances/jobs | No instance count limit and no library-wide job total from SDK 0.2.1; memory grows only with live instances (0.1.0/0.2.0: 16 instances, 4096 registered jobs per loaded library) |
 | SDK per instance | 64 admitted requests, 128 live contexts, 128 jobs, 64 pending reads |
 | SDK ordinary output | 32 queued events; 128 allocations; 8 MiB |
 | SDK deferred output | One per request; at most 64 and 8 MiB per instance |
@@ -235,16 +237,11 @@ inside each plugin as well. The semantic and per-message limits are listed in
 Host decoded-output accounting charges vector/string capacities, not just compact
 CBOR size. These budgets coexist; do not add them into a claimed universal memory
 ceiling. The host no longer limits the number of sessions: it follows the number of
-documents the user opens, and the per-session bounds above apply to each.
-
-**Remaining count limit.** Every host session creates its own plugin instance in the
-shared loaded library, and the SDK (`api/midnight-plugin-sdk`, `plugin::create`, pinned
-=0.1.0 by the basic and Markdown viewers and =0.2.0 by the source viewer) admits at most
-16 instances per loaded library and returns `QUEUE_FULL` beyond that. So at most 16
-documents of one SDK plugin (the text, source or Markdown viewer) can be open at once; a
-17th viewer window of the same plugin opens but reports "Plugin create failed". Other
-plugins and the image, PDF, HTML and video viewers are not affected. Removing this limit
-needs a new SDK version and rebuilt plugins.
+documents the user opens, and the per-session bounds above apply to each. Every
+session creates its own plugin instance, and SDK 0.2.1 creates any number of instances
+in one loaded library, each with the per-instance bounds above; a plugin built on SDK
+0.1.0 or 0.2.0 still returns `QUEUE_FULL` from `create` for a 17th live instance of
+that library.
 
 ## Status and compatibility
 

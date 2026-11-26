@@ -1,8 +1,8 @@
 # Developer guide: public plugin API
 
 Midnight Explorer loads independent native viewer plugins through C ABI 1.0.
-The public Rust packages are `midnight-plugin-api` and `midnight-plugin-sdk`,
-currently version `0.2.0`; plugins built on SDK 0.1.0 load unchanged. The
+The public Rust packages are `midnight-plugin-api` 0.2.0 and `midnight-plugin-sdk`
+0.2.1; plugins built on SDK 0.1.0 or 0.2.0 load unchanged. The
 application loader, content broker, viewer window, and Basic, Source and Markdown
 plugins are implemented. Windows x64 and Linux x64 have native integration coverage.
 This guide describes that implementation; the versioned draft API has not yet made a

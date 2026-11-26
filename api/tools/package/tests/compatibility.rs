@@ -38,26 +38,40 @@ fn publish(registry: &std::path::Path, value: &Value, bytes: &[u8]) -> bool {
 }
 
 #[test]
-fn fresh_bundle_contains_both_versions_and_exact_historical_bytes() {
+fn fresh_bundle_contains_every_version_and_exact_historical_bytes() {
     let output = Output::new();
     let legacy = seed_legacy_releases(&output.0).unwrap();
-    assert_eq!(legacy.len(), 2);
-    for (name, archive, index) in [
+    assert_eq!(legacy.len(), 3);
+    assert!(
+        legacy
+            .iter()
+            .all(|record| record["preserved"] == json!(true))
+    );
+    let sdk_0_2_0 = include_bytes!("../releases/0.2.0/midnight-plugin-sdk-0.2.0.crate");
+    assert_eq!(
+        fs::read(output.registry().join("midnight-plugin-sdk-0.2.0.crate")).unwrap(),
+        sdk_0_2_0
+    );
+    for (name, archive, index, current, versions) in [
         (
             "midnight-plugin-api",
             include_bytes!("../releases/0.1.0/midnight-plugin-api-0.1.0.crate").as_slice(),
             include_bytes!("../releases/0.1.0/midnight-plugin-api.index.json").as_slice(),
+            "0.2.0",
+            ["0.1.0", "0.2.0"].as_slice(),
         ),
         (
             "midnight-plugin-sdk",
             include_bytes!("../releases/0.1.0/midnight-plugin-sdk-0.1.0.crate").as_slice(),
             include_bytes!("../releases/0.1.0/midnight-plugin-sdk.index.json").as_slice(),
+            "0.2.1",
+            ["0.1.0", "0.2.0", "0.2.1"].as_slice(),
         ),
     ] {
         let new_bytes = format!("{name} current release");
         assert!(publish(
             &output.registry(),
-            &record(name, "0.2.0", new_bytes.as_bytes()),
+            &record(name, current, new_bytes.as_bytes()),
             new_bytes.as_bytes()
         ));
         assert_eq!(
@@ -66,16 +80,35 @@ fn fresh_bundle_contains_both_versions_and_exact_historical_bytes() {
         );
         let lines = fs::read(output.registry().join("index/mi/dn").join(name)).unwrap();
         assert!(lines.starts_with(index));
-        let versions = String::from_utf8(lines)
+        let listed = String::from_utf8(lines)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap()["vers"].clone())
             .collect::<Vec<_>>();
-        assert_eq!(versions, [json!("0.1.0"), json!("0.2.0")]);
+        assert_eq!(
+            listed,
+            versions.iter().map(|v| json!(v)).collect::<Vec<_>>()
+        );
     }
     assert_eq!(
         fs::read(output.0.join("include/0.1.0/midnight_plugin_v1.h")).unwrap(),
         include_bytes!("../releases/0.1.0/midnight_plugin_v1.h")
+    );
+}
+
+#[test]
+fn a_changed_sdk_0_2_0_cannot_replace_the_preserved_release() {
+    let output = Output::new();
+    seed_legacy_releases(&output.0).unwrap();
+    let changed = b"rebuilt from newer sources";
+    assert!(!publish(
+        &output.registry(),
+        &record("midnight-plugin-sdk", "0.2.0", changed),
+        changed
+    ));
+    assert_eq!(
+        fs::read(output.registry().join("midnight-plugin-sdk-0.2.0.crate")).unwrap(),
+        include_bytes!("../releases/0.2.0/midnight-plugin-sdk-0.2.0.crate")
     );
 }
 

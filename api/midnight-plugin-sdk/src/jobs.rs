@@ -32,9 +32,8 @@ impl Drop for Permit {
 
 struct Job {
     task: Mutex<Option<Task>>,
-    // Drop captures before making this instance or library appear quiescent.
+    // Drop captures before making this instance appear quiescent.
     _local: Permit,
-    _library: Permit,
 }
 
 #[derive(Debug)]
@@ -45,7 +44,6 @@ pub(crate) struct Registration {
 
 static JOBS: OnceLock<Mutex<HashMap<usize, Arc<Job>>>> = OnceLock::new();
 static IDS: AtomicUsize = AtomicUsize::new(1);
-static LIBRARY: OnceLock<Arc<Group>> = OnceLock::new();
 
 fn registry() -> &'static Mutex<HashMap<usize, Arc<Job>>> {
     JOBS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -73,10 +71,8 @@ impl Group {
     }
 
     pub(crate) fn register(self: &Arc<Self>, task: Task) -> Result<Registration, (JobError, Task)> {
-        let library = match LIBRARY.get_or_init(|| Self::new(4096)).reserve() {
-            Ok(permit) => permit,
-            Err(error) => return Err((error, task)),
-        };
+        // Only the instance's own group bounds its jobs; there is no library-wide
+        // total, so another instance's jobs never refuse this one's.
         let local = match self.reserve() {
             Ok(permit) => permit,
             Err(error) => return Err((error, task)),
@@ -88,7 +84,6 @@ impl Group {
         let job = Arc::new(Job {
             task: Mutex::new(Some(task)),
             _local: local,
-            _library: library,
         });
         lock(registry()).insert(token, job);
         Ok(Registration {
@@ -279,6 +274,29 @@ mod tests {
         let pending = group.register(Box::new(|| {})).ok().unwrap();
         drop(pending);
         assert_eq!(group.active(), 0);
+    }
+
+    #[test]
+    fn many_instances_register_their_full_job_budgets_without_a_library_total() {
+        // 40 instances of 128 jobs each: more than the old 4096-job library budget.
+        let groups: Vec<_> = (0..40).map(|_| Group::new(128)).collect();
+        let mut accepted = Vec::new();
+        for group in &groups {
+            for _ in 0..128 {
+                let pending = group.register(Box::new(|| {})).ok().unwrap();
+                accepted.push(pending.token());
+                pending.accept();
+            }
+            assert_eq!(
+                group.register(Box::new(|| {})).err().unwrap().0,
+                JobError::Full
+            );
+        }
+        assert_eq!(accepted.len(), 40 * 128);
+        for token in accepted {
+            drop_job(token as *mut c_void);
+        }
+        assert!(groups.iter().all(|group| group.active() == 0));
     }
 
     #[test]

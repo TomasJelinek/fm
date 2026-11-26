@@ -1796,8 +1796,8 @@ Viewers, filesystems and thumbnailers are separately loadable plugin packages un
 the executable-adjacent `viewers/`, `filesystems/` and `thumbnailers/` folders. The
 three text/source/Markdown viewer packages and the native and Network Neighborhood
 filesystem libraries use a versioned C ABI and run as trusted native code. The viewer
-plugin API/SDK (`api/`) is version 0.2.0 with ABI 1.0; plugins built on SDK 0.1.0 load
-unchanged. The image
+plugin API (`api/`) is version 0.2.0 and its SDK 0.2.1, with ABI 1.0; plugins built on
+SDK 0.1.0 or 0.2.0 load unchanged. The image
 and PDF viewers, the thumbnailers, video playback and the archive worker are separate
 executables with versioned protocols, run as restricted processes for untrusted
 parsing; the HTML viewer runs Chromium in its own process tree with Chromium's

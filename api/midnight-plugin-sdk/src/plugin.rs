@@ -103,9 +103,11 @@ pub(crate) struct Instance {
     pub(crate) destroyed: AtomicBool,
 }
 
+/// Live instances of this loaded library, keyed by their never-reused handle. There is
+/// no count limit: each instance carries its own bounded queues and buffers, so memory
+/// grows only with the instances the host keeps open.
 struct Registry {
     instances: HashMap<u64, Arc<Instance>>,
-    creating: usize,
     next: u64,
     buffers: Arc<AtomicU64>,
 }
@@ -115,35 +117,18 @@ fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(|| {
         Mutex::new(Registry {
             instances: HashMap::new(),
-            creating: 0,
             next: 1,
             buffers: Arc::new(AtomicU64::new(1)),
         })
     })
 }
 
-struct Reservation {
-    id: u64,
-    pending: bool,
-}
-impl Drop for Reservation {
-    fn drop(&mut self) {
-        if self.pending {
-            lock(registry()).creating -= 1;
-        }
-    }
-}
-
 pub(crate) fn create<T: Viewer>(host: Host, configuration: &[u8]) -> Result<u64, abi::Status> {
-    let (mut reservation, buffers) = {
+    let (id, buffers) = {
         let mut registry = lock(registry());
-        if registry.instances.len() + registry.creating >= 16 {
-            return Err(abi::QUEUE_FULL);
-        }
         let id = registry.next;
         registry.next = id.checked_add(1).ok_or(abi::INVALID)?;
-        registry.creating += 1;
-        (Reservation { id, pending: true }, registry.buffers.clone())
+        (id, registry.buffers.clone())
     };
     // Factories and plugin destructors must never run under the registry mutex.
     let handler = Arc::new(T::create(configuration)?);
@@ -155,11 +140,8 @@ pub(crate) fn create<T: Viewer>(host: Host, configuration: &[u8]) -> Result<u64,
         gate: Mutex::new(()),
         destroyed: AtomicBool::new(false),
     });
-    let mut registry = lock(registry());
-    registry.creating -= 1;
-    registry.instances.insert(reservation.id, instance);
-    reservation.pending = false;
-    Ok(reservation.id)
+    lock(registry()).instances.insert(id, instance);
+    Ok(id)
 }
 
 pub(crate) fn with_instance<T>(
