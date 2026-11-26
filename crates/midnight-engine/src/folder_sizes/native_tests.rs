@@ -195,3 +195,70 @@ fn native_size_resolution_cancellation_does_not_touch_an_unavailable_path() {
     .unwrap_err();
     assert_eq!(error.kind, io::ErrorKind::Interrupted);
 }
+
+/// A real folder whose listing is denied (a deny ACE for Everyone on Windows, mode 000
+/// on Linux) is skipped as one error: its siblings before and after it, and their
+/// subtrees, are still summed and the scan finishes.
+#[test]
+fn native_size_scan_skips_a_denied_folder_and_counts_its_siblings() {
+    let owned = tempfile::tempdir().unwrap();
+    let root = owned.path().join("root");
+    fs::create_dir_all(root.join("a/nested")).unwrap();
+    fs::create_dir_all(root.join("denied")).unwrap();
+    fs::create_dir_all(root.join("z")).unwrap();
+    fs::write(root.join("a/nested/one"), [1; 3]).unwrap();
+    fs::write(root.join("denied/hidden"), [2; 4096]).unwrap();
+    fs::write(root.join("z/two"), [3; 5]).unwrap();
+    fs::write(root.join("top"), [4; 7]).unwrap();
+    let denied = root.join("denied");
+    let _guard = DeniedFolder::new(&denied);
+    if fs::read_dir(&denied).is_ok() {
+        // Only Linux root reads a mode-000 folder anyway: nothing to prove there. A
+        // deny ACE applies to every Windows account.
+        #[cfg(windows)]
+        panic!("the deny ACE must refuse listing");
+        #[cfg(unix)]
+        return;
+    }
+    let size = measured(&root, EntryKind::Directory);
+    assert_eq!((size.bytes, size.files, size.errors), (15, 3, 1));
+    assert!(size.finished);
+    let warning = size.warnings.as_ref().unwrap().summary();
+    assert_eq!(warning.observed, 1);
+    assert!(warning.tooltip.contains("denied"), "{}", warning.tooltip);
+}
+
+/// Denies listing one fixture folder and restores it on drop, so the temporary
+/// fixture can be removed.
+struct DeniedFolder(PathBuf, Restore);
+#[cfg(windows)]
+type Restore = midnight_platform_windows::SavedDacl;
+#[cfg(unix)]
+type Restore = fs::Permissions;
+impl DeniedFolder {
+    fn new(path: &Path) -> Self {
+        #[cfg(windows)]
+        let restore = midnight_platform_windows::deny_read_data(path).unwrap();
+        #[cfg(unix)]
+        let restore = {
+            use std::os::unix::fs::PermissionsExt;
+            let original = fs::metadata(path).unwrap().permissions();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+            original
+        };
+        Self(path.to_owned(), restore)
+    }
+}
+impl Drop for DeniedFolder {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        let restored = midnight_platform_windows::restore_dacl(&self.0, &self.1);
+        #[cfg(unix)]
+        let restored = fs::set_permissions(&self.0, self.1.clone());
+        if let Err(error) = restored
+            && !thread::panicking()
+        {
+            panic!("cannot restore fixture access at {:?}: {error}", self.0);
+        }
+    }
+}

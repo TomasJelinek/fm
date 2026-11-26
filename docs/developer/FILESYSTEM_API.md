@@ -209,6 +209,16 @@ the copy) and the listing of each folder on its current path. Resolving a select
 member (the ignored test `archive_selection_memory_per_member`, Linux, release build;
 375 bytes in a debug build).
 
+Folder-size scans (panels, tree, Find's fed list, Properties) never stop at an
+error: a provider error for one folder or entry is counted in `FolderSize::errors`,
+recorded in the bounded size-warning report, and the scan continues with the
+remaining siblings and subtrees. A `read_directory` that returns an error after
+emitting entries keeps those entries counted. The native adapters' listing
+(`LocalServices::read_directory_with_metadata`) leaves out an entry whose type
+cannot be read (on Linux, `lstat` of a record without a type) and lists its
+siblings, returning the first such error, with the count, after the listing ends;
+a failure of the enumeration itself still ends that folder's listing.
+
 Archive folder sizes are a host backend service over these listing capabilities.
 Ctrl+Shift+S captures the exact committed mount/listing and opaque selected IDs;
 with no selection it measures all immediate folders. A files-only selection never

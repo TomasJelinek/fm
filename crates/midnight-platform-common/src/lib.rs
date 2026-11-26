@@ -79,6 +79,13 @@ impl LocalServices {
 
     /// Let a platform reuse metadata already returned by native enumeration.
     /// The callback must not follow links or open file contents.
+    ///
+    /// An entry that vanished during enumeration is left out silently. An entry whose
+    /// type cannot be read (Linux reads it with `lstat` when the directory record has
+    /// no type) is left out too, but its siblings are still listed: the first such
+    /// error, naming how many entries were left out, is returned once the listing has
+    /// ended, so a caller (a folder-size scan, a listing) knows the result is
+    /// incomplete. A failure of the enumeration itself ends it at once.
     pub fn read_directory_with_metadata(
         &self,
         path: &Path,
@@ -90,42 +97,99 @@ impl LocalServices {
         if cancel.is_cancelled() {
             return Ok(());
         }
-        let mut directory =
+        let directory =
             fs::read_dir(path).map_err(|error| FsError::from_io("read directory", path, error))?;
-        loop {
-            if cancel.is_cancelled() {
-                break;
-            }
-            let Some(item) = directory.next() else {
-                break;
-            };
-            let item = match item {
-                Ok(item) => item,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(FsError::from_io("read directory entry", path, error)),
-            };
+        list_items(
+            path,
+            directory,
+            cancel,
             // DirEntry::file_type uses directory enumeration data where available;
             // it does not follow symlinks or fetch full per-entry metadata.
-            let file_type = match item.file_type() {
-                Ok(file_type) => file_type,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(FsError::from_io("read entry type", &item.path(), error)),
-            };
-            let kind = classify(file_type);
-            if cancel.is_cancelled() {
-                break;
-            }
-            let id = EntryId(self.next_entry_id.fetch_add(1, Ordering::Relaxed));
-            let mut entry = Entry::new(id, item.path(), kind);
-            if let Some(value) = metadata(&item) {
-                entry.metadata = value;
-            }
-            if !emit(entry) {
-                break;
-            }
-        }
-        Ok(())
+            |item| item.file_type().map(&classify),
+            fs::DirEntry::path,
+            metadata,
+            &self.next_entry_id,
+            emit,
+        )
     }
+}
+
+/// Entries left out of one listing because their type could not be read: a count
+/// and the first error, never a list.
+#[derive(Default)]
+struct SkippedEntries {
+    count: u64,
+    first: Option<FsError>,
+}
+
+impl SkippedEntries {
+    fn record(&mut self, path: &Path, error: io::Error) {
+        self.count = self.count.saturating_add(1);
+        if self.first.is_none() {
+            self.first = Some(FsError::from_io("read entry type", path, error));
+        }
+    }
+
+    fn into_result(self) -> Result<(), FsError> {
+        let Some(mut error) = self.first else {
+            return Ok(());
+        };
+        if self.count > 1 {
+            error.message = format!(
+                "{} ({} entries of this folder could not be read and were left out)",
+                error.message, self.count
+            );
+        }
+        Err(error)
+    }
+}
+
+/// One listing pass over native enumeration `items`, generic so that tests can
+/// inject per-entry failures.
+#[allow(clippy::too_many_arguments)]
+fn list_items<D>(
+    path: &Path,
+    items: impl Iterator<Item = io::Result<D>>,
+    cancel: &Cancellation,
+    kind_of: impl Fn(&D) -> io::Result<EntryKind>,
+    path_of: impl Fn(&D) -> std::path::PathBuf,
+    metadata: impl Fn(&D) -> Option<EntryMetadata>,
+    next_entry_id: &AtomicU64,
+    emit: &mut dyn FnMut(Entry) -> bool,
+) -> Result<(), FsError> {
+    let mut skipped = SkippedEntries::default();
+    for item in items {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let item = match item {
+            Ok(item) => item,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            // The enumeration itself failed: Linux ends the stream after a `readdir`
+            // error and Windows would repeat a failed `FindNextFileW`.
+            Err(error) => return Err(FsError::from_io("read directory entry", path, error)),
+        };
+        let kind = match kind_of(&item) {
+            Ok(kind) => kind,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                skipped.record(&path_of(&item), error);
+                continue;
+            }
+        };
+        if cancel.is_cancelled() {
+            break;
+        }
+        let id = EntryId(next_entry_id.fetch_add(1, Ordering::Relaxed));
+        let mut entry = Entry::new(id, path_of(&item), kind);
+        if let Some(value) = metadata(&item) {
+            entry.metadata = value;
+        }
+        if !emit(entry) {
+            break;
+        }
+    }
+    skipped.into_result()
 }
 
 impl DirectoryService for LocalServices {
@@ -190,5 +254,115 @@ mod capacity_tests {
         assert!(space.available <= space.total);
         let missing = LocalServices::default().space_info(&root.path().join("missing"));
         assert_eq!(missing.unwrap_err().kind, std::io::ErrorKind::NotFound);
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// One enumerated record whose type read can fail.
+    struct Item(&'static str, Option<io::ErrorKind>);
+
+    fn listed(
+        items: Vec<io::Result<Item>>,
+        cancel: &Cancellation,
+    ) -> (Vec<PathBuf>, Result<(), FsError>) {
+        let mut names = Vec::new();
+        let result = list_items(
+            Path::new("folder"),
+            items.into_iter(),
+            cancel,
+            |item| item.1.map_or(Ok(EntryKind::File), |kind| Err(kind.into())),
+            |item| Path::new("folder").join(item.0),
+            |_| None,
+            &AtomicU64::new(1),
+            &mut |entry| {
+                names.push(entry.path);
+                true
+            },
+        );
+        (names, result)
+    }
+
+    #[test]
+    fn an_unreadable_entry_type_is_left_out_and_its_siblings_are_still_listed() {
+        let (names, result) = listed(
+            vec![
+                Ok(Item("before", None)),
+                Ok(Item("denied", Some(io::ErrorKind::PermissionDenied))),
+                Ok(Item("gone", Some(io::ErrorKind::NotFound))),
+                Ok(Item("broken", Some(io::ErrorKind::Other))),
+                Ok(Item("after", None)),
+            ],
+            &Cancellation::default(),
+        );
+        assert_eq!(
+            names,
+            [Path::new("folder/before"), Path::new("folder/after")]
+        );
+        // The first failure is named, with how many entries were left out; an entry
+        // that vanished is not a failure.
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, io::ErrorKind::PermissionDenied);
+        assert_eq!(error.path, Path::new("folder/denied"));
+        assert_eq!(error.operation, "read entry type");
+        assert!(
+            error
+                .message
+                .contains("(2 entries of this folder could not be read")
+        );
+    }
+
+    #[test]
+    fn a_single_unreadable_entry_keeps_its_own_message_and_vanished_entries_are_no_error() {
+        let (names, result) = listed(
+            vec![
+                Ok(Item("denied", Some(io::ErrorKind::PermissionDenied))),
+                Ok(Item("after", None)),
+            ],
+            &Cancellation::default(),
+        );
+        assert_eq!(names, [Path::new("folder/after")]);
+        assert!(
+            !result
+                .unwrap_err()
+                .message
+                .contains("entries of this folder")
+        );
+        let (names, result) = listed(
+            vec![
+                Err(io::ErrorKind::NotFound.into()),
+                Ok(Item("gone", Some(io::ErrorKind::NotFound))),
+                Ok(Item("kept", None)),
+            ],
+            &Cancellation::default(),
+        );
+        assert_eq!(names, [Path::new("folder/kept")]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn a_failed_enumeration_still_ends_the_listing() {
+        let (names, result) = listed(
+            vec![
+                Ok(Item("first", None)),
+                Err(io::ErrorKind::Other.into()),
+                Ok(Item("unreached", None)),
+            ],
+            &Cancellation::default(),
+        );
+        assert_eq!(names, [Path::new("folder/first")]);
+        assert_eq!(result.unwrap_err().operation, "read directory entry");
+    }
+
+    #[test]
+    fn cancellation_stops_the_listing_without_reading_more_types() {
+        let cancel = Cancellation::default();
+        cancel.cancel();
+        let (names, result) = listed(vec![Ok(Item("first", None))], &cancel);
+        assert!(names.is_empty());
+        assert!(result.is_ok());
     }
 }

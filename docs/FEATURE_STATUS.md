@@ -77,7 +77,8 @@ How to read it:
   button, where a file path opens its folder with the cursor on the file; parent
   navigation that keeps the cursor on the folder left; Brief, Detailed and Thumbnails views (Alt+2, Alt+3, Alt+5); locale-aware sorting; quick
   search by typing; hidden files (Ctrl+H); Hot Paths, numbered Hot Path keys and saved
-  tabs; folder sizes; native change watches with a 15-second check; free space that
+  tabs; folder sizes (an unreadable entry or folder is skipped and the total shown
+  as partial, never stopping the calculation); native change watches with a 15-second check; free space that
   follows jobs, watched changes of the panels' folders, focus and (on internal disks)
   a 5-second read; startup folders
   from the command line; size-warning and error notices with details.

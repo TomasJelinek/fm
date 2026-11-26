@@ -17,6 +17,9 @@ pub(super) struct Tree {
     links: HashMap<PathBuf, PathBuf>,
     lengths: HashMap<PathBuf, u64>,
     pub(super) unreadable: HashSet<PathBuf>,
+    /// Directories whose listing emits every readable entry and then returns an
+    /// error, as a platform listing does for an entry whose type cannot be read.
+    entry_errors: HashSet<PathBuf>,
     reads: Mutex<Vec<PathBuf>>,
     resolutions: Mutex<Vec<PathBuf>>,
     metadata_reads: Mutex<Vec<PathBuf>>,
@@ -90,6 +93,13 @@ impl DirectoryService for Tree {
             if cancel.is_cancelled() || !emit(entry) {
                 break;
             }
+        }
+        if self.entry_errors.contains(path) {
+            return Err(FsError::from_io(
+                "read entry type",
+                &path.join("unreadable entry"),
+                io::ErrorKind::PermissionDenied.into(),
+            ));
         }
         Ok(())
     }
@@ -516,6 +526,114 @@ fn unreadable_subdirectory_and_vanished_file_produce_explicit_partial_result() {
             finished: true,
             ..FolderSize::default()
         }
+    );
+}
+
+/// No error stops a scan: a denied folder, a folder that vanished or stopped being a
+/// folder after it was listed, an entry whose type cannot be read and a file whose
+/// length cannot be read are each counted once as an error, and every sibling before
+/// and after them, with its subtree, is still summed.
+#[test]
+fn every_failure_is_skipped_and_the_rest_of_the_tree_is_still_counted() {
+    let mut tree = Tree::default();
+    tree.directory(
+        "root",
+        vec![
+            item(2, "root/a", EntryKind::Directory),
+            item(3, "root/denied", EntryKind::Directory),
+            item(4, "root/vanished", EntryKind::Directory),
+            item(5, "root/mixed", EntryKind::Directory),
+            item(6, "root/no length", EntryKind::File),
+            item(7, "root/z", EntryKind::Directory),
+            item(8, "root/top", EntryKind::File),
+        ],
+    );
+    tree.directory("root/a", vec![item(9, "root/a/one", EntryKind::File)]);
+    tree.directory(
+        "root/denied",
+        vec![item(10, "root/denied/x", EntryKind::File)],
+    );
+    tree.unreadable.insert("root/denied".into());
+    // Listed by its parent, gone before it is entered.
+    tree.directory(
+        "root/mixed",
+        vec![
+            item(11, "root/mixed/before", EntryKind::File),
+            item(12, "root/mixed/deeper", EntryKind::Directory),
+        ],
+    );
+    tree.entry_errors.insert("root/mixed".into());
+    tree.directory(
+        "root/mixed/deeper",
+        vec![item(13, "root/mixed/deeper/leaf", EntryKind::File)],
+    );
+    tree.directory("root/z", vec![item(14, "root/z/last", EntryKind::File)]);
+    tree.length("root/a/one", 1);
+    tree.length("root/mixed/before", 10);
+    tree.length("root/mixed/deeper/leaf", 100);
+    tree.length("root/z/last", 1000);
+    tree.length("root/top", 10000);
+    let result = finished(&tree, &[item(1, "root", EntryKind::Directory)]);
+    assert_eq!(
+        result,
+        vec![(
+            EntryId(1),
+            FolderSize {
+                bytes: 11111,
+                files: 5,
+                // denied, vanished, the unreadable entry in mixed, no length
+                errors: 4,
+                finished: true,
+                ..FolderSize::default()
+            }
+        )]
+    );
+    assert!(
+        !tree
+            .reads
+            .lock()
+            .unwrap()
+            .contains(&PathBuf::from("root/denied/x"))
+    );
+}
+
+/// A whole root failing (its volume gone) still finishes as an explicit partial
+/// result, and the next selected root is measured.
+#[test]
+fn an_unreadable_root_finishes_as_partial_and_the_next_root_is_still_measured() {
+    let mut tree = Tree::default();
+    tree.directory("gone", vec![]);
+    tree.unreadable.insert("gone".into());
+    tree.directory("kept", vec![item(3, "kept/file", EntryKind::File)]);
+    tree.length("kept/file", 5);
+    let result = finished(
+        &tree,
+        &[
+            item(1, "gone", EntryKind::Directory),
+            item(2, "kept", EntryKind::Directory),
+        ],
+    );
+    assert_eq!(
+        result,
+        vec![
+            (
+                EntryId(1),
+                FolderSize {
+                    errors: 1,
+                    finished: true,
+                    ..FolderSize::default()
+                }
+            ),
+            (
+                EntryId(2),
+                FolderSize {
+                    bytes: 5,
+                    files: 1,
+                    finished: true,
+                    ..FolderSize::default()
+                }
+            ),
+        ]
     );
 }
 

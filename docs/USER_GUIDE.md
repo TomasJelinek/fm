@@ -1585,6 +1585,17 @@ one that a stopped calculation never reached `—`. A finished total is exact on
 when every entry could be read: a total that met errors keeps `≈` beside a warning
 icon that opens the details, and a cancelled or unfinished total keeps `≈` too.
 Skipped links and special files do not make a total partial.
+An error never stops a calculation: an entry or folder that cannot be read (access
+denied, removed or replaced while it is counted, an unreadable link target, a
+sharing violation, a path the system cannot open, a device that stops responding, an
+archive member folder that cannot be listed) is skipped, its siblings and the rest
+of the tree are still counted, and the total finishes as the size of what could be
+read, marked `≈` with the warning icon. The icon's tooltip names the first problem
+and how many there were; a click opens the full list (kept within a fixed memory
+budget). No dialog opens per error. Only cancelling, leaving the folder or closing
+the application stops a calculation; a folder whose whole drive disappears finishes
+as a partial total. The status-line total of selected folders shows such totals as
+`≈ … (N partial)`, and Properties of a folder says how many items could not be read.
 A file row has a tooltip only when its name is shortened (the whole name); a native
 folder link's row shows its target, read when the pointer rests on it. Size-only
 UI updates are combined for both panes and shown

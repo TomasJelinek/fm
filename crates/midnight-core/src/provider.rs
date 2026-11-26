@@ -216,7 +216,9 @@ pub trait DirectoryService: Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns a contextual error when the directory or an entry cannot be read.
-    /// Entries that disappear during enumeration may be skipped.
+    /// Entries that disappear during enumeration may be skipped. An implementation
+    /// may still emit the readable siblings of an unreadable entry and return the
+    /// error after the listing ends; callers keep what was emitted.
     fn read_directory(
         &self,
         path: &Path,
