@@ -59,6 +59,8 @@ mod queue;
 mod replacement;
 #[path = "copy_scheduler_tests.rs"]
 mod scheduler;
+#[path = "copy_small_files_measure_tests.rs"]
+mod small_files_measure;
 #[path = "copy_stage_retry_tests.rs"]
 mod stage_retry;
 #[path = "copy_streamed_tests.rs"]
