@@ -20,19 +20,25 @@ impl DeniedNavigations {
             denied: None,
         };
     }
+    /// Whether `navigation` is the pane's current one. Only then, and only when
+    /// `retain` (an authorized retry can ask for permission), it keeps the denied
+    /// destination for one retry.
     pub(super) fn record(
         &self,
         pane: PaneId,
         navigation: NavigationId,
         path: &std::path::Path,
         sort: SortSpec,
+        retain: bool,
     ) -> bool {
         let mut states = self.0.lock().unwrap_or_else(|error| error.into_inner());
         let state = &mut states[pane.index()];
         if state.current != Some(navigation) {
             return false;
         }
-        state.denied = Some((navigation, path.to_owned(), sort));
+        if retain {
+            state.denied = Some((navigation, path.to_owned(), sort));
+        }
         true
     }
     pub(super) fn consume(
@@ -68,7 +74,8 @@ mod tests {
             pane,
             NavigationId(3),
             std::path::Path::new("denied"),
-            SortSpec::default()
+            SortSpec::default(),
+            true
         ));
         assert!(
             denied
@@ -95,7 +102,21 @@ mod tests {
             pane,
             NavigationId(3),
             std::path::Path::new("stale"),
-            SortSpec::default()
+            SortSpec::default(),
+            true
         ));
+        // A destination whose retry cannot ask for permission is current but not kept.
+        assert!(denied.record(
+            pane,
+            NavigationId(6),
+            std::path::Path::new("unavailable"),
+            SortSpec::default(),
+            false
+        ));
+        assert!(
+            denied
+                .consume(pane, NavigationId(6), NavigationId(7))
+                .is_none()
+        );
     }
 }

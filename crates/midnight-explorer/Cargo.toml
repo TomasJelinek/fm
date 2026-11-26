@@ -41,5 +41,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 midnight-thumbnail-api = { path = "../../thumbnail-api/midnight-thumbnail-api" }
 midnight-filesystem-host = { path = "../midnight-filesystem-host" }
 
+[build-dependencies]
+# The shipped authorization helper's digest (build.rs).
+sha2 = "=0.10.9"
+
 [target.'cfg(windows)'.build-dependencies]
 find-msvc-tools = "0.1.15"

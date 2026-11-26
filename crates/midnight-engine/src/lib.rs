@@ -862,7 +862,7 @@ impl EngineServices {
                         None => None,
                     };
                     let mut elevated = None;
-                    let offer_elevation = self.elevation.is_some() && matches!(&command, Some(Command::Navigate { .. }));
+                    let offer_elevation = self.elevation.clone().filter(|_| matches!(&command, Some(Command::Navigate { .. })));
                     let command = match command {
                         Some(Command::RetryDirectoryWithElevation { pane, denied_navigation, navigation }) => {
                             let Some(service) = self.elevation.clone() else { continue; };
@@ -1528,7 +1528,8 @@ async fn retire_commands(commands: retirement::WorkerOwned<engine_commands::Comm
 
 struct ListingTask {
     elevated: Option<Arc<dyn midnight_core::ElevatedDirectoryService>>,
-    offer_elevation: bool,
+    /// The authorization service, when this navigation may offer an authorized retry.
+    offer_elevation: Option<Arc<dyn midnight_core::ElevatedDirectoryService>>,
     denied_navigations: elevation::DeniedNavigations,
     navigation_fallback: Option<Arc<dyn midnight_core::NavigationFallbackService>>,
     selection_stream: streaming_selection::StreamingSelections,
@@ -1662,10 +1663,20 @@ fn list_directory(task: ListingTask) {
     }
     if let Err(error) = result {
         listing_failed(&snapshots, pane, navigation);
-        if offer_elevation
-            && error.kind == std::io::ErrorKind::PermissionDenied
-            && path.is_absolute()
-            && denied_navigations.record(pane, navigation, &path, sort)
+        // Checked before the failure is reported, so that the notice states at once whether
+        // the retry can ask for permission. The service caches the answer.
+        let availability = offer_elevation
+            .as_ref()
+            .filter(|_| error.kind == std::io::ErrorKind::PermissionDenied && path.is_absolute())
+            .map(|service| service.availability());
+        if let Some(availability) = availability
+            && denied_navigations.record(
+                pane,
+                navigation,
+                &path,
+                sort,
+                availability == midnight_core::ElevationAvailability::Available,
+            )
         {
             if outbox.blocking_send(
                 Event::ListingFailed {
@@ -1680,6 +1691,7 @@ fn list_directory(task: ListingTask) {
                         pane,
                         navigation,
                         path,
+                        availability,
                     },
                     &cancel,
                 );

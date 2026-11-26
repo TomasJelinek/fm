@@ -1,6 +1,6 @@
 //! UAC launches a dedicated helper; a local named pipe is bound to both process identities.
 use crate::{
-    cancelled,
+    HelperDigest, cancelled,
     protocol::{self, Reply, Request},
 };
 use midnight_core::Cancellation;
@@ -57,7 +57,7 @@ mod children;
 #[path = "windows_trust.rs"]
 mod trust;
 use channel::{Channel, Monitor};
-pub(crate) use trust::HELPER_REQUIREMENT;
+pub(crate) use trust::requirement;
 
 const TIMEOUT: Duration = Duration::from_secs(300);
 /// Wait between attempts while another client holds the single pipe instance.
@@ -93,9 +93,14 @@ pub(crate) fn metadata(value: &fs::Metadata) -> (Option<u32>, Option<u32>) {
 pub(crate) fn is_directory_link(_: &DirEntry, file_type: &FileType) -> bool {
     file_type.is_symlink_dir()
 }
-/// Refuse a helper that a non-administrative account could change before it runs elevated.
-pub(crate) fn protected_helper(helper: &Path) -> io::Result<()> {
-    trust::pin_helper(helper).map(drop)
+/// Refuse a helper that another account could change before it runs elevated, or (with the
+/// shipped digest) whose content differs from the shipped helper.
+pub(crate) fn protected_helper(helper: &Path, shipped: Option<&HelperDigest>) -> io::Result<()> {
+    trust::pin_helper(helper, shipped).map(drop)
+}
+/// UAC itself needs no installed program.
+pub(crate) fn system_authorization() -> io::Result<()> {
+    Ok(())
 }
 fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
     let mut result: Vec<_> = value.encode_wide().collect();
@@ -245,14 +250,20 @@ fn launch_elevated(
         .map_err(|_| io::Error::other("Authorization launch failed"))?
 }
 
-pub(crate) fn list(helper: &Path, request: &Request, cancel: &Cancellation) -> io::Result<Reply> {
+pub(crate) fn list(
+    helper: &Path,
+    request: &Request,
+    cancel: &Cancellation,
+    shipped: Option<&HelperDigest>,
+) -> io::Result<Reply> {
     if cancel.is_cancelled() {
         return Err(cancelled());
     }
     let mut child = children::Reservation::acquire()?;
     // The pins prevent replacement of every validated component until this call returns,
-    // which is after the elevated process has opened its image.
-    let pins = trust::pin_helper(helper)?;
+    // which is after the elevated process has opened its image. The helper's digest is
+    // computed through its pin, so the launched image is the verified content.
+    let pins = trust::pin_helper(helper, shipped)?;
     let pinned = pins
         .first()
         .ok_or_else(|| protocol::invalid("Missing authorization helper"))?;

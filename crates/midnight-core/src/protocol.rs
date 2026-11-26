@@ -836,11 +836,15 @@ pub enum Event {
         entries: Arc<[Entry]>,
         index: Arc<DirectoryIndex>,
     },
-    /// Backend retained one denied native navigation for an explicit authorization retry.
+    /// A native navigation was denied and the backend configured authorized retries. With
+    /// [`ElevationAvailability::Available`] it retained the denied navigation for one
+    /// explicit authorization retry; otherwise the retry cannot ask for permission, and
+    /// the availability says why. Follows the navigation's [`Event::ListingFailed`].
     DirectoryElevationAvailable {
         pane: PaneId,
         navigation: NavigationId,
         path: PathBuf,
+        availability: crate::ElevationAvailability,
     },
     ListingFailed {
         pane: PaneId,

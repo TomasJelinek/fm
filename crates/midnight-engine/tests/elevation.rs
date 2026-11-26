@@ -1,7 +1,7 @@
 use midnight_core::{
-    Cancellation, Command, DirectoryService, ElevatedDirectoryService, Entry, EntryId, EntryKind,
-    EntryMetadata, Event, FsError, NavigationFallbackService, NavigationId, PaneId, SortSpec,
-    SpaceInfo, StorageService, Volume, VolumeService,
+    Cancellation, Command, DirectoryService, ElevatedDirectoryService, ElevationAvailability,
+    Entry, EntryId, EntryKind, EntryMetadata, Event, FsError, NavigationFallbackService,
+    NavigationId, PaneId, SortSpec, SpaceInfo, StorageService, Volume, VolumeService,
 };
 use midnight_engine::Engine;
 use std::{
@@ -264,8 +264,10 @@ async fn assert_failed_authorization_retry(kind: io::ErrorKind) {
             pane,
             navigation,
             path: offered_path,
+            availability,
         } = next(&mut events).await
         {
+            assert_eq!(availability, ElevationAvailability::Available);
             assert_eq!(pane, PaneId::Left);
             assert_eq!(navigation, NavigationId(1));
             assert_eq!(offered_path, path);
@@ -382,4 +384,116 @@ async fn interrupted_authorization_retry_reports_failure_without_fallback() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transport_failed_authorization_retry_reports_failure_without_fallback() {
     assert_failed_authorization_retry(io::ErrorKind::Other).await;
+}
+
+/// An installation whose retry cannot ask for permission: the availability is checked once
+/// per denial, never reads or prompts, and yields no retry receipt.
+struct Unavailable {
+    checks: Mutex<usize>,
+    reads: Mutex<usize>,
+}
+impl ElevatedDirectoryService for Unavailable {
+    fn read_directory(
+        &self,
+        _: &Path,
+        _: &Cancellation,
+        _: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<(), FsError> {
+        *self.reads.lock().unwrap() += 1;
+        panic!("an unavailable authorization must never be started")
+    }
+    fn availability(&self) -> ElevationAvailability {
+        *self.checks.lock().unwrap() += 1;
+        ElevationAvailability::Unavailable {
+            reason: "No prompt can be shown.".into(),
+            details: "helper.exe is missing.".into(),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unavailable_authorization_explains_the_denial_without_a_retry_receipt() {
+    let path = std::env::current_dir().unwrap().join("denied-unavailable");
+    let (sender, mut events) = mpsc::channel(32);
+    let service = Arc::new(Unavailable {
+        checks: Mutex::new(0),
+        reads: Mutex::new(0),
+    });
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        Arc::new(Denied::default()),
+        sender,
+    );
+    let (commands, receiver) = engine.command_channel(16).unwrap();
+    engine
+        .configure_elevated_directories()
+        .unwrap()
+        .install(service.clone());
+    let task = tokio::spawn(engine.run(receiver));
+    commands
+        .send(Command::Navigate {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            path: path.clone(),
+            sort: SortSpec::default(),
+        })
+        .await
+        .unwrap();
+    let mut failed = false;
+    loop {
+        match next(&mut events).await {
+            Event::ListingFailed {
+                navigation: NavigationId(1),
+                ..
+            } => failed = true,
+            Event::DirectoryElevationAvailable {
+                pane,
+                navigation,
+                path: offered,
+                availability,
+            } => {
+                assert!(failed, "the availability follows the reported failure");
+                assert_eq!((pane, navigation), (PaneId::Left, NavigationId(1)));
+                assert_eq!(offered, path);
+                assert_eq!(
+                    availability,
+                    ElevationAvailability::Unavailable {
+                        reason: "No prompt can be shown.".into(),
+                        details: "helper.exe is missing.".into(),
+                    }
+                );
+                break;
+            }
+            Event::ListingFallback { .. } => panic!("a denial explained here is not redirected"),
+            _ => {}
+        }
+    }
+    // No receipt was kept: an explicit retry starts nothing.
+    commands
+        .send(Command::RetryDirectoryWithElevation {
+            pane: PaneId::Left,
+            denied_navigation: NavigationId(1),
+            navigation: NavigationId(2),
+        })
+        .await
+        .unwrap();
+    commands.send(Command::Shutdown).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(
+                event,
+                Event::ListingStarted {
+                    navigation: NavigationId(2),
+                    ..
+                }
+            ),
+            "an unavailable authorization has no retry"
+        );
+    }
+    assert_eq!(*service.checks.lock().unwrap(), 1);
+    assert_eq!(*service.reads.lock().unwrap(), 0);
 }

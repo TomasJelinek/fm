@@ -20,8 +20,8 @@ file in the folder belongs to another account or a link leads out of the folder.
 Retry with authorization (UAC) for a folder you cannot open runs the included
 midnight-elevated-listing.exe as Administrator. It is used only when an administrator
 installs the complete folder where standard users cannot change it, for example
-below C:\Program Files. From a folder in your user profile the retry is still
-offered but refused, and the message states this requirement. Earlier packages'
+below C:\Program Files. From a folder in your user profile the message for a
+denied folder offers no retry and states this requirement. Earlier packages'
 application (then named me.exe) used the included helper from such a
 folder, where any program running as you could replace it: replace an earlier
 extracted package with this one, or at least delete its

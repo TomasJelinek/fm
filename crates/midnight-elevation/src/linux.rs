@@ -1,5 +1,9 @@
 //! Polkit launches one read-only helper over an authenticated, private Unix socket.
-use crate::protocol::{self, Reply, Request};
+use crate::{
+    Cause, HelperDigest,
+    protocol::{self, Reply, Request},
+    refusal,
+};
 use midnight_core::Cancellation;
 use std::{
     ffi::{CString, OsStr, OsString},
@@ -9,7 +13,7 @@ use std::{
         fd::{AsRawFd, RawFd},
         unix::{
             ffi::{OsStrExt, OsStringExt},
-            fs::{DirBuilderExt, MetadataExt},
+            fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
             net::{UnixListener, UnixStream},
         },
     },
@@ -51,43 +55,85 @@ pub(crate) fn is_directory_link(entry: &DirEntry, _: &FileType) -> bool {
 }
 /// pkexec runs the helper as root. Only root may be able to change the helper or any ancestor,
 /// and ownership on a nosuid mount (removable or user-mounted storage) vouches for nothing.
-pub(crate) fn protected_helper(helper: &Path) -> io::Result<()> {
+/// With the `shipped` helper's digest the current user may own them too, and the helper's
+/// content must have that digest. pkexec starts the helper by its path, so code running as
+/// the user could still exchange it after this check; such code could equally run pkexec
+/// itself, and no other account can.
+pub(crate) fn protected_helper(helper: &Path, shipped: Option<&HelperDigest>) -> io::Result<()> {
+    let requirement = requirement(shipped.is_some());
+    // SAFETY: a process identity query without pointer arguments or side effects.
+    let user = shipped.map(|_| unsafe { libc::getuid() });
     for component in helper.ancestors() {
         let value = fs::symlink_metadata(component)?;
         let reason = if value.file_type().is_symlink() {
             "is a symbolic link"
-        } else if value.uid() != 0 {
-            "is not owned by root"
+        } else if value.uid() != 0 && Some(value.uid()) != user {
+            if user.is_some() {
+                "is not owned by you or root"
+            } else {
+                "is not owned by root"
+            }
         } else if value.mode() & 0o022 != 0 {
             "is writable by its group or by other users"
         } else {
             continue;
         };
-        return Err(unprotected(component, reason));
+        return Err(unprotected(requirement, component, reason));
     }
     let value = fs::symlink_metadata(helper)?;
     if !value.is_file() || value.mode() & 0o111 == 0 {
-        return Err(unprotected(helper, "is not an executable regular file"));
+        return Err(unprotected(
+            requirement,
+            helper,
+            "is not an executable regular file",
+        ));
     }
     if mounted_nosuid(helper)? {
         return Err(unprotected(
+            requirement,
             helper,
             "is on a filesystem mounted nosuid, such as removable or user-mounted storage",
         ));
     }
+    if let Some(shipped) = shipped {
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(helper)?;
+        crate::verify_shipped(&mut file, helper, shipped, requirement)?;
+    }
     Ok(())
 }
-/// Where the helper must be installed. A refused helper location and a missing helper (which
-/// per-user deployments omit) both explain authorization with this sentence.
-pub(crate) const HELPER_REQUIREMENT: &str = "Retry with authorization needs Midnight Explorer \
-    installed where only root can change it, such as /opt/midnight-explorer installed with \
-    sudo.";
+/// Where a build without the shipped helper's digest needs the helper: a refused helper
+/// location and a missing helper both explain authorization with this sentence.
+const ROOT_REQUIREMENT: &str = "Retry with authorization needs Midnight Explorer installed \
+    where only root can change it, such as /opt/midnight-explorer installed with sudo.";
+/// Where a build that records the shipped helper's digest needs it.
+const SHIPPED_REQUIREMENT: &str = "Retry with authorization needs the authorization helper \
+    shipped with this version of Midnight Explorer, in a folder that only you and root can \
+    change.";
 
-fn unprotected(path: &Path, reason: &str) -> io::Error {
-    io::Error::new(
+/// The sentence that explains a refused or missing helper; `shipped`: the build records the
+/// shipped helper's digest.
+pub(crate) fn requirement(shipped: bool) -> &'static str {
+    if shipped {
+        SHIPPED_REQUIREMENT
+    } else {
+        ROOT_REQUIREMENT
+    }
+}
+
+fn unprotected(requirement: &str, path: &Path, reason: &str) -> io::Error {
+    refusal(
         io::ErrorKind::PermissionDenied,
-        format!("{HELPER_REQUIREMENT} {} {reason}.", path.display()),
+        Cause::Location,
+        format!("{requirement} {} {reason}.", path.display()),
     )
+}
+/// The system's authorization program, checked as an authorized listing checks it.
+pub(crate) fn system_authorization() -> io::Result<()> {
+    trusted_pkexec()
+        .map_err(|error| refusal(error.kind(), Cause::System, format!("{PKEXEC}: {error}")))
 }
 fn mounted_nosuid(path: &Path) -> io::Result<bool> {
     let path = CString::new(path.as_os_str().as_bytes())
@@ -444,7 +490,12 @@ fn handshake(channel: &mut Channel, nonce: &[u8; 32], parent: bool) -> io::Resul
     Ok(())
 }
 
-pub(crate) fn list(helper: &Path, request: &Request, cancel: &Cancellation) -> io::Result<Reply> {
+pub(crate) fn list(
+    helper: &Path,
+    request: &Request,
+    cancel: &Cancellation,
+    _: Option<&HelperDigest>,
+) -> io::Result<Reply> {
     check(cancel, Instant::now() + TIMEOUT)?;
     trusted_pkexec()?;
     let mut nonce = [0; 32];

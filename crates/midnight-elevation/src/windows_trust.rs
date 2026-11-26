@@ -1,8 +1,13 @@
-//! The helper runs as an administrator, so only administrative identities may change it.
+//! The helper runs as an administrator, so no other account may be able to change it.
 //!
-//! The ordinary plugin policy also trusts the current user. That is right for code that runs
-//! as the user, but an elevated helper that the unelevated user can replace (or a DLL the user
-//! can plant beside it) would turn one consent prompt into arbitrary administrator code.
+//! Without the shipped helper's digest only administrative identities may change the helper
+//! and its folders. With the digest the current user may too: the helper must then be the
+//! exact shipped content, read through the pin that keeps it until the elevated process has
+//! opened its image. Code already running as the user could replace the application and the
+//! helper together, but it could equally show its own consent prompt; another account that
+//! could replace the helper (or plant a DLL beside it) would gain the user's administrator
+//! consent, so every other non-administrative identity stays refused.
+use crate::{Cause, HelperDigest, refusal};
 use std::{
     fs::{File, OpenOptions},
     io,
@@ -11,12 +16,13 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{GENERIC_ALL, GENERIC_WRITE, LocalFree},
+    Foundation::{CloseHandle, GENERIC_ALL, GENERIC_WRITE, HANDLE, LocalFree},
     Security::{
         ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
         Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, INHERIT_ONLY_ACE, IsValidSid, IsWellKnownSid,
-        OWNER_SECURITY_INFORMATION, PSID, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetTokenInformation, INHERIT_ONLY_ACE,
+        IsValidSid, IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSID, TOKEN_QUERY, TOKEN_USER,
+        TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
     },
     Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
@@ -27,6 +33,7 @@ use windows_sys::Win32::{
         GetFileInformationByHandle, GetFileInformationByHandleEx, READ_CONTROL, WRITE_DAC,
         WRITE_OWNER,
     },
+    System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
 // Declared in SystemServices/WindowsProgramming, which this crate does not enable.
@@ -68,27 +75,46 @@ static TRUSTED_INSTALLER: [u32; 8] = [
     2_271_478_464,
 ];
 
-/// Where the helper must be installed. A refused helper location and a missing helper (which
-/// per-user deployments omit) both explain authorization with this sentence.
-pub(crate) const HELPER_REQUIREMENT: &str = "Retry with authorization needs Midnight Explorer \
+/// Where a build without the shipped helper's digest needs the helper: a refused helper
+/// location and a missing helper both explain authorization with this sentence.
+const ADMINISTRATOR_REQUIREMENT: &str = "Retry with authorization needs Midnight Explorer \
     installed where only administrators can change it, such as a folder under \
     C:\\Program Files.";
+/// Where a build that records the shipped helper's digest needs it.
+const SHIPPED_REQUIREMENT: &str = "Retry with authorization needs the authorization helper \
+    shipped with this version of Midnight Explorer, in a folder that only you and \
+    administrators can change.";
+
+/// The sentence that explains a refused or missing helper; `shipped`: the build records the
+/// shipped helper's digest.
+pub(crate) fn requirement(shipped: bool) -> &'static str {
+    if shipped {
+        SHIPPED_REQUIREMENT
+    } else {
+        ADMINISTRATOR_REQUIREMENT
+    }
+}
 
 /// Explain how to make authorization available; elevated listing is refused otherwise.
-pub(super) fn unprotected(path: &Path, reason: &str) -> io::Error {
-    io::Error::new(
+pub(super) fn unprotected(requirement: &str, path: &Path, reason: &str) -> io::Error {
+    refusal(
         io::ErrorKind::PermissionDenied,
-        format!("{HELPER_REQUIREMENT} {} {reason}.", path.display()),
+        Cause::Location,
+        format!("{requirement} {} {reason}.", path.display()),
     )
 }
 
 /// Pin the helper and every ancestor against rename and deletion, then validate the pinned
 /// objects: ordinary objects (no link or other reparse point except [`STORAGE_TAGS`]) on a
 /// local fixed drive, owned by SYSTEM, Administrators or TrustedInstaller, with no write,
-/// rename or permission rights for any other identity. The handles must stay open until the
-/// elevated process has started.
-pub(super) fn pin_helper(helper: &Path) -> io::Result<Vec<File>> {
-    local_fixed_drive(helper)?;
+/// rename or permission rights for any other identity. With the `shipped` helper's digest the
+/// current user is trusted too, and the pinned helper's content must have that digest. The
+/// handles must stay open until the elevated process has started.
+pub(super) fn pin_helper(helper: &Path, shipped: Option<&HelperDigest>) -> io::Result<Vec<File>> {
+    let requirement = requirement(shipped.is_some());
+    local_fixed_drive(helper, requirement)?;
+    let user = shipped.map(|_| CurrentUser::query()).transpose()?;
+    let user_sid = user.as_ref().map(CurrentUser::sid);
     let mut pins = Vec::new();
     for (index, path) in helper.ancestors().enumerate() {
         let file = if index == 0 {
@@ -96,17 +122,71 @@ pub(super) fn pin_helper(helper: &Path) -> io::Result<Vec<File>> {
         } else {
             pin_folder(path)?
         };
+        let refused = |reason| unprotected(requirement, path, reason);
         let (attributes, tag) = attribute_tag(&file)?;
-        object_policy(attributes, tag, index != 0).map_err(|reason| unprotected(path, reason))?;
+        object_policy(attributes, tag, index != 0).map_err(refused)?;
         let rights = if index <= 1 {
             MODIFY_RIGHTS
         } else {
             REPLACE_RIGHTS
         };
-        check_security(&file, rights).map_err(|reason| unprotected(path, reason))?;
+        check_security(&file, rights, user_sid).map_err(refused)?;
+        if index == 0
+            && let Some(shipped) = shipped
+        {
+            // Read through the pin, which shares only reading: the content cannot change
+            // before the elevated process has opened its image.
+            crate::verify_shipped(&mut &file, path, shipped, requirement)?;
+        }
         pins.push(file);
     }
     Ok(pins)
+}
+
+/// The user of this process's token, whom a build with the shipped helper's digest trusts.
+pub(super) struct CurrentUser(Vec<u64>);
+impl CurrentUser {
+    pub(super) fn query() -> io::Result<Self> {
+        let mut token: HANDLE = ptr::null_mut();
+        // SAFETY: the pseudo handle of this process and a writable output handle.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        struct Token(HANDLE);
+        impl Drop for Token {
+            fn drop(&mut self) {
+                // SAFETY: OpenProcessToken returned this handle, which is closed once.
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+        let token = Token(token);
+        let mut size = 0;
+        // SAFETY: a size query without an output buffer; it fails with the needed size.
+        unsafe { GetTokenInformation(token.0, TokenUser, ptr::null_mut(), 0, &mut size) };
+        if (size as usize) < size_of::<TOKEN_USER>() {
+            return Err(io::Error::last_os_error());
+        }
+        let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+        // SAFETY: an aligned, writable buffer of at least `size` bytes.
+        if unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &mut size,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(buffer))
+    }
+    pub(super) fn sid(&self) -> PSID {
+        // SAFETY: the buffer holds the TOKEN_USER that GetTokenInformation wrote; its SID
+        // points into the same buffer, which lives as long as `self`.
+        unsafe { (*self.0.as_ptr().cast::<TOKEN_USER>()).User.Sid }
+    }
 }
 
 /// Open the helper itself (never a link target) with read sharing only: no process can write,
@@ -165,19 +245,20 @@ fn object_policy(attributes: u32, tag: u32, folder: bool) -> Result<(), &'static
     Ok(())
 }
 
-fn local_fixed_drive(helper: &Path) -> io::Result<()> {
+fn local_fixed_drive(helper: &Path, requirement: &str) -> io::Result<()> {
+    let refused = |reason| Err(unprotected(requirement, helper, reason));
     let letter = match helper.components().next() {
         Some(Component::Prefix(prefix)) => match prefix.kind() {
             Prefix::VerbatimDisk(letter) | Prefix::Disk(letter) => letter,
-            _ => return Err(unprotected(helper, "is not on a local drive")),
+            _ => return refused("is not on a local drive"),
         },
-        _ => return Err(unprotected(helper, "is not an absolute drive path")),
+        _ => return refused("is not an absolute drive path"),
     };
     let root = [u16::from(letter), u16::from(b':'), u16::from(b'\\'), 0];
     // SAFETY: a terminated drive-root string; the query has no other side effects.
     if unsafe { GetDriveTypeW(root.as_ptr()) } != DRIVE_FIXED {
         // Ownership on network or removable media is not an administrator's statement.
-        return Err(unprotected(helper, "is not on a local fixed drive"));
+        return refused("is not on a local fixed drive");
     }
     Ok(())
 }
@@ -192,7 +273,7 @@ impl Drop for Descriptor {
     }
 }
 
-fn check_security(file: &File, rights: u32) -> Result<(), &'static str> {
+fn check_security(file: &File, rights: u32, user: Option<PSID>) -> Result<(), &'static str> {
     let mut owner = ptr::null_mut();
     let mut dacl = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
@@ -214,13 +295,28 @@ fn check_security(file: &File, rights: u32) -> Result<(), &'static str> {
         return Err("has unreadable permissions");
     }
     let _descriptor = Descriptor(descriptor);
-    policy(owner, dacl, rights)
+    policy(owner, dacl, rights, user)
 }
 
-/// The elevation policy over one object's owner and DACL.
-fn policy(owner: PSID, dacl: *const ACL, rights: u32) -> Result<(), &'static str> {
-    if !administrative(owner) {
-        return Err("is not owned by SYSTEM, Administrators or TrustedInstaller");
+/// The elevation policy over one object's owner and DACL. `user`: the current user, whom a
+/// build with the shipped helper's digest trusts like an administrator.
+fn policy(
+    owner: PSID,
+    dacl: *const ACL,
+    rights: u32,
+    user: Option<PSID>,
+) -> Result<(), &'static str> {
+    let trusted = |sid: PSID| {
+        administrative(sid)
+            // SAFETY: a valid SID from a live descriptor and the current user's from the token.
+            || user.is_some_and(|user| !sid.is_null() && unsafe { EqualSid(sid, user) } != 0)
+    };
+    if !trusted(owner) {
+        return Err(if user.is_some() {
+            "is not owned by you, SYSTEM, Administrators or TrustedInstaller"
+        } else {
+            "is not owned by SYSTEM, Administrators or TrustedInstaller"
+        });
     }
     if dacl.is_null() {
         return Err("has no access control list");
@@ -245,8 +341,12 @@ fn policy(owner: PSID, dacl: *const ACL, rights: u32) -> Result<(), &'static str
                 // SAFETY: the size check above covers the fixed ACE and its SID start.
                 let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
                 let sid = ptr::addr_of!(ace.SidStart).cast_mut().cast();
-                if ace.Mask & rights != 0 && !administrative(sid) {
-                    return Err("lets a non-administrative account change, rename or replace it");
+                if ace.Mask & rights != 0 && !trusted(sid) {
+                    return Err(if user.is_some() {
+                        "lets another non-administrative account change, rename or replace it"
+                    } else {
+                        "lets a non-administrative account change, rename or replace it"
+                    });
                 }
             }
             _ => return Err("has an unsupported conditional or object access entry"),

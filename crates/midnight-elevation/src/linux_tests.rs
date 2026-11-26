@@ -75,11 +75,23 @@ fn helper_outside_a_root_owned_installation_is_refused_with_guidance() {
     let helper = directory.path().join("midnight-elevated-listing");
     fs::write(&helper, b"#!/bin/sh\n").unwrap();
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-    let error = protected_helper(&helper).unwrap_err();
+    let error = protected_helper(&helper, None).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     let message = error.to_string();
     assert!(message.contains("only root can change it"), "{message}");
     assert!(message.contains("/opt/midnight-explorer"), "{message}");
+    // With the shipped digest the user may own the installation, but no folder above it
+    // may be writable by others (the temporary directory's /tmp is).
+    let shipped = [0; 32];
+    let error = protected_helper(&helper, Some(&shipped)).unwrap_err();
+    let message = error.to_string();
+    assert!(message.starts_with(requirement(true)), "{message}");
+    assert!(
+        message.contains("writable by its group or by other users")
+            || message.contains("is not owned by you or root")
+            || message.contains("is not the authorization helper"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -90,7 +102,7 @@ fn root_owned_system_executable_is_a_protected_location() {
         .map(Path::new)
         .find(|path| fs::symlink_metadata(path).is_ok_and(|value| value.is_file()))
         .expect("a regular system executable");
-    protected_helper(candidate).unwrap();
+    protected_helper(candidate, None).unwrap();
 }
 
 #[test]

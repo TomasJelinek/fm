@@ -1,4 +1,5 @@
 use super::*;
+use midnight_core::ElevationAvailability;
 
 #[test]
 fn authorization_requires_backend_offer_and_explicit_action_then_sends_only_receipt_ids() {
@@ -16,6 +17,7 @@ fn authorization_requires_backend_offer_and_explicit_action_then_sends_only_rece
         pane: PaneId::Left,
         navigation,
         path: destination,
+        availability: ElevationAvailability::Available,
     });
     assert!(p.can_retry_directory_elevated(PaneId::Left));
     let sent = RefCell::new(Vec::new());
@@ -41,6 +43,7 @@ fn superseded_authorization_offer_cannot_retarget_current_navigation() {
         pane: PaneId::Left,
         navigation,
         path: old,
+        availability: ElevationAvailability::Available,
     });
     assert!(!p.can_retry_directory_elevated(PaneId::Left));
     p.retry_directory_elevated(PaneId::Left, &|_| panic!("stale offer cannot send"));
@@ -131,6 +134,7 @@ fn offer(p: &mut Presenter, navigation: NavigationId, path: &Path) {
         pane: PaneId::Left,
         navigation,
         path: path.to_owned(),
+        availability: ElevationAvailability::Available,
     });
 }
 
@@ -420,4 +424,89 @@ fn a_busy_authorization_queue_reports_failure_and_closes_both_authorization_entr
     assert!(!p.notice_can_authorize());
     assert!(!p.can_retry_directory_elevated(PaneId::Left));
     assert!(p.panes[0].elevation_retry.is_none());
+}
+
+/// The reason and refusal midnight-elevation reports for an installation whose retry
+/// cannot ask for permission.
+const UNAVAILABLE_REASON: &str = "Opening it needs administrator permission, which this \
+    installation cannot ask for: other accounts on this computer can change its installation \
+    folder.";
+const UNAVAILABLE_DETAILS: &str = "Retry with authorization needs the authorization helper \
+    shipped with this version of Midnight Explorer. D:\\Tools\\Midnight lets a \
+    non-administrative account change, rename or replace it.";
+
+fn unavailable(p: &mut Presenter, navigation: NavigationId, path: &Path) {
+    p.apply(Event::DirectoryElevationAvailable {
+        pane: PaneId::Left,
+        navigation,
+        path: path.to_owned(),
+        availability: ElevationAvailability::Unavailable {
+            reason: UNAVAILABLE_REASON.into(),
+            details: UNAVAILABLE_DETAILS.into(),
+        },
+    });
+}
+
+#[test]
+fn available_authorization_keeps_the_offer_and_the_concise_denial() {
+    let (mut p, navigation, path) = denied_notice();
+    let generation = p.desktop.notice_generation;
+    offer(&mut p, navigation, &path);
+    let (title, body) = p.desktop.notice.clone().unwrap();
+    assert_eq!(title, "Cannot open folder");
+    assert_eq!(body, "Access to this folder was denied.");
+    assert_eq!(p.desktop.notice_generation, generation);
+    assert!(p.notice_can_authorize());
+}
+
+#[test]
+fn unavailable_authorization_states_why_in_the_notice_without_an_offer() {
+    let (mut p, navigation, path) = denied_notice();
+    let generation = p.desktop.notice_generation;
+    unavailable(&mut p, navigation, &path);
+    let (title, body) = p.desktop.notice.clone().unwrap();
+    assert_eq!(title, "Cannot open folder");
+    assert_eq!(
+        body,
+        format!("Access to this folder was denied. {UNAVAILABLE_REASON}")
+    );
+    assert_eq!(
+        p.desktop.notice_generation, generation,
+        "the shown notice is completed in place, not reopened"
+    );
+    assert!(p.desktop.notice_details.ends_with(UNAVAILABLE_DETAILS));
+    let copy = p.desktop.notice_copy.clone().unwrap();
+    assert!(copy.contains(UNAVAILABLE_REASON), "{copy}");
+    assert!(copy.contains(UNAVAILABLE_DETAILS), "{copy}");
+    // No retry is offered from the notice or the pane.
+    assert!(!p.notice_can_authorize());
+    assert!(!p.can_retry_directory_elevated(PaneId::Left));
+    assert!(p.panes[0].elevation_retry.is_none());
+    p.retry_notice_authorized(generation, &|_| panic!("no prompt can be shown"));
+}
+
+#[test]
+fn unavailable_authorization_leaves_other_notices_unchanged() {
+    // A closed or replaced notice, or another destination, is not amended.
+    for case in 0..3 {
+        let (mut p, navigation, path) = denied_notice();
+        let target = match case {
+            0 => {
+                p.dismiss_diagnostic_notice(p.desktop.notice_generation);
+                path.clone()
+            }
+            1 => {
+                p.desktop
+                    .report("Another message", "Different context".into());
+                path.clone()
+            }
+            _ => path.with_file_name("different"),
+        };
+        let before = p.desktop.notice.clone();
+        let details = p.desktop.notice_details.clone();
+        unavailable(&mut p, navigation, &target);
+        assert_eq!(p.desktop.notice, before, "case {case}");
+        assert_eq!(p.desktop.notice_details, details, "case {case}");
+        assert!(!p.notice_can_authorize());
+    }
 }

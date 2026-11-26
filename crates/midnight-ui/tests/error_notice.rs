@@ -52,11 +52,12 @@ slint::slint! {
         in-out property <bool> has-details;
         in-out property <bool> expanded;
         in-out property <bool> can-authorize;
+        in-out property <string> body: "Access to this folder was denied.";
         background: #252630;
         NoticeDialog {
             x: 0px; y: 0px; width: root.width; height: root.height;
             title: "Cannot open folder"; error: true;
-            body: "Access to this folder was denied.";
+            body: root.body;
             folder-path: "C:\\Users\\CodexSandboxOnline";
             details: root.has-details ? "Observed issues: 1\nStored details: 1" : "";
             can-authorize: root.can-authorize;
@@ -441,4 +442,43 @@ fn folder_notice_actions_keep_their_captions_while_they_fit_beside_close() {
             }
         }
     }
+}
+
+/// An available authorization promises the operating system's prompt and offers the retry;
+/// an unavailable one says why in the message and offers neither (the presenter then reports
+/// `can-authorize` false and completes the message with the reason).
+#[test]
+fn folder_notice_promises_a_prompt_only_when_authorization_is_available() {
+    const HINT: &str = "Your operating system will ask for permission to read this folder.";
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(ui::Windows(windows.clone()))).unwrap();
+    let window = NoticeDialogFixture::new().unwrap();
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    let shown = |role, label: &str| {
+        ui::accessible_items(&native, role, label)
+            .into_iter()
+            .any(|item| item.is_visible())
+    };
+    window.set_can_authorize(true);
+    ui::draw(&native, 560, DIALOG_HEIGHT, "authorization-offer-available");
+    assert!(shown(AccessibleRole::Text, HINT));
+    assert!(shown(AccessibleRole::Button, "Retry with authorization"));
+
+    window.set_can_authorize(false);
+    window.set_body(
+        "Access to this folder was denied. Opening it needs administrator permission, which \
+         this installation cannot ask for: its authorization helper \
+         (midnight-elevated-listing.exe) is missing. Reinstall Midnight Explorer to restore it."
+            .into(),
+    );
+    ui::draw(
+        &native,
+        560,
+        DIALOG_HEIGHT,
+        "authorization-offer-unavailable",
+    );
+    assert!(!shown(AccessibleRole::Text, HINT));
+    assert!(!shown(AccessibleRole::Button, "Retry with authorization"));
+    assert!(shown(AccessibleRole::Button, "Close"));
 }

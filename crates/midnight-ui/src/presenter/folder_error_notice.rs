@@ -105,6 +105,48 @@ impl Presenter {
                 .is_some_and(|(id, destination)| id == navigation && destination == path)
     }
 
+    /// The denied navigation's retry cannot ask for permission: its notice says why after
+    /// the denial, instead of offering a retry that would be refused before any prompt.
+    /// The technical refusal joins the details and the copied report.
+    pub(super) fn explain_unavailable_elevation(
+        &mut self,
+        pane: PaneId,
+        navigation: NavigationId,
+        path: &Path,
+        reason: &str,
+        details: &str,
+    ) {
+        let p = &self.panes[pane.index()];
+        let current = self.desktop.notice_navigation.as_ref().is_some_and(
+            |(notice_pane, notice, revision, notice_path)| {
+                *notice_pane == pane
+                    && *notice == navigation
+                    && *revision == p.error_revision
+                    && notice_path == path
+            },
+        );
+        let Some((_, body)) = self.desktop.notice.as_mut().filter(|_| current) else {
+            return;
+        };
+        if !reason.is_empty() {
+            body.push(' ');
+            body.push_str(reason);
+        }
+        if !details.is_empty() {
+            self.desktop.notice_details.push('\n');
+            self.desktop.notice_details.push_str(details);
+        }
+        if let Some(copy) = self.desktop.notice_copy.as_mut() {
+            for text in [reason, details]
+                .into_iter()
+                .filter(|text| !text.is_empty())
+            {
+                copy.push('\n');
+                copy.push_str(text);
+            }
+        }
+    }
+
     pub(crate) fn notice_can_authorize(&self) -> bool {
         self.desktop
             .notice_navigation

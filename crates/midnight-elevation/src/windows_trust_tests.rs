@@ -2,10 +2,12 @@ use super::*;
 use windows_sys::Win32::{
     Security::{
         Authorization::{
-            ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            ConvertStringSidToSidW,
         },
-        GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+        GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, SECURITY_ATTRIBUTES,
     },
+    Storage::FileSystem::CreateDirectoryW,
     System::IO::DeviceIoControl,
 };
 
@@ -18,6 +20,12 @@ fn wide(text: &str) -> Vec<u16> {
 
 /// Evaluate the elevation policy against an in-memory SDDL descriptor.
 fn evaluate(sddl: &str, rights: u32) -> Result<(), &'static str> {
+    evaluate_for(sddl, rights, None)
+}
+
+/// The same, trusting `user` (an SDDL SID string) as a build with the shipped digest does.
+fn evaluate_for(sddl: &str, rights: u32, user: Option<&str>) -> Result<(), &'static str> {
+    let user = user.map(sid);
     let text = wide(sddl);
     let mut raw = ptr::null_mut();
     // SAFETY: a terminated SDDL string and a writable output; LocalAlloc owns the result.
@@ -50,7 +58,18 @@ fn evaluate(sddl: &str, rights: u32) -> Result<(), &'static str> {
             0
         );
     }
-    policy(owner, dacl, rights)
+    policy(owner, dacl, rights, user.as_ref().map(|user| user.0))
+}
+
+fn sid(text: &str) -> Descriptor {
+    let text = wide(text);
+    let mut sid = ptr::null_mut();
+    // SAFETY: a terminated SID string and writable output; LocalAlloc owns the result.
+    assert_ne!(
+        unsafe { ConvertStringSidToSidW(text.as_ptr(), &mut sid) },
+        0
+    );
+    Descriptor(sid)
 }
 
 #[test]
@@ -154,7 +173,7 @@ fn system_folder_executable_is_a_protected_location() {
         .join("cmd.exe")
         .canonicalize()
         .unwrap();
-    let pins = pin_helper(&executable).unwrap();
+    let pins = pin_helper(&executable, None).unwrap();
     assert_eq!(pins.len(), executable.ancestors().count());
     // The plain spelling names the same pinned file, so the Shell receives an ordinary path.
     let launch = shell_path(&executable, &pins[0]);
@@ -167,7 +186,7 @@ fn user_owned_installation_is_refused_with_an_actionable_message() {
     let root = tempfile::tempdir().unwrap();
     let helper = root.path().join("midnight-elevated-listing.exe");
     std::fs::write(&helper, b"fixture").unwrap();
-    let error = pin_helper(&helper.canonicalize().unwrap()).unwrap_err();
+    let error = pin_helper(&helper.canonicalize().unwrap(), None).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     let message = error.to_string();
     assert!(
@@ -194,7 +213,7 @@ fn network_and_relative_helper_paths_are_refused_before_any_access() {
         r"\\?\Volume{00000000-0000-0000-0000-000000000000}\helper.exe",
         "midnight-elevated-listing.exe",
     ] {
-        let error = local_fixed_drive(Path::new(path)).unwrap_err();
+        let error = local_fixed_drive(Path::new(path), requirement(true)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{path}");
     }
 }
@@ -395,8 +414,166 @@ fn reparse_tags_are_read_from_the_pinned_handles() {
     let (attributes, tag) = attribute_tag(&pin_file(&helper).unwrap()).unwrap();
     assert!(tag == 0 || tag == IO_REPARSE_TAG_WOF, "{tag:#x}");
     assert_eq!(object_policy(attributes, tag, false), Ok(()));
-    let message = pin_helper(&helper.canonicalize().unwrap())
+    let message = pin_helper(&helper.canonicalize().unwrap(), None)
         .unwrap_err()
         .to_string();
     assert!(message.contains("is not owned by SYSTEM"), "{message}");
+}
+
+#[test]
+fn a_shipped_digest_trusts_the_current_user_but_no_other_account() {
+    let user = "S-1-5-21-1000-2000-3000-1001";
+    let other = "S-1-5-21-1000-2000-3000-1002";
+    let own = format!("O:{user}D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{user})");
+    // A per-user installation: the user owns and may change it, administrators too.
+    assert_eq!(evaluate_for(&own, MODIFY_RIGHTS, Some(user)), Ok(()));
+    let refused = evaluate(&own, MODIFY_RIGHTS).unwrap_err();
+    assert!(refused.contains("is not owned by SYSTEM"), "{refused}");
+    for (sddl, reason) in [
+        // Another user, Users, Authenticated Users or Everyone may change it.
+        (format!("O:{other}D:P(A;;FA;;;{user})"), "owned by you"),
+        (
+            format!("O:{user}D:P(A;;FA;;;{user})(A;;FA;;;{other})"),
+            "another",
+        ),
+        (
+            format!("O:{user}D:P(A;;FA;;;{user})(A;;0x2;;;BU)"),
+            "another",
+        ),
+        (format!("O:{user}D:P(A;ID;0x1301bf;;;AU)"), "another"),
+        (format!("O:{user}D:P(A;;0x40000;;;WD)"), "another"),
+    ] {
+        let refused = evaluate_for(&sddl, MODIFY_RIGHTS, Some(user)).unwrap_err();
+        assert!(refused.contains(reason), "{sddl}: {refused}");
+    }
+}
+
+/// The current user's SID string.
+fn current_user_sid() -> String {
+    let user = CurrentUser::query().unwrap();
+    let mut text = ptr::null_mut();
+    // SAFETY: a valid SID and a writable output; LocalAlloc owns the result.
+    assert_ne!(unsafe { ConvertSidToStringSidW(user.sid(), &mut text) }, 0);
+    let owned = Descriptor(text.cast());
+    // SAFETY: a terminated UTF-16 string that `owned` keeps alive.
+    let length = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
+    let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) }).unwrap();
+    drop(owned);
+    sid
+}
+
+/// Create a test folder whose own access list is `sddl`, inherited by its entries.
+fn folder_with(path: &Path, sddl: &str) {
+    let text = wide(sddl);
+    let mut raw = ptr::null_mut();
+    // SAFETY: a terminated SDDL string and a writable output; LocalAlloc owns the result.
+    assert_ne!(
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                text.as_ptr(),
+                1,
+                &mut raw,
+                ptr::null_mut(),
+            )
+        },
+        0,
+        "{sddl}"
+    );
+    let descriptor = Descriptor(raw);
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: a terminated path and a descriptor that lives through the call.
+    assert_ne!(
+        unsafe { CreateDirectoryW(name.as_ptr(), &attributes) },
+        0,
+        "{}: {}",
+        path.display(),
+        io::Error::last_os_error()
+    );
+}
+
+fn digest(bytes: &[u8]) -> HelperDigest {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).into()
+}
+
+/// A per-user installation in the build directory: a folder that only the current user,
+/// SYSTEM and Administrators can change, and the same folder with write access for
+/// Authenticated Users (both the test's own folders, removed with the temporary directory).
+#[test]
+fn shipped_helper_is_checked_by_content_through_its_pin() {
+    let user = current_user_sid();
+    let own = format!("O:{user}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{user})");
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("own");
+    folder_with(&folder, &own);
+    let helper = folder.join("midnight-elevated-listing.exe");
+    std::fs::write(&helper, b"shipped helper").unwrap();
+    let shipped = digest(b"shipped helper");
+    let current = CurrentUser::query().unwrap();
+    let sid = Some(current.sid());
+    let requirement = requirement(true);
+
+    // The folder and the helper: the user's own, accepted with the digest only.
+    let folder_pin = pin_folder(&folder).unwrap();
+    assert_eq!(check_security(&folder_pin, MODIFY_RIGHTS, sid), Ok(()));
+    assert!(check_security(&folder_pin, MODIFY_RIGHTS, None).is_err());
+    let pin = pin_file(&helper).unwrap();
+    assert_eq!(check_security(&pin, MODIFY_RIGHTS, sid), Ok(()));
+    crate::verify_shipped(&mut &pin, &helper, &shipped, requirement).unwrap();
+    // While pinned, the verified helper can be neither rewritten nor replaced.
+    let refusal = |result: io::Result<()>| result.unwrap_err().raw_os_error();
+    assert_eq!(
+        refusal(OpenOptions::new().write(true).open(&helper).map(drop)),
+        Some(ERROR_SHARING_VIOLATION)
+    );
+    assert_eq!(
+        refusal(std::fs::rename(&helper, folder.join("replaced.exe"))),
+        Some(ERROR_SHARING_VIOLATION)
+    );
+    drop(pin);
+    drop(folder_pin);
+
+    // A modified copy is refused by its content.
+    std::fs::write(&helper, b"modified helper").unwrap();
+    let error = crate::verify_shipped(
+        &mut &pin_file(&helper).unwrap(),
+        &helper,
+        &shipped,
+        requirement,
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.starts_with(requirement), "{message}");
+    assert!(
+        message.contains("is not the authorization helper"),
+        "{message}"
+    );
+    std::fs::write(&helper, b"shipped helper").unwrap();
+
+    // Another account may write: refused although the user owns it.
+    let shared = root.path().join("shared");
+    folder_with(&shared, &format!("{own}(A;OICI;0x1301bf;;;AU)"));
+    let refused = check_security(&pin_folder(&shared).unwrap(), MODIFY_RIGHTS, sid).unwrap_err();
+    assert!(refused.contains("another non-administrative"), "{refused}");
+
+    // A link in the helper's path: refused from its own attributes, after the helper itself
+    // (reached through the junction) passed its owner, access and content checks.
+    let junction = root.path().join("link");
+    super::super::tests::create_junction(&junction, &folder).unwrap();
+    let message = pin_helper(
+        &junction.join("midnight-elevated-listing.exe"),
+        Some(&shipped),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(message.contains("is a link or reparse point"), "{message}");
+    assert!(
+        message.contains(&junction.display().to_string()),
+        "{message}"
+    );
 }

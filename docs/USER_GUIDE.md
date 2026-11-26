@@ -338,18 +338,35 @@ through Windows UAC or Linux polkit (`pkexec` and a desktop authentication agent
 lists the requested folder only, loads no plugins, and does not elevate file
 operations, change permissions or store passwords
 ([authorization boundary](../SECURITY.md#directory-authorization-helper)). Because it runs
-as Administrator or root, the host uses it only from beside an installed `midnight-explorer` that
-standard users cannot change: on Windows a folder on a local fixed drive whose
-permissions only administrators can change, such as one below `C:\Program Files`; on
-Linux a root-owned directory such as `/opt/midnight-explorer` (see
-[Linux desktop launcher](#linux-desktop-launcher)). Build output, the Windows private
-runtime, anything in a user profile and other user-writable locations are refused,
-and so is a folder created directly below a drive root such as `C:\`, even by an
-administrator, because it inherits Modify permission for all authenticated users. In
-those installations the retry is still offered, and the Cannot open folder message
-after it states the requirement. On Windows, install a release build from a PowerShell
-started with **Run as administrator** in the checkout, then start Midnight Explorer
-from that folder:
+as Administrator or root, the host uses it only from beside the running `midnight-explorer`,
+and only where no other account can change it:
+
+- A build that records the digest of the helper it shipped with (built with
+  `MIDNIGHT_ELEVATED_LISTING`, see [Release build](RELEASE_BUILD.md#authorization-helper-digest))
+  accepts exactly that helper, read through a handle that keeps it unchanged until the
+  prompt has started it, in a folder that only you and administrators (on Linux, you and
+  root) can change: a per-user installation such as
+  `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)` or a ZIP extracted into your profile,
+  as well as `C:\Program Files` or `/opt/midnight-explorer`. A missing or altered helper,
+  or a folder that other accounts can change (such as one below a drive root, which
+  inherits Modify permission for all authenticated users), is refused.
+- A build without that digest (ordinary `cargo build` output, `build.bat` and the private
+  runtime) accepts only a folder that only administrators can change: on Windows a folder
+  on a local fixed drive such as one below `C:\Program Files`; on Linux a root-owned
+  directory such as `/opt/midnight-explorer` (see
+  [Linux desktop launcher](#linux-desktop-launcher)).
+
+Before the **Cannot open folder** message offers the retry, the backend runs these
+checks once, without starting anything. When they pass, the message says that your
+operating system will ask for permission and offers **Retry with authorization**. When
+they fail, it offers no retry and says why instead, for example *Opening it needs
+administrator permission, which this installation cannot ask for: its authorization
+helper (midnight-elevated-listing.exe) is missing. Reinstall Midnight Explorer to
+restore it.*; **Details** names the refused file or folder. On Linux it also says so when
+`pkexec` is missing or not root-owned. Whether a desktop polkit agent runs is known only
+when the retry asks. To install a build without the digest for authorized listings on
+Windows, run a PowerShell started with **Run as administrator** in the checkout, then
+start Midnight Explorer from that folder:
 
 ```powershell
 $target = Join-Path $env:ProgramFiles 'Midnight Explorer'
@@ -418,9 +435,9 @@ deployment. `-IncludeFilesystems` deploys the filesystem packages and
 `-IncludeThumbnailers` the image and video workers, with the Media Foundation helpers
 that deployment requires beside the FFmpeg ones; the build deployment uses both and
 rejects incomplete module installations. Private installations omit
-`midnight-elevated-listing.exe`: **Retry with authorization** is still offered for a
-denied folder, but refused with a message that names the requirement (see the
-authorization helper above), and the deployment output names it too. To point the
+`midnight-elevated-listing.exe`: a denied folder's message then says that permission
+cannot be asked for and offers no **Retry with authorization** (see the authorization
+helper above), and the deployment output names the requirement too. To point the
 desktop shortcut at an existing persistent installation without redeploying, run
 `scripts/update-desktop-shortcut.ps1 -InstallationDirectory <installation> -ExpectedExecutableSha256 <sha256>`;
 it refuses `build.bat` deployments because later builds remove them. Neither helper
@@ -717,11 +734,12 @@ cp -R _build/debug/thumbnailers/. "$HOME/.local/bin/thumbnailers/"
 python3 -B scripts/install-linux-desktop.py --executable "$HOME/.local/bin/midnight-explorer"
 ```
 
-In a per-user installation, **Retry with authorization** is still offered but is
-refused with an explanation: the root helper would come from a directory that its
-user can change. For authorized listings, install system-wide into a directory that
-only root can change (root-owned, not group- or world-writable, on a filesystem not
-mounted `nosuid`):
+A build without the helper's digest offers no **Retry with authorization** in a
+per-user installation; the denied folder's message says why: the root helper would
+come from a directory that its user can change. A build with the digest accepts a
+directory that only you and root can change (owned by you or root, not group- or
+world-writable, on a filesystem not mounted `nosuid`) when the helper has the shipped
+content. Otherwise, install system-wide into a directory that only root can change:
 
 ```sh
 sudo install -d -m 755 /opt/midnight-explorer
@@ -2120,8 +2138,9 @@ showed that message for every video
 ([SECURITY.md](../SECURITY.md#the-workers-grant-on-installed-files)).
 
 Moving the folder yourself with Windows Explorer on the same drive keeps its old
-permissions; copy it or use the buttons instead. **Retry with authorization** still
-needs an installation that only administrators can change, such as a folder under
+permissions; copy it or use the buttons instead. **Retry with authorization** needs the
+shipped helper in a folder that no other account can change, and a build without the
+helper's digest needs a folder that only administrators can change, such as one under
 `C:\Program Files` ([directory authorization helper](../SECURITY.md#directory-authorization-helper)).
 
 On Windows, `build.bat` therefore deploys each build to a new private installation

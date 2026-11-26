@@ -59,7 +59,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [serde_json](https://crates.io/crates/serde_json/1.0.154) | 1.0.154 | MIT OR Apache-2.0 | midnight-api-package, midnight-image-viewer-host, midnight-media-host, midnight-platform-common, midnight-thumbnail-host, midnight-ui, midnight-update, midnight-web-viewer-host |
 | [sevenz-rust2](https://crates.io/crates/sevenz-rust2/0.23.0) | 0.23.0 | Apache-2.0 | midnight-fs-archive |
 | [sha1](https://crates.io/crates/sha1/0.10.6) | 0.10.6 | MIT OR Apache-2.0 | midnight-engine |
-| [sha2](https://crates.io/crates/sha2/0.10.9) | 0.10.9 | MIT OR Apache-2.0 | midnight-api-package, midnight-engine, midnight-platform-common, midnight-plugin-host, midnight-update |
+| [sha2](https://crates.io/crates/sha2/0.10.9) | 0.10.9 | MIT OR Apache-2.0 | midnight-api-package, midnight-elevation, midnight-engine, midnight-explorer, midnight-platform-common, midnight-plugin-host, midnight-update |
 | [similar](https://crates.io/crates/similar/2.7.0) | 2.7.0 | Apache-2.0 | midnight-compare-engine |
 | [simplecss](https://crates.io/crates/simplecss/0.2.2) | 0.2.2 | Apache-2.0 OR MIT | midnight-image-decoder |
 | [slint](https://crates.io/crates/slint/1.18.1) | 1.18.1 | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 | midnight-compare-ui, midnight-explorer, midnight-ui, midnight-ui-bindings, midnight-ui-input, midnight-viewer-ui |

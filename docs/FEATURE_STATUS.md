@@ -88,7 +88,12 @@ How to read it:
   their finished totals and re-sorts as totals arrive); native change watches with a 15-second check; free space that
   follows jobs, watched changes of the panels' folders, focus and (on internal disks)
   a 5-second read; startup folders
-  from the command line; size-warning and error notices with details.
+  from the command line; size-warning and error notices with details; **Retry with
+  authorization** for a denied folder (UAC, polkit), offered only when the checks that the
+  retry runs pass, otherwise the message says why (a missing or altered helper, a folder
+  other accounts can change, no trusted `pkexec`). Builds that record the shipped helper's
+  digest also allow it from a per-user installation; release packaging does not record
+  it yet.
 - **Open:** the startup tab restore replaces a panel that already shows the saved
   folder (TABS-01); actions with nothing selected and the cursor on no entry do nothing
   silently (NOTICE-03); watch gaps after failed archive or network navigation

@@ -278,7 +278,7 @@ This table is a guide; the inventories above list every selected crate.
 | Slint 1.18.1 | UI toolkit, compiler and renderers | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0; GPL-3.0-only branch selected |
 | Tokio 1.54.1 | Asynchronous backend work | MIT |
 | serde 1.0.229 / serde_json 1.0.154 / toml 0.9.12 | Settings, manifests and wire data | MIT OR Apache-2.0 |
-| sha2 0.10.9 | SHA-256 copy verification, plugin runtime trust, SDK packages and SHA-256/SHA-512 checksums | MIT OR Apache-2.0 |
+| sha2 0.10.9 | SHA-256 copy verification, plugin runtime trust, SDK packages, SHA-256/SHA-512 checksums and the authorization helper's recorded digest (`midnight-elevation`, `midnight-explorer` build script) | MIT OR Apache-2.0 |
 | md-5 0.10.6 / sha1 0.10.6 | MD5 and SHA-1 compatibility checksums | MIT OR Apache-2.0 |
 | crc32fast 1.5.4 | SFV/CRC32 checksums and private spool read checks | MIT OR Apache-2.0 |
 | notify 8.2.1 | Linux filesystem change events (Windows uses its own `ReadDirectoryChangesW` service) | CC0-1.0 |

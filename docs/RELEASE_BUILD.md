@@ -262,15 +262,40 @@ Silverblue's `/home`, may be links. Package hashes establish integrity, not publ
 authenticity. Native C ABI viewers and filesystem providers run with the application's
 authority; image decoding also runs in the required restricted worker.
 
-**Retry with authorization** uses the shipped `midnight-elevated-listing` only when an
-administrator (Windows, for example below `C:\Program Files`) or root (Linux, for
-example `/opt/midnight-explorer`) installs the extracted folder where standard users
-cannot change it; the bundled README explains this. In a private per-user installation,
-including `build.bat`'s, and in an extracted folder that its user can change, the retry
-is still offered but refused with that requirement. Packages built before this check
-used the shipped helper from such a folder; see
+**Retry with authorization** uses the shipped `midnight-elevated-listing` only from a
+folder that no other account can change. An executable that records the helper's digest
+(below) accepts the shipped helper also in the user's own installation (the per-user
+MSI, a ZIP extracted into the profile); one without it accepts only an installation that
+an administrator (Windows, for example below `C:\Program Files`) or root (Linux, for
+example `/opt/midnight-explorer`) made. Where the helper cannot be used, a denied
+folder's message offers no retry and says why. Packages built before these checks used
+the shipped helper from any folder; see
 [the authorization helper](../SECURITY.md#directory-authorization-helper) for what
 their users must replace or delete.
+
+### Authorization helper digest
+
+`crates/midnight-explorer/build.rs` records the SHA-256 of the file that the
+`MIDNIGHT_ELEVATED_LISTING` environment variable names in the executable
+(`MIDNIGHT_ELEVATED_LISTING_SHA256`); unset, it records none. The helper must be built
+before the executable that records it, so a release build runs the same Cargo command
+twice, the second time with the variable naming the helper that the first built:
+
+```powershell
+cargo build -p midnight-explorer -p midnight-elevation --release --locked
+$env:MIDNIGHT_ELEVATED_LISTING = (Resolve-Path _build\release\midnight-elevated-listing.exe).Path
+cargo build -p midnight-explorer -p midnight-elevation --release --locked
+```
+
+The second run selects the same packages, so the helper and its dependencies keep their
+features and are not rebuilt: only the executable is linked again. The package must then
+ship exactly that helper; a different one is refused at run time as altered (the retry
+is not offered), never trusted. The variable is not a run-time setting, and a digest
+kept in a data file such as `BUILD-INFO.json` would not do: anything beside the
+executable in a per-user installation can be changed by its user. **Status:** the
+packaging scripts and the CI release job do not set the variable yet (a separate build
+tooling change), so their packages currently accept only administrator-managed
+installations.
 
 The public download page carries the official Slint attribution badge, and the
 application keeps its AboutSlint widget. Midnight Explorer is GPL-3.0-or-later, so each
@@ -388,7 +413,9 @@ refuses an existing MSI.
   which the MSI leaves out, so both scopes' copies offer the release page in the update
   dialog; an all-users copy is also one its users cannot change.
 - **Not included:** the Visual C++ runtime (as for the ZIP), code signing (REL-03) and
-  permissions of its own.
+  permissions of its own. **Retry with authorization** works from either scope's copy
+  when its executable records the helper's digest
+  ([Authorization helper digest](#authorization-helper-digest)).
 - **Checks:** `build` writes to a temporary name and keeps the MSI only after the same
   checks as `verify`: the summary information (x64, schema 500, compressed, no
   elevation for the default per-user installation, package code), only the expected

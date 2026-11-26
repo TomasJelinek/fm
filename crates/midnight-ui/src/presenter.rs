@@ -1120,6 +1120,7 @@ impl Presenter {
             pane,
             navigation,
             path,
+            availability,
         } = event
         {
             let p = &mut self.panes[pane.index()];
@@ -1129,7 +1130,16 @@ impl Presenter {
                 && p.pending.is_none()
                 && path.is_absolute()
             {
-                p.elevation_retry = Some((navigation, path));
+                match availability {
+                    midnight_core::ElevationAvailability::Available => {
+                        p.elevation_retry = Some((navigation, path));
+                    }
+                    midnight_core::ElevationAvailability::Unavailable { reason, details } => {
+                        self.explain_unavailable_elevation(
+                            pane, navigation, &path, &reason, &details,
+                        );
+                    }
+                }
             }
             return;
         }

@@ -719,12 +719,33 @@ fit in RAM. Precise latency and memory targets require measured workloads.
 more privileged identity: Administrator through UAC (`ShellExecuteExW` with the
 `runas` verb, on its own COM single-threaded apartment) or root through
 `/usr/bin/pkexec --disable-internal-agent` and the desktop polkit agent. The host
-therefore takes the helper only from beside its installed executable and only from
-a location that the requesting user cannot change; the plugin trust policy, which
-also trusts the current user, does not decide this.
+therefore takes the helper only from beside its installed executable, and only from a
+location that no other account can change; the plugin trust policy does not decide this.
+Which accounts may change it depends on whether the executable records the helper's
+digest:
+
+- **With the digest** (the SHA-256 of `midnight-elevated-listing` that `build.rs` records
+  in `midnight-explorer` when `MIDNIGHT_ELEVATED_LISTING` names the helper of the same
+  build, see [Release build](docs/RELEASE_BUILD.md#authorization-helper-digest)), the
+  helper is trusted by content: the current user, SYSTEM, Administrators and
+  TrustedInstaller (on Linux, the current user and root) may own and change the helper
+  and its folders, and the helper's content must have exactly that digest. Per-user
+  installations (the per-user MSI, a ZIP extracted into the profile) qualify. On Windows
+  the digest is computed through the helper's pin (below), which shares only reading,
+  and the pin stays open until `ShellExecuteExW` has started the elevated process, so
+  the started image is the verified content.
+- **Without the digest** (ordinary build output), only SYSTEM, Administrators or
+  TrustedInstaller (on Linux, root) may own or change them, as below.
+
+Every other identity stays refused in both cases: another user, Users, Authenticated
+Users or Everyone with delete, rename, write, attribute, permission or ownership rights
+on the helper or an ancestor, or with the right to add entries to the helper's own
+folder, which the elevated loader searches first for DLLs, could otherwise turn this
+user's consent into their own administrator code.
 
 - Windows: the helper and every ancestor are ordinary objects on a local fixed drive,
-  owned by SYSTEM, Administrators or TrustedInstaller. They carry no link or other
+  owned by SYSTEM, Administrators or TrustedInstaller (or, with the digest, the current
+  user). They carry no link or other
   reparse point, except the storage-only tags of WOF compression (CompactOS,
   `compact /exe`) and Data Deduplication, whose content stays under the object's own
   permissions; Cloud Files placeholders, whose content comes from a user-mode
@@ -736,22 +757,42 @@ also trusts the current user, does not decide this.
   other processes add entries. The Shell receives the
   plain drive spelling of the path only when it opens the same pinned file.
 - Linux: the helper is an executable regular file; it and every ancestor are owned by
-  root, are not symbolic links and are writable by neither group nor others, and its
-  filesystem is not mounted `nosuid` (removable or user-mounted storage).
+  root (or, with the digest, the current user), are not symbolic links and are writable
+  by neither group nor others, and its filesystem is not mounted `nosuid` (removable or
+  user-mounted storage). With the digest the helper is read (opened without following a
+  link) and compared before pkexec starts it. pkexec starts it by path, so unlike on
+  Windows the content is not pinned between the check and the start: only code running
+  as the user (or root) could exchange it there, see the residual risk below.
 
-Any other location, such as build output, the per-user Windows private runtime or
-`$HOME/.local/bin`, refuses authorization; the retry is still offered there. The
-Cannot open folder message after the retry states the requirement, both when no
-helper is installed beside the executable (per-user deployments omit it) and for a
-helper in a refused location.
+**Availability before the offer.** When a navigation is denied, the backend runs the
+same checks once per process on a worker thread, without starting a process or prompt
+(`ElevatedDirectoryService::availability`; a definite answer is remembered, a transient
+read failure is checked again next time), and on Linux also checks that `/usr/bin/pkexec`
+is a root-owned executable. Only when they pass does the Cannot open folder message say
+that the operating system will ask and offer **Retry with authorization**. Otherwise
+(no helper beside the executable, as in per-user deployments without it, an altered
+helper, a refused location, no trusted pkexec) the message offers no retry and states
+why, with the refused file and reason in its details. Whether a polkit agent runs is
+known only when pkexec is asked. The retry itself runs every check again.
+
+**Residual risk of per-user installations.** With the digest, code already running as
+the user can replace both `midnight-explorer` and the helper (then the recorded digest
+is its own), or plant a DLL beside the helper in a folder the user can change. Such code
+could equally start its own program with a UAC or polkit prompt: the prompt for the
+unsigned helper says "Unknown publisher" (REL-03), as it would for that code's own
+program, so the per-user installation gives it nothing it lacks, and it still needs the
+user's consent. Should the helper be signed later, its signed prompt would lend such a
+replaced copy more credibility, and this trade-off must be revisited. On Linux the same
+code could also exchange the helper between the check and pkexec's start. No other
+account can do any of this.
 
 **Older installations.** Earlier builds took the helper from beside their executable on
 the plugin trust policy alone, and earlier deployment scripts (Windows private
 runtimes), Linux per-user instructions (`$HOME/.local/bin`), release packages extracted
 into a user-owned folder and build output left it in folders that their user can change.
 There any process running as that user can replace the helper that the older executable
-(then named `me`) runs as Administrator or root. Current builds refuse such a copy, so
-deleting it loses nothing: replace each such installation with a current build,
+(then named `me`) runs as Administrator or root. Current builds refuse such a copy (its
+content is not the digest a current build records), so deleting it loses nothing: replace each such installation with a current build,
 deployment or package, or at least delete its `midnight-elevated-listing`. No script
 does this: `build.bat` retires only build deployments that it marked itself, so installations made directly
 with `scripts/deploy-private.ps1` (without `-ReplaceBuildDeployment`), older build

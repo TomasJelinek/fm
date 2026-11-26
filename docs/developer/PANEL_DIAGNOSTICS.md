@@ -230,12 +230,26 @@ The Windows helper uses the UAC prompt; Linux uses the desktop polkit agent thro
 Denial, cancellation and queue failure remain explicit errors and keep the current
 listing; there is no silent retry, ACL change or privileged host launch. The helper grants one read-only directory listing and does not
 grant file content or mutation permissions. It runs only from an installation that
-standard users cannot change (administrator-protected on Windows, root-owned on
-Linux). Elsewhere the button still appears and the retry is refused with an
-explanation of that requirement, which **Cannot open folder** shows. A missing
-helper, as in per-user installations, is refused as not found. A helper
-that is present but unprotected, as in build output or in a release folder extracted
-where standard users can change it, is refused as access denied. The presenter
+no other account can change: with the helper's digest recorded in the executable, the
+shipped helper in a folder that only the user and administrators (root) can change;
+without it, an administrator-protected (Windows) or root-owned (Linux) installation.
+
+Before the offer, the listing worker asks the service's `availability()` (the same
+checks, without starting anything; cached per process) and sends it in
+`Event::DirectoryElevationAvailable { availability, .. }` right after the
+navigation's `ListingFailed`. With `ElevationAvailability::Available` the engine keeps
+the receipt and the presenter offers the button and the hint that the operating system
+will ask. With `Unavailable { reason, details }` the engine keeps no receipt; the
+presenter (`explain_unavailable_elevation`) appends `reason` to the shown message
+("Access to this folder was denied. Opening it needs administrator permission, which
+this installation cannot ask for: …"), `details` (the refused file and why) to its
+details and copied report, and shows neither the hint nor the button. Hiding the button
+rather than disabling it keeps the explanation readable without hovering a disabled
+control, for keyboard and screen-reader users alike, and in Copy details. A missing
+helper, as in per-user deployments without it, is reported as missing; an altered one
+as not the shipped helper; a folder that other accounts can change as such. The
+retry runs every check again and can still be refused (for example when no polkit
+agent runs); the presenter
 (`show_navigation_error`) shows an ordinary access-denied failure as "Access to this
 folder was denied.", but for the navigation that an authorized retry started it
 shows the failure's own reason, so that refusal states the requirement too. When

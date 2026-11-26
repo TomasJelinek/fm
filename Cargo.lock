@@ -2893,6 +2893,7 @@ dependencies = [
  "libc",
  "midnight-core",
  "midnight-plugin-host",
+ "sha2",
  "tempfile",
  "windows-sys 0.61.2",
 ]
@@ -2949,6 +2950,7 @@ dependencies = [
  "midnight-viewer-ui",
  "midnight-work-budget",
  "midnight-worker-platform",
+ "sha2",
  "slint",
  "tokio",
  "tracing",

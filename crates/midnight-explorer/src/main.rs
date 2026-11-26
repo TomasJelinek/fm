@@ -603,7 +603,11 @@ fn run_window(
     engine
         .configure_elevated_directories()
         .map_err(|error| error.to_string())?
-        .install(Arc::new(midnight_elevation::ElevatedDirectories));
+        .install(Arc::new(midnight_elevation::ElevatedDirectories::new(
+            // Recorded by build.rs from the helper that the release ships (RELEASE_BUILD.md).
+            option_env!("MIDNIGHT_ELEVATED_LISTING_SHA256")
+                .and_then(midnight_elevation::parse_helper_digest),
+        )));
     engine
         .configure_navigation_fallback()
         .map_err(|error| error.to_string())?
