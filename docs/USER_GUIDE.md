@@ -12,7 +12,9 @@ Prebuilt Windows/Linux previews are published on the
 preview archives may precede the current source; their bundled feature-status file
 describes that particular build. See [feature status](FEATURE_STATUS.md) for what
 is implemented and the [implementation backlog](IMPLEMENTATION_BACKLOG.md) for
-planned work and known limits.
+planned work and known limits. [Limits](LIMITS.md) lists the application's limits in
+one place: window counts, file sizes for viewers and comparisons, item counts of
+operations and memory limits.
 
 Lossless Unicode throughout the product, security and backend-only non-UI work
 are explicit requirements. See [security and integrity rules](../SECURITY.md).

@@ -88,6 +88,7 @@ application services remain separate from independently developed plugin APIs.
 | [Image and PDF viewer API](IMAGE_VIEWER_API.md) | The restricted image and paginated document viewer API and SDK. |
 | [HTML viewer](WEB_VIEWER_API.md) | The interactive HTML viewer's process protocol, permissions and resources. |
 | **Application internals** | |
+| [Limits](../LIMITS.md) | Every limit, budget and cap of the application, with its source constant. |
 | [Engine lifetime](ENGINE_LIFETIME.md) | Engine ownership, retirement and cleanup capacity. |
 | [Provider registry](PROVIDER_REGISTRY.md) | The internal filesystem provider registry, mounts and content adapters. |
 | [Filesystem migration](FILESYSTEM_MIGRATION.md) | Which consumers reach files through providers and which still use platform services. |

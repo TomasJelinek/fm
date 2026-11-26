@@ -22,6 +22,7 @@ show that a feature exists.
 | [Make File List](MAKE_FILE_LIST.md) | Exporting a selection's details with templates (Ctrl+M). |
 | [Drive information](DRIVE_INFORMATION.md) | The Drive information window (Ctrl+F1 or Ctrl+L). |
 | [Disk operations](DISK_OPERATIONS.md) | The Disk I/O concurrency setting. |
+| [Limits](LIMITS.md) | Every window count, file size, item count and memory limit, in one reference. |
 
 ## Status and planning
 
