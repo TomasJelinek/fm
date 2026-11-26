@@ -246,6 +246,8 @@ export component MainWindow inherits Window {
     in property <bool> copy-can-replace;
     in property <bool> copy-can-merge;
     in property <bool> copy-is-failure;
+    // The copy prompt shows a Trash refusal that offers permanent deletion instead.
+    in property <bool> copy-permanent-fallback;
     in property <bool> copy-can-retry;
     in property <bool> copy-can-skip;
     in property <string> copy-source-details;

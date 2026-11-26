@@ -318,8 +318,10 @@ accepts only one basename. See the [F7 path
 contract](docs/superpowers/specs/2026-11-06-create-any-path.md).
 
 Delete/F8 requests system Trash. If the provider specifically reports that Trash
-is unavailable, the engine retains those unmodified, pinned targets and offers
-the same destructive confirmation as Shift+Delete/Shift+F8. Permanent deletion
+is unavailable, the engine retains those unmodified, pinned targets and asks whether
+to delete them permanently instead, in a question window of its own that opens above
+the job's progress window and names the refusal, lists the items and warns that this
+cannot be undone; Escape and Decide later answer nothing. Permanent deletion
 requires an affirmative answer for the current job and offer version. Items already
 recycled stay in the Trash. Windows uses the dedicated Shell recycle method, which can reject paths beyond
 its own limit even though rename/create/permanent operations support long paths. Linux

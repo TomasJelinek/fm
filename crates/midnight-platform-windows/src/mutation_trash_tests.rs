@@ -272,3 +272,39 @@ fn unavailable_long_path_recycle_preserves_the_fixture_without_permanent_fallbac
         b"must not become permanent deletion"
     );
 }
+
+/// A folder on a volume whose Recycle Bin is set to remove files immediately ("Don't
+/// move files to the Recycle Bin", `NukeOnDelete`): Trash must refuse in words and keep
+/// the file, never delete it permanently on the Shell's behalf.
+#[test]
+#[ignore = "requires Shell access and MIDNIGHT_TEST_NUKE_DIR: a folder the test owns on a volume whose Recycle Bin removes files immediately"]
+fn trash_on_a_volume_that_removes_files_immediately_refuses_and_keeps_the_file() {
+    let Some(root) = std::env::var_os("MIDNIGHT_TEST_NUKE_DIR") else {
+        return;
+    };
+    let temp = tempfile::Builder::new()
+        .prefix("midnight-recycle-nuke-")
+        .tempdir_in(root)
+        .unwrap();
+    let path = temp.path().join("Screenshot 2023-03-31 105053.png");
+    fs::write(&path, b"must not become permanent deletion").unwrap();
+    let prepared = midnight_core::MutationService::prepare(
+        &crate::WindowsFileSystem::new(None),
+        &path,
+        &Cancellation::default(),
+    )
+    .unwrap();
+    let error = prepared
+        .delete(
+            midnight_core::DeleteMode::Trash,
+            &Cancellation::default(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+    eprintln!("refusal: {error:?}");
+    assert!(error.is_trash_unavailable(), "{error:?}");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        b"must not become permanent deletion"
+    );
+}

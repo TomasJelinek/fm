@@ -1203,8 +1203,13 @@ current keys.
   contents may not be on this computer is not replaced, and the notice says so. The
   new file is focused when creation finishes.
 - Delete/F8: confirm moving selected items to Trash. Shift+Delete/Shift+F8:
-  explicitly confirm permanent deletion. If Trash is unavailable, Delete offers that
-  confirmation for the affected items.
+  explicitly confirm permanent deletion. If Trash is unavailable (on Windows, for example,
+  when the drive's Recycle Bin is set to remove files immediately), the job stops and asks
+  in its own window, above its progress window: it names why, lists the items as the
+  permanent-deletion confirmation does and says this cannot be undone. **Permanently
+  delete** deletes them, **Cancel job** keeps them, and **Decide later** leaves the job
+  waiting; its progress window then says what it waits for, and **Resolve** there or in
+  Jobs asks again.
   The confirmation asks its question first ("Permanently delete “report.pdf”?",
   "Move 12 items to the Trash?"), says right under it that a permanent deletion cannot
   be undone, and lists the details below: for one item its name, type, size (readable,

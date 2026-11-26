@@ -55,6 +55,7 @@ cargo test -p midnight-engine --test integration operations_real_windows::real_r
 | Permanent deletion | Recursive real corpus deletion cancels after exactly one callback, checks every remaining entry against the initial manifest, then completes. A read-only hardlink outside the selected tree retains bytes and read-only state. |
 | Delete identity | Pre-cancelled permanent/recycle requests preserve source bytes; a prepared deletion refuses a real replacement at the original path. |
 | Recycle, manual only | Dedicated native recycle accepts a fresh owned folder, or reports Unsupported while preserving it. An unrelated owned sentinel remains. No permanent fallback is used. |
+| Recycle refused, manual only | With `MIDNIGHT_TEST_NUKE_DIR` naming an owned folder on a drive whose Recycle Bin removes files immediately (`NukeOnDelete`), the Shell refuses at once with `COPYENGINE_E_RECYCLE_FORCE_NUKE` (0x80270036); the refusal is trash-unavailable (the job then asks whether to delete permanently) and the file stays: `cargo test -p midnight-platform-windows --lib trash_on_a_volume -- --ignored --nocapture`. |
 
 The full engine tests execute the same backend queue used by F5/F6, clipboard
 paste, and confirmed native drag/drop. UI input routing needs its own presenter

@@ -130,9 +130,13 @@ fn recycle_error(path: &Path, error: windows::core::Error) -> FsError {
             unsupported,
             "Windows Recycle Bin cannot accept an item of this size",
         )),
+        // The drive's Recycle Bin removes files immediately (its Properties: "Don't move
+        // files to the Recycle Bin"), or a policy says so.
         COPYENGINE_E_RECYCLE_FORCE_NUKE => Some((
             unsupported,
-            "Windows Recycle Bin is disabled for this location",
+            "Windows Recycle Bin is disabled for this location: this drive's Recycle Bin is \
+             set to remove files immediately (Recycle Bin Properties, \"Don't move files to \
+             the Recycle Bin\") or a policy disables it",
         )),
         COPYENGINE_E_RECYCLE_BIN_NOT_FOUND => Some((
             unsupported,

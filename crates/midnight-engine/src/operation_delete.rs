@@ -193,7 +193,7 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
     let mut original = 0..job.targets.len();
     let mut unavailable: Vec<usize> = Vec::new();
     let mut confirmed = Vec::new().into_iter();
-    let mut first_refusal = None;
+    let mut first_refusal: Option<FsError> = None;
     let mut recycled_before_fallback = None;
     'targets: loop {
         if !job.cancel.wait_if_paused() {
@@ -215,6 +215,9 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
                 Job::include_item(&mut preview, job.targets[index].item());
             }
             let has_folders = preview.folders > 0;
+            // While the job waits, its details say why, as for any other question.
+            progress.message = error.to_string();
+            job.store_progress(&mut progress);
             let choice = job.delete_decisions.ask(
                 DeleteFailure {
                     id: progress.id,
@@ -232,6 +235,7 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
                 job.cancel.cancel();
                 break;
             }
+            progress.message.clear();
             if has_folders {
                 progress.discovery.unavailable("Trash discovery counted selected items only; permanent folder deletion visits their contents.");
             }

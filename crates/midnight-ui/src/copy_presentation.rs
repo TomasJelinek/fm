@@ -73,13 +73,6 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         return;
     }
     if let Some(failure) = presenter.active_delete_failure() {
-        if failure.permanent_fallback.is_some() {
-            if !window.get_copy_token().is_empty() {
-                window.set_copy_token("".into());
-                window.invoke_close_copy_conflict();
-            }
-            return;
-        }
         if presenter.operations.preview.is_none()
             && presenter
                 .copies
@@ -87,7 +80,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 .as_ref()
                 .is_none_or(|draft| draft.retire_requested)
         {
-            refresh_delete_failure(window, failure);
+            refresh_delete_failure(window, presenter, failure);
         }
         return;
     }
@@ -152,6 +145,7 @@ fn refresh_conflict(
         "Replacement and merging are unavailable for these items. Choose another name or skip."
     };
     window.set_copy_is_failure(false);
+    window.set_copy_permanent_fallback(false);
     window.set_copy_can_replace(conflict.can_replace);
     window.set_copy_can_merge(conflict.can_merge);
     window.set_copy_source_details(shown_text(&describe(
@@ -183,6 +177,7 @@ fn refresh_failure(window: &MainWindow, failure: &CopyFailure, intent: Option<Tr
         return;
     }
     window.set_copy_is_failure(true);
+    window.set_copy_permanent_fallback(false);
     window.set_copy_can_retry(failure.can_retry);
     window.set_copy_can_skip(failure.can_skip);
     window.set_copy_can_replace(false);
@@ -199,20 +194,27 @@ fn refresh_failure(window: &MainWindow, failure: &CopyFailure, intent: Option<Tr
     window.invoke_show_copy_conflict();
 }
 
-/// A Delete failure in the shared failure prompt (`delete-error:{job}:{version}`).
-fn refresh_delete_failure(window: &MainWindow, failure: &DeleteFailure) {
+/// A Delete failure in the shared failure prompt (`delete-error:{job}:{version}`); a
+/// Trash refusal there asks whether to delete the refused items permanently instead.
+fn refresh_delete_failure(window: &MainWindow, presenter: &Presenter, failure: &DeleteFailure) {
     let token: SharedString = format!("delete-error:{}:{}", failure.id.0, failure.version).into();
     if window.get_copy_token() == token {
         return;
     }
+    let fallback = failure.permanent_fallback.is_some();
     window.set_copy_is_failure(true);
+    window.set_copy_permanent_fallback(fallback);
     window.set_copy_can_retry(failure.can_retry);
     window.set_copy_can_skip(failure.can_skip);
     window.set_copy_can_replace(false);
     window.set_copy_can_merge(false);
     window.set_copy_source_details("".into());
     window.set_copy_target_details("".into());
-    window.set_copy_body(shown_text(&delete_failure_details(failure)));
+    window.set_copy_body(shown_text(&if fallback {
+        crate::operation_presentation::trash_fallback_body(presenter, failure)
+    } else {
+        delete_failure_details(failure)
+    }));
     window.set_copy_name("".into());
     window.set_copy_token(token);
     window.invoke_show_copy_conflict();

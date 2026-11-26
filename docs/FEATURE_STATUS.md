@@ -180,10 +180,12 @@ How to read it:
   Recycle Bin on Windows); with Shift they delete permanently. The confirmation asks its
   question first and lists the details below it, with a long folder path shortened as
   in the path bar. Each entry that cannot
-  be removed asks Retry, Skip, Skip all errors or Cancel. F7 creates folders, including
-  missing parent folders; Shift+F4 creates an empty file and asks before it replaces
-  one. F2 renames, with the shared overwrite flow. Attributes, Times and Case edit the
-  selected entries, also recursively, after a review step. Alt+Enter opens Properties
+  be removed asks Retry, Skip, Skip all errors or Cancel; items the Trash refuses (a
+  Windows drive whose Recycle Bin removes files immediately, for example) are kept and
+  the job asks in its own window whether to delete them permanently instead. F7 creates
+  folders, including missing parent folders; Shift+F4 creates an empty file and asks
+  before it replaces one. F2 renames, with the shared overwrite flow. Attributes, Times and
+  Case edit the selected entries, also recursively, after a review step. Alt+Enter opens Properties
   (the Shell dialog on Windows, one for all selected items; a summary on Linux).
 - **Open:** on Windows, Trash or Rename of a folder that this application itself holds
   open is refused (TRASH-01); a Linux Properties rename that leaves its staging folder

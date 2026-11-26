@@ -124,7 +124,35 @@ fn cached_mutation(p: &Presenter, progress: &std::sync::Arc<OperationProgress>) 
         IconPlace::Action,
     );
     row.attention = mutation_attention(p, progress.id);
+    if row.active
+        && let Some(failure) = p
+            .operations
+            .delete_decisions
+            .failures
+            .iter()
+            .find(|failure| failure.id == progress.id)
+    {
+        // Its progress window says what the job waits for, not "Calculating...".
+        row.activity_label = delete_waiting(failure).into();
+        row.eta = SharedString::default();
+    }
     row
+}
+/// What a Delete that waits for an answer says instead of its time remaining.
+fn delete_waiting(failure: &DeleteFailure) -> String {
+    let question = if failure.permanent_fallback.is_some() {
+        if cfg!(windows) {
+            "the Recycle Bin cannot take the items; delete them permanently instead?"
+        } else {
+            "the Trash cannot take the items; delete them permanently instead?"
+        }
+    } else {
+        "the Delete stopped at an error."
+    };
+    format!(
+        "Waiting for your answer: {question} Choose Resolve to see the question.\n{}",
+        failure.error.message
+    )
 }
 fn copy_attention(p: &Presenter, id: OperationId) -> bool {
     p.copies.conflicts.iter().any(|conflict| conflict.id == id)

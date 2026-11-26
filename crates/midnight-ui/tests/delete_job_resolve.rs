@@ -155,57 +155,122 @@ fn delete_waits(h: &Harness) {
     ))));
 }
 
+/// A Trash refusal that offers permanent deletion instead, as Windows gives for a drive
+/// whose Recycle Bin removes files immediately.
+fn trash_refused(h: &Harness, version: u64) {
+    let path = Path::new("source/Screenshot 2023-03-31 105053.png");
+    h.apply(Event::Operation(OperationEvent::DeleteFailure(Arc::new(
+        DeleteFailure {
+            id: OperationId(41),
+            version,
+            mode: DeleteMode::Trash,
+            can_retry: false,
+            can_skip: false,
+            error: FsError::trash_unavailable(
+                path,
+                "Windows Recycle Bin is disabled for this location",
+            ),
+            permanent_fallback: Some(OperationPreview {
+                id: OperationId(41),
+                kind: MutationKind::Delete(DeleteMode::Permanent),
+                files: 1,
+                folders: 0,
+                file_bytes: Some(10),
+                sample: vec![MutationItem {
+                    path: path.into(),
+                    kind: EntryKind::File,
+                    metadata: Default::default(),
+                }],
+            }),
+        },
+    ))));
+}
+
+fn fallback_answers(h: &Harness) -> Vec<(u64, bool)> {
+    h.commands
+        .borrow()
+        .iter()
+        .filter_map(|command| match command {
+            Command::AnswerTrashFallback {
+                id: OperationId(41),
+                version,
+                confirm,
+            } => Some((*version, *confirm)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The stuck Move to Trash of 0.6.1: Windows refused to recycle (the drive's Recycle Bin
+/// removes files immediately) and the job asked whether to delete permanently instead.
+/// That question was the main window's embedded form, which the Delete's own progress
+/// window covered (owned by the main window, so always above it, and centred over it),
+/// and Resolve there had no window to bring up: the job waited at 0% with nothing to
+/// answer. The question now opens in its own window above the progress window, and the
+/// progress window's Resolve brings it up again after Decide later.
 #[test]
-fn trash_fallback_uses_the_destructive_confirmation_for_the_original_item() {
+fn trash_refusal_asks_in_its_own_window_that_resolve_brings_up() {
     use midnight_ui::OperationPresentation;
     let h = Harness::new();
     running_delete(&h, DeleteMode::Trash);
-    let path = Path::new("source/unrecycled.txt");
-    for (version, accept) in [(1, false), (2, true)] {
-        h.apply(Event::Operation(OperationEvent::DeleteFailure(Arc::new(
-            DeleteFailure {
-                id: OperationId(41),
-                version,
-                mode: DeleteMode::Trash,
-                can_retry: false,
-                can_skip: false,
-                error: FsError::trash_unavailable(path, "fixture has no recycle bin"),
-                permanent_fallback: Some(OperationPreview {
-                    id: OperationId(41),
-                    kind: MutationKind::Delete(DeleteMode::Permanent),
-                    files: 1,
-                    folders: 0,
-                    file_bytes: Some(10),
-                    sample: vec![MutationItem {
-                        path: path.into(),
-                        kind: EntryKind::File,
-                        metadata: Default::default(),
-                    }],
-                }),
-            },
-        ))));
-        let form = h.main.global::<OperationPresentation>();
-        assert!(form.get_active() && form.get_dangerous());
-        assert_eq!(form.get_confirm_text(), "Permanently delete");
-        assert!(form.get_question().contains("unrecycled.txt"));
-        assert!(h.main.get_operation_warning().contains("cannot be undone"));
-        assert!(h.main.get_copy_token().is_empty());
-        modeless::draw(
-            &h.windows.borrow()[0],
-            900,
-            650,
-            "trash-unavailable-permanent-offer",
+    h.window_with("Cancel operation", 1);
+    trash_refused(&h, 1);
+    assert!(
+        !h.main.global::<OperationPresentation>().get_active(),
+        "the question is not in the main window, under the progress window"
+    );
+    let question = h.window_with("Permanently delete", 2);
+    for label in ["Cancel job", "Decide later"] {
+        assert!(
+            modeless::accessible_item(&question, AccessibleRole::Button, label).is_some(),
+            "the question offers {label}"
         );
-        h.commands.borrow_mut().clear();
-        if accept {
-            form.invoke_confirm(form.get_token(), "".into());
-        } else {
-            form.invoke_request_dismiss(form.get_token());
-        }
-        assert!(h.commands.borrow().iter().any(|command| matches!(command,
-            Command::AnswerTrashFallback { id: OperationId(41), version: v, confirm } if *v == version && *confirm == accept)));
-        assert!(!form.get_active());
     }
+    for label in ["Retry", "Skip"] {
+        assert!(
+            modeless::accessible_item(&question, AccessibleRole::Button, label).is_none(),
+            "a Trash refusal offers no {label}"
+        );
+    }
+    let body = h.main.get_copy_body();
+    for text in [
+        "cannot take the items below. They were not deleted.",
+        "Windows Recycle Bin is disabled for this location",
+        "Permanently delete “Screenshot 2023-03-31 105053.png”?",
+        "Permanent deletion cannot be undone.",
+    ] {
+        assert!(body.contains(text), "{text:?} in {body:?}");
+    }
+    assert!(h.marked("41"), "the waiting question marks the job");
+    let row = h
+        .main
+        .get_operations()
+        .iter()
+        .find(|row| row.identity == "41")
+        .unwrap();
+    assert!(
+        row.activity_label.starts_with("Waiting for your answer: ") && row.eta.is_empty(),
+        "the progress window says what the job waits for: {:?}",
+        row.activity_label
+    );
+    // Decide later leaves the job waiting; the progress window's Resolve asks again.
+    modeless::click(&question, "Decide later");
+    assert!(
+        fallback_answers(&h).is_empty(),
+        "Decide later answers nothing"
+    );
+    let progress = h.window_with("Resolve", 1);
+    modeless::click(&progress, "Resolve");
+    let question = h.window_with("Permanently delete", 2);
+    modeless::click(&question, "Permanently delete");
+    assert_eq!(fallback_answers(&h), [(1, true)]);
+    h.children(1);
+    assert!(!h.marked("41"), "an answered question leaves no mark");
+    // Cancel job keeps the items: the job is told no.
+    trash_refused(&h, 2);
+    let question = h.window_with("Permanently delete", 2);
+    modeless::click(&question, "Cancel job");
+    assert_eq!(fallback_answers(&h), [(1, true), (2, false)]);
 }
 
 #[test]

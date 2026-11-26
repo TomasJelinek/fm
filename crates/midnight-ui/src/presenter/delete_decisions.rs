@@ -2,6 +2,12 @@
 //! job, Decide later) while keeping their own job and version authority, as Rename
 //! conflicts do. Tokens: `delete-error:{job}:{version}` for the prompt, and the job
 //! row's own identity (`{job}` or `delete-job:{job}`) for Resolve.
+//!
+//! The Trash refusal that offers permanent deletion instead is one of these prompts too
+//! (Permanently delete, Cancel job, Decide later). It used to be the main window's
+//! embedded confirmation, which the Delete's own progress window covered: that window
+//! is owned by the main window, so always above it, and centred over it. The job then
+//! waited for an answer nobody could see, and Resolve had no window to bring up.
 use super::*;
 use std::collections::{HashMap, HashSet};
 
@@ -90,53 +96,10 @@ impl Presenter {
             .find(|f| f.id == id && f.version == version)
     }
 
-    pub(crate) fn trash_fallback(&self) -> Option<&DeleteFailure> {
-        if self.operations.pending.is_some() || self.copies.draft.is_some() {
-            return None;
-        }
-        self.active_delete_failure()
-            .map(AsRef::as_ref)
-            .filter(|failure| failure.permanent_fallback.is_some())
-    }
-
+    /// The pending confirmation of a prepared operation, shown in the main window.
     pub(crate) fn operation_form(&self) -> Option<(&OperationPreview, String)> {
-        if let Some(preview) = &self.operations.preview
-            && self.operations.pending == Some(preview.id)
-        {
-            return Some((preview, preview.id.0.to_string()));
-        }
-        let failure = self.trash_fallback()?;
-        Some((failure.permanent_fallback.as_ref()?, prompt_token(failure)))
-    }
-
-    /// Only the current destructive confirmation's token can authorize fallback.
-    pub(super) fn answer_trash_fallback(
-        &mut self,
-        token: &str,
-        accept: bool,
-        send: &dyn Fn(Command) -> bool,
-    ) -> bool {
-        let Some(failure) = self
-            .trash_fallback()
-            .filter(|failure| token == prompt_token(failure))
-        else {
-            return false;
-        };
-        let id = failure.id;
-        if send(Command::AnswerTrashFallback {
-            id,
-            version: failure.version,
-            confirm: accept,
-        }) {
-            self.operations
-                .delete_decisions
-                .failures
-                .retain(|failure| failure.id != id);
-            self.operations.delete_decisions.selected = None;
-        } else {
-            self.report_control_busy();
-        }
-        true
+        let preview: &OperationPreview = self.operations.preview.as_ref()?;
+        (self.operations.pending == Some(preview.id)).then(|| (preview, preview.id.0.to_string()))
     }
 
     pub(super) fn retire_delete_decision(&mut self, id: OperationId) {
@@ -187,7 +150,8 @@ impl Presenter {
         true
     }
 
-    /// The shared prompt's buttons: 8 Retry, 0 Skip, 9 Skip all errors, 3 Cancel job.
+    /// The shared prompt's buttons: 8 Retry, 0 Skip, 9 Skip all errors, 3 Cancel job; for
+    /// a Trash refusal, 10 Permanently delete and 3 Cancel job.
     pub(super) fn decide_delete(
         &mut self,
         token: &str,
@@ -203,6 +167,32 @@ impl Presenter {
             return;
         };
         let failure = &decisions.failures[index];
+        if failure.permanent_fallback.is_some() {
+            // The items stay where they are unless Permanently delete is chosen.
+            let confirm = match choice {
+                10 => true,
+                3 => false,
+                _ => return,
+            };
+            let (id, version) = (failure.id, failure.version);
+            if send(Command::AnswerTrashFallback {
+                id,
+                version,
+                confirm,
+            }) {
+                let decisions = &mut self.operations.delete_decisions;
+                decisions.failures.remove(index);
+                decisions.selected = None;
+                if !confirm
+                    && let Some(progress) = self.operations.progress.iter_mut().find(|p| p.id == id)
+                {
+                    Arc::make_mut(progress).state = OperationState::CancelRequested;
+                }
+            } else {
+                self.report_control_busy();
+            }
+            return;
+        }
         let choice = match choice {
             8 if failure.can_retry => CopyChoice::Retry,
             0 if failure.can_skip => CopyChoice::Skip,
@@ -420,5 +410,72 @@ mod tests {
         p.request_operation_shutdown(&|_| true);
         assert_eq!(p.active_delete_decision(), None);
         assert!(p.operations.delete_decisions.failures.is_empty());
+    }
+
+    fn trash_refusal(version: u64) -> Arc<DeleteFailure> {
+        let path = std::path::Path::new("left/kept.png");
+        Arc::new(DeleteFailure {
+            id: OperationId(5),
+            version,
+            mode: DeleteMode::Trash,
+            error: FsError::trash_unavailable(path, "Windows Recycle Bin is disabled"),
+            can_retry: false,
+            can_skip: false,
+            permanent_fallback: Some(OperationPreview {
+                id: OperationId(5),
+                kind: MutationKind::Delete(DeleteMode::Permanent),
+                files: 1,
+                folders: 0,
+                file_bytes: Some(1),
+                sample: vec![MutationItem {
+                    path: path.into(),
+                    kind: EntryKind::File,
+                    metadata: Default::default(),
+                }],
+            }),
+        })
+    }
+
+    /// The Trash refusal is a decision of the shared prompt, never the main window's
+    /// confirmation form: only Permanently delete (10) and Cancel job (3) answer it.
+    #[test]
+    fn a_trash_refusal_is_answered_in_the_shared_prompt_and_can_wait() {
+        let mut p = presenter();
+        p.apply(Event::Operation(OperationEvent::DeleteFailure(
+            trash_refusal(1),
+        )));
+        assert_eq!(p.active_delete_decision(), Some((OperationId(5), 1)));
+        assert!(p.operation_form().is_none(), "not the main window's form");
+        for choice in [8, 0, 9, 4] {
+            assert!(sent(&mut p, "delete-error:5:1", choice).is_empty());
+        }
+        // Decide later keeps it waiting; Resolve shows it again.
+        p.defer_copy_decision("delete-error:5:1");
+        assert_eq!(p.active_delete_decision(), None);
+        p.resolve_copy_decision("5");
+        assert!(matches!(
+            sent(&mut p, "delete-error:5:1", 10).as_slice(),
+            [Command::AnswerTrashFallback {
+                id: OperationId(5),
+                version: 1,
+                confirm: true
+            }]
+        ));
+        assert_eq!(p.active_delete_decision(), None);
+        p.apply(Event::Operation(OperationEvent::DeleteFailure(
+            trash_refusal(2),
+        )));
+        assert!(matches!(
+            sent(&mut p, "delete-error:5:2", 3).as_slice(),
+            [Command::AnswerTrashFallback {
+                version: 2,
+                confirm: false,
+                ..
+            }]
+        ));
+        assert_eq!(
+            p.operations.progress[0].state,
+            OperationState::CancelRequested
+        );
     }
 }

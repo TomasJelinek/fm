@@ -24,6 +24,28 @@ fn delete_confirmation(
     delete_summary::confirmation(preview, mode, &context)
 }
 
+/// The Trash refusal's question: why the Trash refused, then the permanent-deletion
+/// confirmation of the refused items (question, details, warning).
+pub(super) fn trash_fallback_body(presenter: &Presenter, failure: &DeleteFailure) -> String {
+    let trash = if cfg!(windows) {
+        "The Recycle Bin"
+    } else {
+        "The Trash"
+    };
+    let mut body = format!(
+        "{trash} cannot take the items below. They were not deleted.\n\n{}",
+        failure.error.message
+    );
+    if let Some(preview) = &failure.permanent_fallback {
+        let confirmation = delete_confirmation(presenter, preview, DeleteMode::Permanent);
+        body.push_str("\n\n");
+        body.push_str(confirmation.text().trim_end());
+        body.push_str("\n\n");
+        body.push_str(confirmation.warning);
+    }
+    body
+}
+
 fn operation_source(presenter: &Presenter, id: OperationId) -> Option<&std::path::Path> {
     presenter
         .operations
@@ -228,19 +250,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             .image(&IconKey::action(role), IconPlace::Action),
     );
     window.set_operation_kind(kind_id);
-    window.set_operation_warning(if presenter.trash_fallback().is_some() {
-        format!(
-            "{} is unavailable for the items shown. {warning}",
-            if cfg!(windows) {
-                "The Recycle Bin"
-            } else {
-                "Trash"
-            }
-        )
-        .into()
-    } else {
-        warning.into()
-    });
+    window.set_operation_warning(warning.into());
     window.set_operation_body(shown_text(&body));
     // The name field edits the raw name: what it holds is what the operation receives.
     window.set_operation_name(name.into());

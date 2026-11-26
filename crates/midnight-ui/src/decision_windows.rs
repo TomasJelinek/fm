@@ -303,6 +303,12 @@ fn open(
         if key.token.starts_with("delete-error:") {
             window.set_native_icon(main.get_action_icons().delete);
             window.set_failure_title("Delete needs attention".into());
+            // A Trash refusal asks whether to delete the refused items permanently.
+            if main.get_copy_permanent_fallback() {
+                window.set_title_text("Move to Trash".into());
+                window.set_failure_title("Cannot move to the Trash".into());
+                window.set_permanent_fallback(true);
+            }
             window.set_skip_all_text("Skip all errors".into());
             window.set_skip_all_hint(
                 "Skip this and every later failure of this Delete without asking. Folders that \

@@ -254,8 +254,13 @@ impl Windows {
             return;
         }
         self.seen.borrow_mut().insert(row.identity.clone());
+        let waiting = automatic && row.attention;
         if let Err(error) = self.create(p, row, automatic) {
             self.failures.record(0, format!("Unable to open operation progress: {error}. The operation remains in Jobs; choose Open to retry."));
+        } else if waiting && let Some(main) = self.main.upgrade() {
+            // A window that opens by itself never covers the question its job waits for:
+            // the progress window is centred over the main window, as the question is.
+            main.invoke_open_decision_window(false, true);
         }
     }
     fn create(
