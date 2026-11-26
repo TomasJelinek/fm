@@ -322,7 +322,13 @@ fn metadata_snapshot_and_proof_do_not_create_a_compiled_revision_history() {
     assert!(accepted.validation_proof().matches(&first.preferences));
     store.publish(prepared(&store, FileComparatorTarget::BuiltInText));
     assert!(weak.upgrade().is_some());
+    assert_eq!(store.pinned_history(), 1);
+    // The released set stays in the history until the next publication drops it on the
+    // writer, never on the thread that released the last pin.
     drop(accepted);
+    assert!(weak.upgrade().is_some());
+    store.publish(prepared(&store, FileComparatorTarget::BuiltInImages));
+    assert_eq!(store.pinned_history(), 0);
     assert!(
         weak.upgrade().is_none(),
         "raw snapshot must not pin the compiler"
