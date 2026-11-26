@@ -98,6 +98,9 @@ thread_local! {
 
 struct Shared {
     capacity: usize,
+    /// An elastic pool starts another worker instead of refusing work (`start_elastic`).
+    elastic: bool,
+    name: String,
     queue: Mutex<Queue>,
     changed: Condvar,
 }
@@ -106,6 +109,12 @@ struct Queue {
     state: PoolState,
     live_workers: usize,
     pending: VecDeque<Job>,
+    /// Workers waiting for a job. Each pops one pending job in the same critical
+    /// section that stops counting it, so `idle` and `pending` always agree.
+    idle: usize,
+    /// Workers an elastic pool started beyond its resident set, and the next name index.
+    extra: Vec<Worker>,
+    next_index: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,12 +142,23 @@ struct QueuedWork(Option<Work>);
 impl Owner {
     /// Starts the complete worker set with an equally sized queue, without needing Tokio.
     pub fn start(name: &str, threads: usize) -> io::Result<(Self, Spawner)> {
-        Self::start_with(name, threads, Builder::spawn)
+        Self::start_with(name, threads, false, Builder::spawn)
+    }
+
+    /// Starts `threads` resident workers that never refuse work for a count: when no
+    /// worker is waiting, a submission starts one more worker, which ends as soon as it
+    /// finds no pending work. For long jobs that mostly wait, such as one per open
+    /// window; bound their CPU-heavy phases separately. Extra workers are joined by
+    /// `shutdown` like the resident ones. Only a failure to start a thread refuses
+    /// (`Rejection::Full`).
+    pub fn start_elastic(name: &str, threads: usize) -> io::Result<(Self, Spawner)> {
+        Self::start_with(name, threads, true, Builder::spawn)
     }
 
     fn start_with(
         name: &str,
         threads: usize,
+        elastic: bool,
         mut spawn: impl FnMut(Builder, Work) -> io::Result<JoinHandle<()>>,
     ) -> io::Result<(Self, Spawner)> {
         if threads == 0 || name.contains('\0') {
@@ -158,10 +178,15 @@ impl Owner {
             .map_err(io::Error::other)?;
         let shared = Arc::new(Shared {
             capacity: threads,
+            elastic,
+            name: name.to_owned(),
             queue: Mutex::new(Queue {
                 state: PoolState::Open,
                 live_workers: threads,
                 pending,
+                idle: 0,
+                extra: Vec::new(),
+                next_index: threads,
             }),
             changed: Condvar::new(),
         });
@@ -176,7 +201,7 @@ impl Owner {
             let (on_exit, exited) = oneshot::channel();
             let ready = ready.clone();
             let worker_shared = Arc::clone(&shared);
-            let run = Box::new(move || worker_main(worker_shared, ready, on_exit));
+            let run = Box::new(move || worker_main(worker_shared, Some(ready), on_exit, true));
             match spawn(builder, run) {
                 Ok(thread) => owner.workers.push(Worker { thread, exited }),
                 Err(error) => {
@@ -221,7 +246,9 @@ impl Owner {
     /// leave the check pending. A detected unavailable timer or join returns a checked error.
     pub fn shutdown(mut self, transient: &Handle) -> Shutdown {
         self.seal();
-        let workers = mem::take(&mut self.workers);
+        let mut workers = mem::take(&mut self.workers);
+        // Sealed: no submission can start another extra worker after this.
+        workers.append(&mut self.shared.lock().extra);
         let transient = transient.clone();
         let shared = Arc::clone(&self.shared);
         Shutdown {
@@ -245,11 +272,22 @@ impl Spawner {
         let refusal = match queue.state {
             PoolState::Failed => Some(Rejection::WorkerFailed),
             PoolState::Sealed => Some(Rejection::Sealed),
+            PoolState::Open if self.shared.elastic => None,
             PoolState::Open if queue.pending.len() == self.shared.capacity => Some(Rejection::Full),
             PoolState::Open => None,
         };
         if let Some(reason) = refusal {
             return Err(Rejected { reason, work });
+        }
+        // Each waiting worker takes one pending job; this job needs one more.
+        if self.shared.elastic
+            && queue.idle <= queue.pending.len()
+            && start_extra(&self.shared, &mut queue).is_err()
+        {
+            return Err(Rejected {
+                reason: Rejection::Full,
+                work,
+            });
         }
 
         let task = Arc::new(TaskState {
@@ -362,7 +400,8 @@ impl Shared {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn next(&self) -> Option<(Job, bool)> {
+    /// The next job. A resident worker waits for one; an extra worker ends without one.
+    fn next(&self, resident: bool) -> Option<(Job, bool)> {
         let mut queue = self.lock();
         loop {
             if let Some(job) = queue.pending.pop_front() {
@@ -371,13 +410,15 @@ impl Shared {
                 let execute = queue.state == PoolState::Open && unclaimed;
                 return Some((job, execute));
             }
-            if queue.state != PoolState::Open {
+            if queue.state != PoolState::Open || !resident {
                 return None;
             }
+            queue.idle += 1;
             queue = self
                 .changed
                 .wait(queue)
                 .unwrap_or_else(PoisonError::into_inner);
+            queue.idle -= 1;
         }
     }
 
@@ -522,12 +563,35 @@ fn dispose_panic(payload: Box<dyn Any + Send>) -> bool {
     }
 }
 
-fn worker_main(shared: Arc<Shared>, ready: SyncSender<()>, on_exit: oneshot::Sender<()>) {
+/// Start one more worker of an elastic pool, under its queue lock. Extra workers whose
+/// thread has returned are released first.
+fn start_extra(shared: &Arc<Shared>, queue: &mut Queue) -> io::Result<()> {
+    queue.extra.retain(|worker| !worker.thread.is_finished());
+    queue.extra.try_reserve(1).map_err(io::Error::other)?;
+    let index = queue.next_index;
+    let (on_exit, exited) = oneshot::channel();
+    let worker_shared = Arc::clone(shared);
+    let thread = Builder::new()
+        .name(format!("{}-{index}", shared.name))
+        .spawn(move || worker_main(worker_shared, None, on_exit, false))?;
+    queue.next_index = index.wrapping_add(1);
+    queue.live_workers += 1;
+    queue.extra.push(Worker { thread, exited });
+    Ok(())
+}
+
+fn worker_main(
+    shared: Arc<Shared>,
+    ready: Option<SyncSender<()>>,
+    on_exit: oneshot::Sender<()>,
+    resident: bool,
+) {
     CURRENT_POOL.with(|pool| pool.set(Arc::as_ptr(&shared)));
-    let _ = ready.send(());
-    drop(ready);
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     let healthy = match catch_unwind(AssertUnwindSafe(|| {
-        while let Some((job, execute)) = shared.next() {
+        while let Some((job, execute)) = shared.next(resident) {
             if !job.run(&shared, execute) {
                 return false;
             }

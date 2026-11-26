@@ -43,7 +43,7 @@ fn start_with_blocked_epilogue() -> (Owner, Receiver<()>, Sender<()>) {
     let (epilogue_started, observed_epilogue) = mpsc::channel();
     let (release, hold) = mpsc::channel();
     let mut hold = Some(hold);
-    let (owner, _) = Owner::start_with("exit-epilogue", 1, |builder, run| {
+    let (owner, _) = Owner::start_with("exit-epilogue", 1, false, |builder, run| {
         let epilogue_started = epilogue_started.clone();
         let hold = hold.take().unwrap();
         builder.spawn(move || {
@@ -85,7 +85,7 @@ fn first_and_partial_startup_failure_leave_no_initialization_worker() {
     for fail_at in [0, 2] {
         let mut attempt = 0;
         let (retired, observed) = mpsc::channel();
-        let result = Owner::start_with("startup", 3, |builder, run| {
+        let result = Owner::start_with("startup", 3, false, |builder, run| {
             let index = attempt;
             attempt += 1;
             if index == fail_at {
@@ -111,7 +111,9 @@ fn first_and_partial_startup_failure_leave_no_initialization_worker() {
 
 #[test]
 fn rejects_zero_threads_without_starting_a_worker() {
-    let result = Owner::start_with("zero", 0, |_, _| panic!("must not try to start a worker"));
+    let result = Owner::start_with("zero", 0, false, |_, _| {
+        panic!("must not try to start a worker")
+    });
     assert_eq!(result.err().unwrap().kind(), io::ErrorKind::InvalidInput);
 }
 
@@ -119,7 +121,7 @@ fn rejects_zero_threads_without_starting_a_worker() {
 fn a_launched_thread_that_exits_before_readiness_fails_startup_and_retires_peers() {
     let mut attempt = 0;
     let (retired, observed) = mpsc::channel();
-    let startup = Owner::start_with("missing-readiness", 3, |builder, run| {
+    let startup = Owner::start_with("missing-readiness", 3, false, |builder, run| {
         let index = attempt;
         attempt += 1;
         let retired = retired.clone();
@@ -443,7 +445,7 @@ fn affine_resource_is_created_and_destroyed_by_the_same_worker() {
 #[test]
 fn final_owner_drop_returns_while_blocked_and_neutral_spawners_preserve_no_stop_authority() {
     let (exited, exit_observed) = mpsc::channel();
-    let (owner, spawner) = Owner::start_with("owner-drop", 1, |builder, run| {
+    let (owner, spawner) = Owner::start_with("owner-drop", 1, false, |builder, run| {
         let exited = exited.clone();
         builder.spawn(move || {
             run();
@@ -1019,4 +1021,61 @@ fn worker_failure_quarantines_pending_work_and_cannot_report_a_clean_shutdown() 
         observed_drop.try_recv(),
         Err(mpsc::TryRecvError::Empty)
     ));
+}
+
+/// An elastic pool runs every long job at once, beyond its resident workers: each
+/// submission that finds no waiting worker starts one more, never refuses for a count.
+/// Extra workers end once they find no pending work, and shutdown joins them all.
+#[test]
+fn elastic_pool_runs_more_long_jobs_than_its_resident_workers_and_retires_the_extras() {
+    let (owner, spawner) = Owner::start_elastic("elastic", 2).unwrap();
+    let runtime = runtime();
+    let jobs: Vec<_> = (0..7).map(|_| start_blocked(&spawner, &runtime)).collect();
+    let threads: std::collections::HashSet<_> = jobs.iter().map(|(_, thread, _)| *thread).collect();
+    assert_eq!(threads.len(), 7, "each long job has its own worker");
+    for (ticket, _, release) in jobs {
+        drop(release);
+        assert_eq!(wait(&runtime, ticket), Ok(()));
+    }
+    // The extra workers end on their own; a resident worker takes the next job.
+    let deadline = std::time::Instant::now() + LIMIT;
+    while {
+        let queue = spawner.shared.lock();
+        queue.live_workers > 2 || queue.idle < 2
+    } {
+        assert!(std::time::Instant::now() < deadline, "extra workers stay");
+        thread::sleep(Duration::from_millis(1));
+    }
+    let (ticket, _, release) = start_blocked(&spawner, &runtime);
+    assert_eq!(spawner.shared.lock().live_workers, 2);
+    drop(release);
+    assert_eq!(wait(&runtime, ticket), Ok(()));
+    assert!(wait(&runtime, owner.shutdown(runtime.handle())).is_ok());
+}
+
+/// Shutdown seals the pool and waits for extra workers still running a job.
+#[test]
+fn elastic_shutdown_joins_a_running_extra_worker() {
+    let (owner, spawner) = Owner::start_elastic("elastic-shutdown", 1).unwrap();
+    let runtime = runtime();
+    let (first, _, release_first) = start_blocked(&spawner, &runtime);
+    let (second, _, release_second) = start_blocked(&spawner, &runtime);
+    let mut shutdown = Box::pin(owner.shutdown(runtime.handle()));
+    assert!(
+        spawner.spawn(runtime.handle(), Box::new(|| {})).is_err(),
+        "a sealed pool starts no worker"
+    );
+    drop(release_first);
+    assert_eq!(wait(&runtime, first), Ok(()));
+    assert!(
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_millis(50), &mut shutdown).await
+            })
+            .is_err(),
+        "the extra worker still runs its job"
+    );
+    drop(release_second);
+    assert_eq!(wait(&runtime, second), Ok(()));
+    assert!(wait(&runtime, shutdown).is_ok());
 }
