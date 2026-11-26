@@ -151,6 +151,31 @@ fn closing_a_waiting_comparison_ends_it_without_preparing() {
     runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
 }
 
+/// A failing waiting status (its mailbox drops outputs and wakes the UI) unwinds out of
+/// `acquire`; its place in the queue must go with it, or every later comparison waits.
+#[test]
+fn a_waiter_whose_status_panics_leaves_the_queue() {
+    let gate = Arc::new(computing::Gate::new(1));
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let admitted = gate.acquire(&cancel, || {}).unwrap();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        gate.acquire(&cancel, || panic!("the waiting status failed"))
+    }));
+    assert!(unwound.is_err());
+    drop(admitted);
+    let (sender, receiver) = mpsc::channel();
+    let next = gate.clone();
+    std::thread::spawn(move || {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let _ = sender.send(next.acquire(&cancel, || {}).is_ok());
+    });
+    assert_eq!(
+        receiver.recv_timeout(TIMEOUT),
+        Ok(true),
+        "the next comparison is admitted"
+    );
+}
+
 /// Six comparisons open at once, each with its own worker; none is refused.
 #[test]
 fn six_comparisons_open_at_once() {

@@ -57,24 +57,23 @@ impl Gate {
             state.free -= 1;
             return Ok(Permit(self.clone()));
         }
-        let ticket = state.next_ticket;
-        state.next_ticket = ticket.wrapping_add(1);
-        state.queue.push_back(ticket);
+        let ticket = Ticket {
+            gate: self,
+            id: state.next_ticket,
+        };
+        state.next_ticket = ticket.id.wrapping_add(1);
+        state.queue.push_back(ticket.id);
         drop(state);
+        // The ticket leaves the queue however this ends, also when `waiting` unwinds:
+        // a ticket left at the front would hold every later comparison back.
         waiting();
         let mut state = self.lock();
         loop {
-            if let Err(error) = check_cancel(cancel) {
-                state.queue.retain(|waiting| *waiting != ticket);
-                // The next ticket may now be first in line.
-                self.changed.notify_all();
-                return Err(error);
-            }
-            if state.free > 0 && state.queue.front() == Some(&ticket) {
-                state.queue.pop_front();
+            check_cancel(cancel)?;
+            if state.free > 0 && state.queue.front() == Some(&ticket.id) {
                 state.free -= 1;
-                // Another permit may be free for the next ticket.
-                self.changed.notify_all();
+                // `ticket` leaves the queue once `state` is released, and wakes the next
+                // ticket: another permit may be free for it.
                 return Ok(Permit(self.clone()));
             }
             state = self
@@ -92,6 +91,20 @@ impl Gate {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
+    }
+}
+
+/// A place in the queue; dropping it leaves the queue and wakes the next waiter.
+struct Ticket<'a> {
+    gate: &'a Gate,
+    id: u64,
+}
+
+impl Drop for Ticket<'_> {
+    fn drop(&mut self) {
+        self.gate.lock().queue.retain(|waiting| *waiting != self.id);
+        // The next ticket may now be first in line, or a permit may be free for it.
+        self.gate.changed.notify_all();
     }
 }
 
