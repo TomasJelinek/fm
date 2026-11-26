@@ -737,10 +737,14 @@ fn many(app: &mut App, context: &mut Context, tree: &Tree) -> Result<(), String>
         .collect();
     expected.insert("large.zip/member-19999.txt".into());
     if !text.starts_with("Completed") || found != expected {
+        let missing: Vec<&String> = expected.difference(&found).take(5).collect();
+        let extra: Vec<&String> = found.difference(&expected).take(5).collect();
         return Err(format!(
-            "many archives: {text:?}, {} rows ({} expected)",
+            "many archives: {text:?}, {} rows ({} expected), missing {missing:?}, \
+             unexpected {extra:?}; details: {:?}",
             found.len(),
-            expected.len()
+            expected.len(),
+            texts.join(" | ")
         ));
     }
     let counts = (
@@ -750,8 +754,10 @@ fn many(app: &mut App, context: &mut Context, tree: &Tree) -> Result<(), String>
     let members = (MANY * 2 + LARGE) as u64;
     if counts != (Some(MANY as u64 + 1), Some(members)) {
         return Err(format!(
-            "many archives: the details count {counts:?}, expected {} archives and {members} members",
-            MANY + 1
+            "many archives: the details count {counts:?}, expected {} archives and {members} \
+             members; details: {:?}",
+            MANY + 1,
+            texts.join(" | ")
         ));
     }
     context.note(format!(
