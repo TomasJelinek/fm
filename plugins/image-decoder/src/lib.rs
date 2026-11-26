@@ -20,12 +20,16 @@ pub(crate) const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
 /// memory, half of an image viewer's, so they keep the former 128 MiB: a decode needs a
 /// multiple of its output (a progressive JPEG keeps two bytes of coefficients per sample).
 pub(crate) const MAX_THUMBNAIL_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
-/// Largest JPEG file for a full decode. image-rs reads a JPEG to its end into a growing
-/// buffer (128 MiB for this file size) before decoding, and a progressive CMYK JPEG then
-/// keeps two bytes of coefficients per sample besides its output: about 710 MiB at
-/// 256 MiB of RGBA. Measured peak with this bound: 835 MiB of the image workers' 1 GiB
-/// (a 128 MiB file grew its buffer to 256 MiB and peaked at 963 MiB). Thumbnails are
-/// unchanged.
+/// Largest JPEG file, for a full decode and a thumbnail alike. image-rs reads a JPEG to
+/// its end into a growing buffer (128 MiB for this file size) before decoding, whatever
+/// its dimensions, and a progressive CMYK JPEG then keeps two bytes of coefficients per
+/// sample besides its output: about 710 MiB at 256 MiB of RGBA. Measured peak with this
+/// bound: 835 MiB of the image workers' 1 GiB (a 128 MiB file grew its buffer to 256 MiB
+/// and peaked at 963 MiB). A thumbnail's decoder allocations and original are bounded
+/// by `MAX_THUMBNAIL_SOURCE_BYTES` (128 MiB each), so this buffer and both fit its
+/// worker's 512 MiB (by this sum; not measured). Without the bound a JPEG of small
+/// dimensions padded with huge APP or COM segments (a 300 MiB file buffers 512 MiB)
+/// exceeds that worker's limit.
 pub(crate) const MAX_JPEG_FILE_BYTES: u64 = 96 * 1024 * 1024;
 
 fn validate_dimensions(width: u32, height: u32, max_bytes: u64) -> io::Result<()> {
@@ -86,7 +90,9 @@ pub fn decode_with_note<R: Read + Seek + ?Sized>(
     if reader.format().is_none() {
         return svg::decode(reader.into_inner(), thumbnail);
     }
-    let reader = if thumbnail.is_none() && reader.format() == Some(ImageFormat::Jpeg) {
+    let reader = if reader.format() == Some(ImageFormat::Jpeg) {
+        // Every broker stream (image viewer and thumbnail SDKs) seeks from its captured
+        // length, so the end is known without reading the file.
         let mut source = reader.into_inner();
         let start = source.stream_position()?;
         let end = source.seek(SeekFrom::End(0))?;

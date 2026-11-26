@@ -139,7 +139,7 @@ fn originals_up_to_256_mib_of_rgba_decode_and_larger_ones_are_refused() {
 }
 
 #[test]
-fn jpeg_files_over_96_mib_are_refused_for_full_decodes_only() {
+fn jpeg_files_over_96_mib_are_refused_for_full_decodes_and_thumbnails() {
     let mut jpeg = Vec::new();
     image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
         .encode(&[90; 8 * 8 * 3], 8, 8, image::ExtendedColorType::Rgb8)
@@ -157,7 +157,16 @@ fn jpeg_files_over_96_mib_are_refused_for_full_decodes_only() {
         error.to_string(),
         "This JPEG file is larger than 96 MiB, the limit for JPEG images."
     );
+    // A thumbnail would buffer the whole file too: its worker has 512 MiB.
+    let error = midnight_image_decoder::decode(&mut Cursor::new(&jpeg), Some((4, 4)))
+        .expect_err("a thumbnail of a JPEG file one byte over 96 MiB");
+    assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
+    assert_eq!(
+        error.to_string(),
+        "This JPEG file is larger than 96 MiB, the limit for JPEG images."
+    );
+    jpeg.pop();
     let thumbnail = midnight_image_decoder::decode(&mut Cursor::new(&jpeg), Some((4, 4)))
-        .expect("thumbnails keep their own bounds");
+        .expect("a thumbnail of a 96 MiB JPEG file");
     assert_eq!(thumbnail.dimensions(), (4, 4));
 }

@@ -303,6 +303,8 @@ complete encoded JPEG during decoding, in addition to decoded pixels; that input
 dropped after decode. The image viewer therefore refuses a JPEG file over 96 MiB: a
 progressive CMYK JPEG of 256 MiB of RGBA keeps about 512 MiB of coefficients besides its
 output, and at that bound the decode peaked at a measured 835 MiB of the worker's 1 GiB.
+Thumbnails use the same bound: their decode also buffers the whole file, and their
+workers have 512 MiB.
 A future format-specific decoder could read only an embedded preview. PSD is not
 supported. The raster plugin retains the complete decoded still image, within its pixel
 budget.

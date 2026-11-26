@@ -16,10 +16,14 @@ converted: those pixels are used as sRGB. The first still frame is used. Origina
 dimensions are limited to 32768 pixels per edge and 256 MiB of RGBA storage
 (`MAX_DECODED_BYTES` of image viewer API 0.4.0; the decoder's own allocation has the
 same budget), or 128 MiB for the original of a thumbnail, whose workers have 512 MiB.
-A full decode refuses a JPEG file over 96 MiB ("This JPEG file is larger than 96 MiB,
-the limit for JPEG images."): image-rs holds the whole file while a progressive CMYK
-JPEG of 256 MiB of RGBA also keeps about 512 MiB of coefficients, and the bound keeps
-that case at a measured 835 MiB of the image viewer's 1 GiB. Embedded color profiles
+A full decode and a thumbnail refuse a JPEG file over 96 MiB ("This JPEG file is larger
+than 96 MiB, the limit for JPEG images."): image-rs holds the whole file while a
+progressive CMYK JPEG of 256 MiB of RGBA also keeps about 512 MiB of coefficients, and
+the bound keeps that case at a measured 835 MiB of the image viewer's 1 GiB. A
+thumbnail buffers the whole file too, whatever its dimensions; with the bound its
+128 MiB buffer and 128 MiB decoder budget fit the thumbnail worker's 512 MiB. The size
+comes from seeking to the end of the brokered source, which both SDKs answer from the
+captured length without reading. Embedded color profiles
 are limited to 4 MiB. Thumbnails reduce the frame first, averaging colors with alpha
 weights so pixels next to transparency are not darkened or tinted, and orient the
 small result afterwards. A frame that already fits the requested bound is not
