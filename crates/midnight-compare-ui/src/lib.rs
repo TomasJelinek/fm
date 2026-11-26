@@ -40,7 +40,7 @@ mod tooltip;
 #[cfg(test)]
 mod wake_tests;
 use midnight_compare_engine::{
-    ExternalCompareChoiceOutcome, ImageMode, Input, Refused, Service, Session, Wake,
+    ExternalCompareChoiceOutcome, ImageMode, Input, Refused, Service, Session, SessionSlot, Wake,
 };
 use midnight_core::{FileCompareLaunch, ShortcutChord, ViewerAppearance, ViewerGeometry};
 use slint::{
@@ -75,6 +75,8 @@ type OpenWindows = RefCell<Vec<Rc<OpenWindow>>>;
 pub struct ComparatorWindows {
     service: Service,
     windows: Rc<OpenWindows>,
+    /// The engine's places of the sessions this manager opened (`counted`).
+    slots: RefCell<Vec<SessionSlot>>,
     app_icon: RefCell<slint::Image>,
     picker_owner: file_choice::PickerOwner,
     font_listener: Rc<RefCell<Option<FontListener>>>,
@@ -404,6 +406,7 @@ impl ComparatorWindows {
         Self {
             service,
             windows: Rc::default(),
+            slots: RefCell::default(),
             app_icon: RefCell::default(),
             picker_owner: |_| midnight_core::PathPickerOwner::None,
             font_listener: Rc::new(RefCell::new(None)),
@@ -477,7 +480,7 @@ impl ComparatorWindows {
         before_palette_read: impl FnOnce(&Session),
     ) -> Result<slint::Weak<ComparatorWindow>, String> {
         self.windows.borrow_mut().retain(|open| !open.closed.get());
-        if self.windows.borrow().len() >= 2 {
+        if self.windows.borrow().len() >= 2 || self.counted() >= 2 {
             return Err("Close a comparator before opening another (maximum two).".into());
         }
         let window = ComparatorWindow::new().map_err(|error| error.to_string())?;
@@ -518,6 +521,7 @@ impl ComparatorWindows {
             wake,
         )
         .map_err(|error| error.to_string())?;
+        self.slots.borrow_mut().push(session.slot());
         before_palette_read(&session);
         let open = OpenWindow::new(
             window,
@@ -558,6 +562,16 @@ impl ComparatorWindows {
         *open.owner.borrow_mut() = Rc::downgrade(&self.windows);
         self.windows.borrow_mut().push(open);
         Ok(weak)
+    }
+    /// The sessions of this manager's comparators that the engine still counts against
+    /// its two: the open ones and closed ones still tearing down (their worker, the
+    /// policy they pinned, an external launch's accounting), normally for milliseconds
+    /// after the window is released. An opening is refused while two are counted, as the
+    /// engine would refuse it, so the window list and the engine never disagree.
+    fn counted(&self) -> usize {
+        let mut slots = self.slots.borrow_mut();
+        slots.retain(|slot| !slot.is_free());
+        slots.len()
     }
     pub fn close_all(&self) {
         for open in self.windows.borrow_mut().drain(..) {

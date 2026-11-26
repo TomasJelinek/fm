@@ -330,6 +330,18 @@ hidden at once and released on the next turn of the event loop (`OpenWindow::rel
 not inside the callback that closed it: its component, timers and session go, and the
 session's mailbox, with any output the worker left in it, is dropped on a blocking
 thread ([record](../verification/2026-11-24-ui-perf-fixes.md#closed-comparator-windows)).
+The engine still counts the closed session against its two until everything holding its
+admission credit is gone: the worker with the comparison's state, the comparator policy
+it pinned (destroyed on the backend's retirement worker) and an external launch's
+accounting, normally for milliseconds. `Session::slot()` reports this: its `SessionSlot`
+outlives the session, and `is_free` turns true only after the count has been lowered.
+`ComparatorWindows` keeps the slots of the sessions it opened and refuses an opening, with
+the usual "Close a comparator before opening another (maximum two).", while two are
+counted, so the window list and the engine never disagree. An opening right after a
+close is therefore refused only while the closed session is still tearing down; nothing
+is queued and nothing polls. `close_release_tests` holds a closed comparator's teardown
+with a test policy whose `Drop` waits: the window list and the engine both count it, and
+an opening is admitted once the engine has released it.
 Each input has Browse; Enter submits both nonempty fields. Short forms center within the window, scroll at 320×200 and keep Compare and
 Cancel outside the scrolling area. File fields own their editing/navigation keys.
 

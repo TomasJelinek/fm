@@ -227,6 +227,7 @@ fn a_stuck_capture_holds_its_credit_while_the_transient_pool_can_run() {
     )
     .unwrap();
     let capture_thread = arrived.recv_timeout(TIMEOUT).unwrap();
+    let slot = session.slot();
     drop(session);
     let other = open(&service, Vec::new()).unwrap();
     assert!(matches!(
@@ -240,9 +241,12 @@ fn a_stuck_capture_holds_its_credit_while_the_transient_pool_can_run() {
         .spawn_blocking(move || transient.send(std::thread::current().id()).unwrap());
     assert_ne!(ran.recv_timeout(TIMEOUT).unwrap(), capture_thread);
     assert_eq!(service.active.load(Ordering::Acquire), 2);
+    assert!(!slot.is_free(), "the closed session's worker still runs");
 
     release.send(()).unwrap();
-    wait_for(|| service.active.load(Ordering::Acquire) == 1);
+    wait_for(|| slot.is_free());
+    // A free slot is already out of the count: the next opening is admitted against it.
+    assert_eq!(service.active.load(Ordering::Acquire), 1);
     let fresh = open(&service, Vec::new()).unwrap();
     drop(fresh);
     drop(other);

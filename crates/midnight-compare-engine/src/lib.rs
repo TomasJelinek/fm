@@ -701,9 +701,29 @@ pub struct Session {
     pub mailbox: Arc<Mailbox>,
     handle: tokio::runtime::Handle,
     worker: resident::Ticket,
+    slot: SessionSlot,
+}
+
+/// Whether a session still holds one of the two places the service admits. A closed
+/// session keeps its place until everything that holds its admission credit is gone:
+/// its worker with the comparison's state, the comparator policy it pinned (destroyed
+/// by the backend's retirement) and an external launch's accounting. `is_free` turns
+/// true only after the service's count has been lowered, so an opening that follows is
+/// never refused because of this session.
+#[derive(Clone, Debug)]
+pub struct SessionSlot(Arc<AtomicBool>);
+
+impl SessionSlot {
+    pub fn is_free(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
 }
 
 impl Session {
+    /// This session's place in the service's count; it outlives the session.
+    pub fn slot(&self) -> SessionSlot {
+        self.slot.clone()
+    }
     /// Read the accepted palette revision, including after close or disconnect.
     pub fn palette_revision(&self) -> u64 {
         self.mailbox
@@ -800,11 +820,16 @@ impl Drop for Session {
     }
 }
 
-struct Permit(Arc<AtomicUsize>);
+struct Permit {
+    active: Arc<AtomicUsize>,
+    free: Arc<AtomicBool>,
+}
 impl ExternalCompareSessionCredit for Permit {}
 impl Drop for Permit {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        self.active.fetch_sub(1, Ordering::AcqRel);
+        // After the count: whoever sees the slot free is admitted against the new count.
+        self.free.store(true, Ordering::Release);
     }
 }
 
@@ -1038,7 +1063,11 @@ impl Service {
                 (count < 2).then_some(count + 1)
             })
             .map_err(|_| OpenError::SessionLimit)?;
-        let permit = Arc::new(Permit(self.active.clone()));
+        let free = Arc::new(AtomicBool::new(false));
+        let permit = Arc::new(Permit {
+            active: self.active.clone(),
+            free: free.clone(),
+        });
         let credit: Arc<dyn ExternalCompareSessionCredit> = permit.clone();
         let generation = GENERATIONS.next().map_err(OpenError::Unavailable)?;
         let (sender, receiver) = mpsc::sync_channel(INPUT_QUEUE);
@@ -1132,6 +1161,7 @@ impl Service {
             mailbox,
             handle: self.handle.clone(),
             worker,
+            slot: SessionSlot(free),
         })
     }
     pub fn retire<T: Send + 'static>(&self, value: T) {
