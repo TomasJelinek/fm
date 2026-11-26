@@ -80,7 +80,7 @@ use slint::{ComponentHandle, Timer, TimerMode};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[allow(unsafe_code)]
@@ -152,37 +152,128 @@ pub struct ViewerWindows {
 /// Creating a viewer component also creates its window renderer, and Slint's winit
 /// backend checks for a hardware graphics adapter each time it does so by enumerating
 /// every adapter: 150-180 ms on the UI thread on Windows, although every window renders
-/// with the application's one shared device. The spare moves that cost off the opening:
-/// it is built `SPARE_DELAY` after the application asks for it and after each opening
-/// takes it. It is a component only: no native window, surface, backend session or
-/// helper process exists until an opening shows it. `release_spare_window` drops it and
-/// stops refilling. Building it still occupies the UI thread once per opening, while
-/// nothing is being opened.
-#[derive(Default)]
+/// with the application's one shared device. The spare moves that cost off the opening.
+/// It is built only when the application is idle: no keyboard, pointer, wheel or touch
+/// input to any of its windows for `SPARE_QUIET` (`note_user_input_event`), no viewer
+/// opening or moving, and the application's gate (its main window shown and not
+/// minimized) open. Otherwise it tries again later, at most `SPARE_ATTEMPTS` times
+/// until the next opening. It is a component only: no native window, surface, backend
+/// session or helper process exists until an opening shows it. `release_spare_window`
+/// drops it and stops refilling.
 struct SpareWindow {
     window: RefCell<Option<ViewerWindow>>,
     timer: Timer,
     released: Cell<bool>,
+    attempts: Cell<u32>,
+    windows: std::rc::Weak<WindowList>,
+    gate: RefCell<Option<Rc<dyn Fn() -> bool>>>,
 }
 
-const SPARE_DELAY: Duration = Duration::from_millis(1500);
+/// Input-free time before the spare is built, and the shortest wait between attempts.
+const SPARE_QUIET: Duration = Duration::from_millis(1500);
+const SPARE_RETRY: Duration = Duration::from_millis(500);
+/// Attempts after one opening (at least 20 s of waiting for idleness), then none until
+/// the next opening.
+const SPARE_ATTEMPTS: u32 = 40;
+
+thread_local! {
+    static LAST_INPUT: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Record user input to any application window; the spare viewer component waits for
+/// `SPARE_QUIET` without it. Call from the event loop's window-event observer.
+pub fn note_user_input_event(event: &slint::winit_030::winit::event::WindowEvent) {
+    use slint::winit_030::winit::event::WindowEvent;
+    if matches!(
+        event,
+        WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::Touch(_)
+            | WindowEvent::PinchGesture { .. }
+            | WindowEvent::PanGesture { .. }
+    ) {
+        note_user_input_at(Instant::now());
+    }
+}
+
+fn note_user_input_at(at: Instant) {
+    LAST_INPUT.with(|last| last.set(Some(at)));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SpareAttempt {
+    Build,
+    Wait(Duration),
+    Stop,
+}
 
 impl SpareWindow {
+    fn new(windows: std::rc::Weak<WindowList>) -> Self {
+        Self {
+            window: RefCell::default(),
+            timer: Timer::default(),
+            released: Cell::new(false),
+            attempts: Cell::new(0),
+            windows,
+            gate: RefCell::default(),
+        }
+    }
+
+    /// Start a new series of attempts, the first after `SPARE_QUIET`.
     fn schedule(self: &Rc<Self>) {
+        self.attempts.set(0);
+        self.arm(SPARE_QUIET);
+    }
+
+    fn arm(self: &Rc<Self>, delay: Duration) {
         if self.released.get() {
             return;
         }
         let spare = Rc::downgrade(self);
-        self.timer
-            .start(TimerMode::SingleShot, SPARE_DELAY, move || {
-                if let Some(spare) = spare.upgrade()
-                    && !spare.released.get()
-                    && spare.window.borrow().is_none()
-                    && let Ok(window) = ViewerWindow::new()
-                {
-                    *spare.window.borrow_mut() = Some(window);
+        self.timer.start(TimerMode::SingleShot, delay, move || {
+            let Some(spare) = spare.upgrade() else {
+                return;
+            };
+            match spare.attempt(Instant::now()) {
+                SpareAttempt::Build => {
+                    if let Ok(window) = ViewerWindow::new() {
+                        *spare.window.borrow_mut() = Some(window);
+                    }
                 }
-            });
+                SpareAttempt::Wait(delay) => spare.arm(delay),
+                SpareAttempt::Stop => {}
+            }
+        });
+    }
+
+    /// Whether the spare can be built at `now`, or how long to wait before asking again.
+    fn attempt(&self, now: Instant) -> SpareAttempt {
+        if self.released.get() || self.window.borrow().is_some() {
+            return SpareAttempt::Stop;
+        }
+        let quiet = LAST_INPUT.with(Cell::get).map_or(Duration::ZERO, |at| {
+            SPARE_QUIET.saturating_sub(now.saturating_duration_since(at))
+        });
+        let busy = self.windows.upgrade().is_some_and(|windows| {
+            windows.borrow().iter().any(|open| {
+                !open.closed.get()
+                    && (open.ready.borrow().is_some()
+                        || open.raster_redraw.running()
+                        || open.image_redraw.running()
+                        || web_input::gliding(open))
+            })
+        });
+        let gated = self.gate.borrow().as_ref().is_some_and(|gate| !gate());
+        if quiet.is_zero() && !busy && !gated {
+            return SpareAttempt::Build;
+        }
+        if self.attempts.get() >= SPARE_ATTEMPTS {
+            return SpareAttempt::Stop;
+        }
+        self.attempts.set(self.attempts.get() + 1);
+        SpareAttempt::Wait(quiet.max(SPARE_RETRY))
     }
 
     /// The prepared component, or a new one when none is ready; schedules the next.
@@ -362,15 +453,16 @@ impl OpenWindow {
 
 impl ViewerWindows {
     pub fn new(service: Service) -> Self {
+        let windows: Rc<WindowList> = Rc::default();
         Self {
             service,
-            windows: Rc::default(),
             app_icon: RefCell::default(),
             preferences_listener: Rc::new(RefCell::new(Rc::new(|_| {}))),
             appearance: RefCell::new(None),
             motion_preference: Rc::new(RefCell::new(Rc::new(|| false))),
             link_listener: links::relay(),
-            spare: Rc::default(),
+            spare: Rc::new(SpareWindow::new(Rc::downgrade(&windows))),
+            windows,
         }
     }
 
@@ -382,6 +474,12 @@ impl ViewerWindows {
         if self.spare.window.borrow().is_none() {
             self.spare.schedule();
         }
+    }
+
+    /// The application's own condition for building the spare component, checked with
+    /// the idleness above, for example that its main window is shown and not minimized.
+    pub fn set_spare_window_gate(&self, gate: Rc<dyn Fn() -> bool>) {
+        *self.spare.gate.borrow_mut() = Some(gate);
     }
 
     /// Drop the spare component and build no other one until `prepare_spare_window`.
@@ -1797,6 +1895,7 @@ fn bind(open: &Rc<OpenWindow>) {
     #[cfg(feature = "acceptance-seams")]
     acceptance_seams::install(open, observer.clone(), scroll);
     open.window.window().on_winit_window_event(move |_, event| {
+        note_user_input_event(event);
         // Winit delivers one event at a time: a nested one would find the observer busy.
         observer
             .try_borrow_mut()

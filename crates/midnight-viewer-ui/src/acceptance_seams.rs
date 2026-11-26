@@ -159,6 +159,8 @@ fn observer(
 
 /// Whether the observer consumed `event`, as `on_winit_window_event` asks it.
 fn deliver(observer: &NativeObserver, event: &WindowEvent) -> bool {
+    // As the window's native event hook: user input postpones the spare viewer component.
+    note_user_input_event(event);
     observer
         .try_borrow_mut()
         .is_ok_and(|mut observe| (*observe)(event) == EventResult::PreventDefault)

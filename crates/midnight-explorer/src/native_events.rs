@@ -112,6 +112,8 @@ impl CustomApplicationHandler for Observer {
         window: Option<&slint::Window>,
         event: &WindowEvent,
     ) -> EventResult {
+        // Input to any window postpones building the next viewer's component.
+        midnight_viewer_ui::note_user_input_event(event);
         self.presentation.observe(id, native, window, event);
         #[cfg(windows)]
         self.taskbar_icons

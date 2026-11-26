@@ -286,8 +286,8 @@ fn cancel_glide(open: &OpenWindow) {
     native.redraw.stop();
 }
 
-/// The glide's frame clock runs (tests, and the acceptance seams' frames).
-#[cfg(any(test, feature = "acceptance-seams"))]
+/// The glide's frame clock runs (the spare viewer component waits for it, as do tests and
+/// the acceptance seams' frames).
 pub(super) fn gliding(open: &OpenWindow) -> bool {
     open.web_native.borrow().redraw.running()
 }

@@ -145,8 +145,16 @@ how much text it holds. An empty file copies empty text.
 ## Opening a viewer window
 
 `ViewerWindows` keeps at most one viewer component built ahead of the next opening.
-- It is built on the UI thread 1.5 s after `prepare_spare_window` (the application calls
-  it when it installs its viewers) and 1.5 s after each opening takes it.
+- It is built on the UI thread after `prepare_spare_window` (the application calls it
+  when it installs its viewers) and after each opening takes it, once the application is
+  idle:
+  - no input to any of its windows for 1.5 s (`note_user_input_event`, called by the
+    application's window-event observer and by each viewer's native event hook);
+  - no viewer opening, gliding or scrolling;
+  - the gate set with `set_spare_window_gate` open; the application's gate requires its
+    main window to be shown and not minimized.
+
+  It retries at least every 0.5 s, 40 times at most, then waits for the next opening.
 - It owns no native window, surface, engine session or helper process until an opening
   shows it. `release_spare_window` drops it and stops refilling; the application calls
   it on exit.

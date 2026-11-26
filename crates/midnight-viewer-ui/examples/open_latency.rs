@@ -11,7 +11,9 @@
 //! opening in a process is the cold one. `MIDNIGHT_PROBE_SETTLE_MS=N` waits N ms after
 //! startup before the first opening (default: the first 250 ms tick), as a user who presses
 //! F3 a moment after the window appeared. `MIDNIGHT_PROBE_PAUSE_MS=N` waits N ms after each
-//! opening's first frame before the next opening. Build with `--features open-trace` and
+//! opening's first frame before the next opening. With `--features acceptance-seams`,
+//! `MIDNIGHT_PROBE_SCROLL_MS=N` turns the wheel in each opened viewer every 16 ms for N ms
+//! after its first frame and reports the longest gap between those turns (UI-thread stalls). Build with `--features open-trace` and
 //! set MIDNIGHT_VIEWER_OPEN_TRACE=1 for per-phase timestamps in optimized builds. Startup
 //! phases per viewer kind: docs/verification/2026-11-26-viewer-startup.md.
 #[cfg(target_os = "linux")]
@@ -195,6 +197,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and position, as the file manager's viewers take the main window's.
     let placement = Rc::new(RefCell::new(None::<midnight_ui_input::WindowPlacement>));
     let captured = placement.clone();
+    // Wheel turns after the first frame, while the scrolled viewer stays open.
+    let scroll_for = Duration::from_millis(
+        environment_number("MIDNIGHT_PROBE_SCROLL_MS")
+            .filter(|_| cfg!(feature = "acceptance-seams"))
+            .unwrap_or(0),
+    );
+    let scrolling = Rc::new(Cell::new(false));
+    let after_scroll = Cell::new(false);
+    let scroll_timer = RefCell::new(None::<slint::Timer>);
     let timer = slint::Timer::default();
     let tick = {
         let manager = manager.clone();
@@ -202,6 +213,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let done = done.clone();
         move || {
             if let Some(start) = started.get() {
+                if scrolling.get() {
+                    return;
+                }
+                if after_scroll.take() {
+                    // Dropped outside its own callback.
+                    scroll_timer.borrow_mut().take();
+                    manager.close_all();
+                    windows.borrow_mut().clear();
+                    started.set(None);
+                    finished.set(Some(Instant::now()));
+                    return;
+                }
                 let Some(result) = done.take() else {
                     if start.elapsed() > Duration::from_secs(60) {
                         *failure.borrow_mut() = Some("opening timed out".into());
@@ -232,6 +255,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = slint::quit_event_loop();
                         return;
                     }
+                }
+                if !scroll_for.is_zero()
+                    && let Some(window) = windows.borrow().last().and_then(|w| w.upgrade())
+                {
+                    scrolling.set(true);
+                    after_scroll.set(true);
+                    *scroll_timer.borrow_mut() =
+                        scroll(&manager, window, scroll_for, scrolling.clone());
+                    return;
                 }
                 if !together {
                     manager.close_all();
@@ -334,4 +366,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(message.into());
     }
     Ok(())
+}
+
+/// Turn the wheel down in `window` every 16 ms for `duration`, then report the longest
+/// gap between turns: a UI-thread stall delays the timer that turns it. The returned timer
+/// turns until it is dropped; it stops turning after `duration`.
+#[cfg(feature = "acceptance-seams")]
+fn scroll(
+    manager: &Rc<ViewerWindows>,
+    window: midnight_viewer_ui::ViewerWindow,
+    duration: Duration,
+    scrolling: Rc<Cell<bool>>,
+) -> Option<slint::Timer> {
+    use midnight_viewer_ui::acceptance_seams::{NativeWheel, wheel};
+    let manager = Rc::downgrade(manager);
+    let begun = Instant::now();
+    let last = Cell::new(begun);
+    let longest = Cell::new(Duration::ZERO);
+    let turns = Cell::new(0u32);
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(16),
+        move || {
+            if !scrolling.get() {
+                return;
+            }
+            let now = Instant::now();
+            longest.set(longest.get().max(now - last.replace(now)));
+            if let Some(manager) = manager.upgrade() {
+                let _ = wheel(
+                    &manager,
+                    &window,
+                    slint::LogicalPosition::new(300.0, 300.0),
+                    NativeWheel::Lines { x: 0.0, y: -1.0 },
+                );
+            }
+            turns.set(turns.get() + 1);
+            if now - begun >= duration {
+                println!(
+                    "scroll turns={} max_gap_ms={:.1}",
+                    turns.get(),
+                    longest.get().as_secs_f64() * 1000.0
+                );
+                scrolling.set(false);
+            }
+        },
+    );
+    Some(timer)
+}
+
+#[cfg(not(feature = "acceptance-seams"))]
+fn scroll(
+    _: &Rc<ViewerWindows>,
+    _: midnight_viewer_ui::ViewerWindow,
+    _: Duration,
+    scrolling: Rc<Cell<bool>>,
+) -> Option<slint::Timer> {
+    scrolling.set(false);
+    None
 }

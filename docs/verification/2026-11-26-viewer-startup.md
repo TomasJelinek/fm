@@ -144,16 +144,23 @@ renderer).
 **Spare viewer component** (`midnight-viewer-ui`, `SpareWindow`).
 - What it is: `ViewerWindows` keeps at most one viewer component that has not been
   shown yet.
-- When it is built: on the UI thread, 1.5 s after `prepare_spare_window` (the
-  application calls it when it installs its viewers) and 1.5 s after each opening takes
-  it.
+- When it is built: on the UI thread, after `prepare_spare_window` (the application
+  calls it when it installs its viewers) and after each opening takes it, but only once
+  the application is idle:
+  - no keyboard, pointer, wheel or touch input to any of its windows for 1.5 s;
+  - no viewer still opening, gliding or scrolling;
+  - the main window shown and not minimized.
+
+  Until then it tries again (at least every 0.5 s, 40 times at most) and then waits for
+  the next opening. The application's window-event observer records input for every
+  window (`note_user_input_event`); battery saver is not consulted.
 - What it holds: a component only, with no native window, surface, engine session or
   helper process until an opening shows it.
 - Release: `release_spare_window` drops it and stops refilling. The application calls
   it on exit, before closing its viewers.
 - Effect: the adapter enumeration (cause 1) moves off the opening into an idle moment.
-  It still occupies the UI thread for about 150–180 ms once per opening, while nothing
-  is being opened.
+  It still occupies the UI thread for about 150–180 ms once per opening, but only after
+  the user has stopped using the application for 1.5 s.
 - No Slint source is changed for it. The owner decided against patching Slint's winit
   backend.
 
@@ -220,7 +227,24 @@ playback helper.
   - Repeated openings: while eight openings of the same file ran 2 s apart, both builds
     held 212–274 MB of private bytes, and the spare did not accumulate.
   - UI thread: building the spare takes it for one adapter enumeration (cause 1) per
-    opening, 1.5 s after that opening.
+    opening, only after 1.5 s without input.
+  - Scrolling right after an opening, measured with `open_latency` built with
+    `acceptance-seams` and `MIDNIGHT_PROBE_SCROLL_MS=3000`: the probe turns the wheel
+    every 16 ms for 3 s after each first frame. The table gives the longest gap between
+    turns, 3 rounds × 4 openings each (the source run in 3 of its 12 processes ended
+    early, see below).
+
+    | Fixture | Built 1.5 s after each opening | Built only when idle |
+    | --- | ---: | ---: |
+    | Text (900 B) | median 206, max 223 ms (12) | median 18, max 25 ms (12) |
+    | Source (92 KB) | median 205, max 231 ms (12) | median 19, max 23 ms (9) |
+
+  - Warm openings did not change (9 each, before → after): text 64 → 61 ms, source
+    72 → 74 ms, and in a separate run text 63 → 61 ms and PNG 1080p 118 → 120 ms.
+  - Probe fault: in scroll mode, 3 source processes (one before the change, two after)
+    ended with a panic in Slint's timer list ("RefCell already borrowed") after at least
+    one scroll was recorded. This was not seen without scroll mode and was not
+    investigated further.
 - **Image spare:** unchanged. One source-free helper while fewer than four helpers are
   live, retired after 60 s unused (see the [image viewer API](../developer/IMAGE_VIEWER_API.md)).
 - **No other prewarming was added.**
@@ -274,7 +298,8 @@ These ran on the rebased tree, in debug test builds unless stated.
   --locked --offline` passed:
   - image viewer host: 42 passed, 4 ignored;
   - viewer engine: 671 passed, 20 ignored;
-  - viewer UI: 259 library tests and 36 integration tests passed.
+  - viewer UI: 262 library tests and 36 integration tests passed, after the idle
+    gating.
 - New tests:
   - The image host admits a package with nested licence notices and revalidates it.
   - The image host refuses a junction (Linux: a symbolic link) deep in a package, both at
@@ -282,6 +307,9 @@ These ran on the rebased tree, in debug test builds unless stated.
   - The image host refuses a package deeper than its budget.
   - An opening takes the prepared spare component and leaves none behind.
   - A released spare is dropped and not refilled.
+  - Recent input defers the spare until 1.5 s of quiet, and a closed gate defers it.
+    Attempts are bounded.
+  - A viewer still opening defers the spare, and a released spare stops.
   - The engine's opening trace is off unless requested.
 - `cargo test -p midnight-explorer --bin midnight-explorer viewers::`: 6 passed, 4 ignored.
 - `cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance

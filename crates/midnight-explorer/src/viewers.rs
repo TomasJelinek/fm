@@ -150,7 +150,13 @@ pub(crate) fn install(
     *retirement = Some(service.image_spare_retirement());
     let image_preparation = Rc::new(ImagePreparation::new(service.clone()));
     let viewers = Rc::new(ViewerWindows::new(service));
-    // The first viewer's component is built while the started application is idle.
+    // The next viewer's component is built while the application is idle, and never
+    // while its main window is hidden or minimized.
+    let main = window.as_weak();
+    viewers.set_spare_window_gate(Rc::new(move || {
+        main.upgrade()
+            .is_some_and(|main| main.window().is_visible() && !main.window().is_minimized())
+    }));
     viewers.prepare_spare_window();
     // A tab's archive that a viewer still shows is not replaced by the tab's next one.
     let census = Rc::downgrade(&viewers);

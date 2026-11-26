@@ -210,3 +210,49 @@ fn a_released_spare_is_dropped_and_not_refilled_by_an_opening() {
     assert!(manager.spare.timer.running());
     manager.close_all();
 }
+
+#[test]
+fn recent_input_defers_the_spare_until_the_application_is_quiet() {
+    let spare = SpareWindow::new(std::rc::Weak::new());
+    let now = std::time::Instant::now();
+    note_user_input_at(now);
+    assert_eq!(spare.attempt(now), SpareAttempt::Wait(SPARE_QUIET));
+    let later = now + Duration::from_millis(1200);
+    assert_eq!(
+        spare.attempt(later),
+        SpareAttempt::Wait(SPARE_RETRY),
+        "the wait is at least the retry interval"
+    );
+    assert_eq!(spare.attempt(now + SPARE_QUIET), SpareAttempt::Build);
+}
+
+#[test]
+fn a_closed_gate_defers_the_spare_and_attempts_are_bounded() {
+    let spare = SpareWindow::new(std::rc::Weak::new());
+    let open = Rc::new(Cell::new(false));
+    let gate = open.clone();
+    *spare.gate.borrow_mut() = Some(Rc::new(move || gate.get()));
+    let now = std::time::Instant::now() + Duration::from_secs(60);
+    for _ in 0..SPARE_ATTEMPTS {
+        assert_eq!(spare.attempt(now), SpareAttempt::Wait(SPARE_RETRY));
+    }
+    assert_eq!(
+        spare.attempt(now),
+        SpareAttempt::Stop,
+        "no endless retries until the next opening"
+    );
+    open.set(true);
+    assert_eq!(spare.attempt(now), SpareAttempt::Build);
+}
+
+#[test]
+fn an_opening_in_progress_defers_the_spare_and_a_released_spare_stops() {
+    let (_runtime, manager, _open, _service) = opening(Box::new(|_| {}));
+    // This viewer has not shown content yet (its capture is unavailable).
+    let now = std::time::Instant::now() + Duration::from_secs(60);
+    assert_eq!(manager.spare.attempt(now), SpareAttempt::Wait(SPARE_RETRY));
+    manager.close_all();
+    assert_eq!(manager.spare.attempt(now), SpareAttempt::Build);
+    manager.release_spare_window();
+    assert_eq!(manager.spare.attempt(now), SpareAttempt::Stop);
+}
