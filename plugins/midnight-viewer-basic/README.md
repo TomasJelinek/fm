@@ -1,8 +1,9 @@
 # Basic viewer
 
 Independent `midnight.viewer.basic` 0.1.0 plugin. It depends only on versioned
-`midnight-plugin-sdk` 0.1.0 from the `midnight` registry, which supplies the public
-API. Its Cargo workspace and lockfile are separate from the application.
+`midnight-plugin-sdk` 0.2.1 from the `midnight` registry, which supplies the public
+API 0.2.0. SDK 0.2.1 has no per-library instance count limit, so any number of
+documents can use this viewer at once. Its Cargo workspace and lockfile are separate from the application.
 
 ## Build, test and install
 
@@ -31,8 +32,8 @@ DLL/SO manifest. The checked-in manifest is the Windows template. The default
 output is `BUILD_ROOT/package/midnight-viewer-basic`; copy that directory under
 `viewers/` beside the host executable. Remove it and restart to remove capability.
 The platform-neutral ABI tests use real SDK dispatch and host service callbacks.
-Their test host keeps at most the SDK's 16 live plugin instances per test process
-and queues further hosts, so tests running in parallel never fail with `QUEUE_FULL`.
+Tests running in parallel each create their own plugin instance; one test keeps 40
+instances open at once.
 The distribution's host tests own native DLL/SO loading and routing checks.
 
 ## Behavior and limits

@@ -3,80 +3,8 @@ use midnight_plugin_sdk::api::{abi, codec, messages};
 use std::{
     collections::{HashMap, VecDeque},
     mem::MaybeUninit,
-    sync::{Condvar, Mutex, MutexGuard, PoisonError},
-    time::{Duration, Instant},
+    sync::{Mutex, MutexGuard, PoisonError},
 };
-
-/// The SDK admits at most 16 live plugin instances per loaded library and
-/// rejects further `create` calls with `QUEUE_FULL` (ABI_AND_LIFECYCLE.md),
-/// while libtest runs one test per hardware thread. Each `Host` holds one of
-/// these slots from before `create` until after `destroy`, so surplus tests
-/// queue here instead of failing.
-const INSTANCE_SLOTS: usize = 16;
-/// Elapses only when slots leak or a test that holds one hangs.
-const SLOT_WAIT: Duration = Duration::from_secs(120);
-struct Slots {
-    used: usize,
-    /// Hosts blocked in `Slot::acquire`.
-    waiting: usize,
-}
-static SLOTS: Mutex<Slots> = Mutex::new(Slots {
-    used: 0,
-    waiting: 0,
-});
-static SLOTS_CHANGED: Condvar = Condvar::new();
-
-fn wait_slots(
-    slots: MutexGuard<'static, Slots>,
-    deadline: Instant,
-    what: &str,
-) -> MutexGuard<'static, Slots> {
-    let left = deadline.saturating_duration_since(Instant::now());
-    if left.is_zero() {
-        drop(slots);
-        panic!("Waited {SLOT_WAIT:?} for {what}");
-    }
-    SLOTS_CHANGED
-        .wait_timeout(slots, left)
-        .unwrap_or_else(PoisonError::into_inner)
-        .0
-}
-
-/// One SDK instance slot, returned on drop while `release` is set, also when
-/// a test panics. It stays taken while the plugin instance outlives its host.
-struct Slot {
-    release: bool,
-}
-impl Slot {
-    fn acquire() -> Self {
-        let deadline = Instant::now() + SLOT_WAIT;
-        let mut slots = lock(&SLOTS);
-        while slots.used >= INSTANCE_SLOTS {
-            slots.waiting += 1;
-            SLOTS_CHANGED.notify_all();
-            slots = wait_slots(slots, deadline, "a released plugin instance slot");
-            slots.waiting -= 1;
-        }
-        slots.used += 1;
-        Self { release: true }
-    }
-}
-impl Drop for Slot {
-    fn drop(&mut self) {
-        if self.release {
-            lock(&SLOTS).used -= 1;
-            SLOTS_CHANGED.notify_all();
-        }
-    }
-}
-/// Blocks until `count` hosts wait for a plugin instance slot.
-pub fn await_slot_waiters(count: usize) {
-    let deadline = Instant::now() + SLOT_WAIT;
-    let mut slots = lock(&SLOTS);
-    while slots.waiting < count {
-        slots = wait_slots(slots, deadline, "hosts waiting for an instance slot");
-    }
-}
 
 struct Work {
     context: usize,
@@ -119,8 +47,6 @@ pub struct Host {
     pub reads: Vec<messages::ReadAt>,
     pub events: Vec<Event>,
     next_buffer: u64,
-    // Fields drop after `Drop::drop`, so the slot outlives `destroy`.
-    slot: Slot,
 }
 fn empty() -> abi::ByteSlice {
     slice(&[])
@@ -247,7 +173,6 @@ impl Host {
         );
         let api = unsafe { api.assume_init() };
         let mut instance = 0;
-        let slot = Slot::acquire();
         assert_eq!(
             unsafe { api.create.unwrap()(&host, empty(), &mut instance) },
             abi::OK
@@ -262,7 +187,6 @@ impl Host {
             reads: vec![],
             events: vec![],
             next_buffer: 1,
-            slot,
         }
     }
     pub fn submit<T: codec::Model>(
@@ -494,14 +418,11 @@ impl Host {
 }
 impl Drop for Host {
     fn drop(&mut self) {
-        // The instance occupies its SDK slot until `destroy` succeeds.
-        self.slot.release = false;
         unsafe {
             self.api.begin_shutdown.unwrap()(self.instance);
         }
         self.pump();
         let destroyed = unsafe { self.api.destroy.unwrap()(self.instance) };
-        self.slot.release = destroyed == abi::OK;
         assert_eq!(destroyed, abi::OK);
         self.check();
         assert!(

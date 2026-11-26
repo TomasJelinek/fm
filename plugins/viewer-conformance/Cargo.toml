@@ -13,7 +13,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-midnight-plugin-sdk = { version = "=0.1.0", registry = "midnight" }
+midnight-plugin-sdk = { version = "=0.2.1", registry = "midnight" }
 
 [profile.release]
 opt-level = 3

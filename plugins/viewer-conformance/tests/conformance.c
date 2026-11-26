@@ -197,6 +197,20 @@ static void panic_boundary(void) {
     run_all(); terminal(instance, MidnightEVENT_FAILED); destroy(instance);
 }
 
+/* SDK 0.2.1 has no per-library instance count limit (0.1.0/0.2.0 refused a 17th). */
+static void many_instances(void) {
+    enum { INSTANCES = 40 };
+    uint64_t instances[INSTANCES];
+    for (uint32_t i = 0; i < INSTANCES; ++i) instances[i] = create();
+    for (uint32_t i = 0; i < INSTANCES; ++i) {
+        for (uint32_t j = 0; j < i; ++j) CHECK(instances[i] != instances[j]);
+        CHECK(submit(instances[i], 2) == MidnightOK);
+    }
+    run_all();
+    for (uint32_t i = 0; i < INSTANCES; ++i) terminal(instances[i], MidnightEVENT_COMPLETED);
+    for (uint32_t i = 0; i < INSTANCES; ++i) destroy(instances[i]);
+}
+
 int conformance(MidnightEntry entry) {
     MidnightPluginApi untouched;
     memset(&untouched, 0xa5, sizeof(untouched));
@@ -206,7 +220,8 @@ int conformance(MidnightEntry entry) {
     CHECK(entry(&plugin, sizeof(plugin)) == MidnightOK);
     CHECK(plugin.header.abi_major == 1 && plugin.header.kind == MidnightKIND_VIEWER);
     admission(); cancelled_work(); retained_read(); late_reply(); backpressure(); panic_boundary();
+    many_instances();
     CHECK(notifications != 0);
-    puts("PASS: 7 exported plugin ABI scenarios, no retained jobs/services/buffers");
+    puts("PASS: 8 exported plugin ABI scenarios, no retained jobs/services/buffers");
     return 0;
 }

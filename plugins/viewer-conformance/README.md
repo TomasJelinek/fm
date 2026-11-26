@@ -7,7 +7,8 @@ dependency or source patch. Do not install this fixture in a user's `viewers/`.
 
 Its native C tests load the built DLL/SO through the sole versioned export and
 exercise admission, delayed reads, retained buffers, cancellation, backpressure,
-panic containment and quiescent shutdown. They belong to this plugin project.
+panic containment, quiescent shutdown and 40 live instances of the one library
+(SDK 0.2.1 has no instance count limit; 0.1.0 and 0.2.0 refused a 17th). They belong to this plugin project.
 Windows and Linux loader/test scripts are kept in separate files.
 
 Build an API/SDK bundle with `api/scripts/package.ps1` or `api/scripts/package.sh`,

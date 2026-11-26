@@ -258,7 +258,8 @@ Styles are retained rather than clearing all colouring to fit a larger page.
 
 ## Bounds and protocol
 
-This independent package uses only the released public API/SDK 0.2.0. Open returns
+This independent package uses only the released public API 0.2.0 and SDK 0.2.1, which
+has no per-library instance count limit. Open returns
 Opened; the host then requests its first viewport. All reads use owned SDK
 continuations. Short reads continue until the requested bounded slice or EOF.
 Close discards session state; the host owns closing the content reader lease.

@@ -28,9 +28,9 @@ dependencies = [
 
 [[package]]
 name = "midnight-plugin-sdk"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "028b4c02ac88000aab0d4143f01b71caebfcfd3d4e06c4d7f8f75bfbf4f4290e"
+checksum = "6a8bc05c2b75783ec5f304393e60fc730b45ccf4399ca41012365be75e873dc3"
 dependencies = [
  "midnight-plugin-api",
 ]

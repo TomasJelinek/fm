@@ -4,18 +4,18 @@ version = 4
 
 [[package]]
 name = "midnight-plugin-api"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "f264a39c3ee43af518926887a7ef9e4a3751c093f21e924ca0e7f1e3d8009711"
+checksum = "2cf88dfe768501bcc4579d27284fe1eeb437a58ad0a786dae2cdaab27208c252"
 dependencies = [
  "minicbor",
 ]
 
 [[package]]
 name = "midnight-plugin-sdk"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "3cbd8b9bd227807c58ee3467a895e93ee0c59eb88064a8fc694f859233c8220a"
+checksum = "6a8bc05c2b75783ec5f304393e60fc730b45ccf4399ca41012365be75e873dc3"
 dependencies = [
  "midnight-plugin-api",
 ]
