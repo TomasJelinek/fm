@@ -69,8 +69,10 @@ protocol 1, so a provider cannot silently change its declared role.
 
 Discovery reads at most 128 package candidates, a 16 KiB manifest, and 512 entries
 per package with depth at most 8. Every package entry and ancestor passes the
-existing native owner/write-permission and redirection checks; the package is
-rechecked immediately before launch. Special files, redirected paths and
+existing native owner/write-permission and redirection checks, in the shared package
+walk of the plugin host: the package folder with every folder above it once, then each
+object below it on its own (its folder was accepted earlier in the same walk). The
+package is rechecked immediately before launch. Special files, redirected paths and
 ambiguous package roles fail. No working directory, panel folder, archive, PATH
 or source filename selects executable code. These checks establish installation
 trust, not publisher authentication or protection against the trusted account.

@@ -220,6 +220,11 @@ pub fn discover_with_diagnostics(application_executable: &Path) -> io::Result<Di
     Ok(result)
 }
 
+/// The package's shape within its budgets, then the shared package trust walk: the package
+/// folder with every folder above it once, and each object below it on its own (owner, ACL
+/// or mode, canonical path, regular file or folder). Checking every ancestor again for each
+/// of the package's objects took about 130 ms for a package with about 390 licence notices,
+/// and each image or PDF opening validates its package up to three times.
 fn validate_package(package: &Path) -> io::Result<()> {
     let mut pending = vec![(package.to_path_buf(), 0)];
     let mut count = 0;
@@ -230,7 +235,6 @@ fn validate_package(package: &Path) -> io::Result<()> {
                 "Image-viewer package traversal budget exceeded",
             ));
         }
-        midnight_plugin_host::validate_plugin_path(&path).map_err(io::Error::other)?;
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
             return Err(io::Error::other(
@@ -248,7 +252,7 @@ fn validate_package(package: &Path) -> io::Result<()> {
             }
         }
     }
-    Ok(())
+    midnight_plugin_host::validate_plugin_package(package).map_err(io::Error::other)
 }
 
 fn identifier(value: &str, limit: usize) -> bool {
