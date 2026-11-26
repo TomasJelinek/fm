@@ -381,7 +381,7 @@ impl Presenter {
         let Some(found) = s
             .results
             .iter()
-            .find(|r| r.id == request.result && entry.matches_capture(&r.entry))
+            .find(|r| r.id == request.result && entry.matches_capture_except_change_time(&r.entry))
         else {
             s.error = "Search result changed. Run the search again.".into();
             return;

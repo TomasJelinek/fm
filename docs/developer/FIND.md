@@ -93,6 +93,20 @@ directory's visible binding is checked once when its enumeration starts, so
 entries created, removed or renamed inside it during the search do not end its
 traversal; directory results stay valid while their contents change, and each
 result is still revalidated by its own path, identity and (for files) revision.
+
+A file's revision is compared without its change time (VIEW-05, as viewers do):
+Windows compares the volume and file ID, size, LastWriteTime, CreationTime and
+attributes (without the cloud-state ones), Linux the device and inode, size, mtime
+(seconds and nanoseconds) and mode, so a chmod is still a change. A ChangeTime or
+ctime that moved alone counts as unchanged: endpoint protection attaches extended
+attributes to a file within a second of its first read, Find's own reads included,
+and on Linux xattr, chown and link-count changes move the ctime. This applies to
+every revalidation of a captured file (`FindEntry::matches_capture_except_change_time`):
+before and after reading content, before a result is published, the archive file
+after it is opened for Search inside archives, duplicate candidates when they are
+hashed, and results reopened for an action. A "Find object identity or revision
+changed" diagnostic names each fact that differed. Decided limit, as for viewers: a
+same-length rewrite that restores the modification time is not detected.
 See the [backend design](../superpowers/specs/2026-11-07-recursive-find-design.md)
 for budgets, skipped mount/link policy, revisions and sampled diagnostics.
 
@@ -401,7 +415,8 @@ traverse at once and each opens one archive at a time, beside the two archives t
 panels, tabs and viewers may have open and the three archives inside archives. So Find
 searches inside archives while both panels show archives, and a running search never
 makes a panel refuse one. The archive file itself is revalidated after opening, so a
-replaced file is not searched. Members are matched like native
+replaced file is not searched; a change time that moved alone (endpoint protection
+tagging the archive on its first read) is accepted, as for every Find revision. Members are matched like native
 entries: name masks or regex, metadata expressions (kind, size, the archive's time
 when it carries a time zone), Modified within, and content streamed through the
 provider in the content reader's chunks. Identical files searches native files only;

@@ -1545,7 +1545,10 @@ classifications.
   later; a same-length rewrite that restores the modification time is then not detected
   while a file is displayed or an archive is open, nor when a saved tab or Hot Path
   reopens that archive. A different file at the path, a link and every other change are
-  still refused. Reads are bounded to 256 KiB and use u64 offsets. Each open document
+  still refused. Find revalidates its captured files the same way (identity, size,
+  LastWriteTime, CreationTime and attributes on Windows; identity, size, mtime and mode
+  on Linux; the change time alone may move), with the same limit while it searches and
+  until a result is acted on ([Find](docs/developer/FIND.md)). Reads are bounded to 256 KiB and use u64 offsets. Each open document
   has its own session with its own host limits (no count limits sessions: the user decides
   how many viewer windows are open); decoded pages, wire items, retained service replies
   and raster surfaces have separate explicit budgets. Selection/copy is limited to the loaded page.

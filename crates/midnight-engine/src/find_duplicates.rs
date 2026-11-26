@@ -317,7 +317,7 @@ fn open(
     let source = service
         .open_find_source(&entry.path, work.cancel)
         .map_err(Issue::Failed)?;
-    if !source.entry().matches_capture(entry) {
+    if !source.entry().matches_capture_except_change_time(entry) {
         return Err(Issue::Failed(find_error(
             &entry.path,
             io::ErrorKind::InvalidData,

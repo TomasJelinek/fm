@@ -162,9 +162,42 @@ impl FindRequest {
     }
 }
 
-/// Opaque native revision. Its meaning is private to the supplying OS provider.
+/// Native revision of a file. Its values are private to the supplying OS provider, except
+/// for where the change time lives (`CHANGE_TIME`), which every provider of a platform
+/// lays out alike:
+///
+/// - Windows: size, LastWriteTime, CreationTime, attributes (without the cloud-state
+///   ones), ChangeTime, 0.
+/// - Linux: size, mtime seconds, mtime nanoseconds, ctime seconds, ctime nanoseconds,
+///   mode (file type and permission bits).
+///
+/// Directories carry no revision (all zero).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FindRevision(pub [u64; 6]);
+
+impl FindRevision {
+    /// The slots that hold the change time (NTFS ChangeTime, Linux ctime).
+    #[cfg(windows)]
+    pub const CHANGE_TIME: &'static [usize] = &[4];
+    /// The slots that hold the change time (NTFS ChangeTime, Linux ctime).
+    #[cfg(not(windows))]
+    pub const CHANGE_TIME: &'static [usize] = &[3, 4];
+
+    /// Every fact but the change time is equal. The change time also moves on
+    /// metadata-only updates that leave the content alone: endpoint protection attaches
+    /// extended attributes (a new NTFS ChangeTime) to a file within a second of its first
+    /// read, and on Linux xattr, chmod, chown and link-count changes move the ctime. Find
+    /// treats such a difference as unchanged, as viewers do (`RevisionPolicy::
+    /// AcceptChangeTimeOnly` of the plugin host); a change of mode or attributes still
+    /// counts, since those are compared slots.
+    pub fn same_except_change_time(&self, other: &Self) -> bool {
+        self.0
+            .iter()
+            .zip(other.0)
+            .enumerate()
+            .all(|(slot, (mine, theirs))| *mine == theirs || Self::CHANGE_TIME.contains(&slot))
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct FindEntry {
@@ -180,6 +213,16 @@ impl FindEntry {
             && self.kind == captured.kind
             && self.identity == captured.identity
             && self.revision == captured.revision
+    }
+
+    /// `matches_capture`, except that a difference in the change time alone is accepted
+    /// (`FindRevision::same_except_change_time`): Find's own revalidation of what it
+    /// captured, and of its results.
+    pub fn matches_capture_except_change_time(&self, captured: &Self) -> bool {
+        self.path == captured.path
+            && self.kind == captured.kind
+            && self.identity == captured.identity
+            && self.revision.same_except_change_time(&captured.revision)
     }
 }
 

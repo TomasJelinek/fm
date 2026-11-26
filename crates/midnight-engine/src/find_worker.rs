@@ -432,7 +432,7 @@ pub(crate) fn validate_result(
     cancel: &Cancellation,
 ) -> Result<FindEntry, FsError> {
     let source = service.open_find_source(&captured.path, cancel)?;
-    if !source.entry().matches_capture(captured) {
+    if !source.entry().matches_capture_except_change_time(captured) {
         return Err(find_error(
             &captured.path,
             io::ErrorKind::InvalidData,

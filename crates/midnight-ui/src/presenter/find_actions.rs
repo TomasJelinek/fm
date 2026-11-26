@@ -122,10 +122,10 @@ impl Presenter {
             || captured.result != request.result
             || captured.token != request.token
             || source.entry().kind != EntryKind::File
-            || !s
-                .results
-                .iter()
-                .any(|r| r.id == request.result && source.entry().matches_capture(&r.entry))
+            || !s.results.iter().any(|r| {
+                r.id == request.result
+                    && source.entry().matches_capture_except_change_time(&r.entry)
+            })
         {
             s.error = "The captured Find file changed. Search again.".into();
             self.retired.push(Box::new(source));

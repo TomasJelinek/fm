@@ -128,14 +128,18 @@ impl FindSource for Source {
     fn entry(&self) -> &FindEntry {
         &self.entry
     }
+    /// Same device, inode, size, mtime and mode; a ctime that moved alone (xattr, chown or
+    /// link-count changes) still counts as the captured file
+    /// (`FindEntry::matches_capture_except_change_time`).
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.entry.path)?;
         let visible = File::from(
             openat2(CWD, &self.entry.path, PROBE, Mode::empty(), PATH_RESOLVE)
                 .map_err(|error| failure(&self.entry.path, error))?,
         );
-        if !snapshot(&visible, &self.entry.path)?.matches_capture(&self.entry)
-            || !snapshot(&self.file, &self.entry.path)?.matches_capture(&self.entry)
+        if !snapshot(&visible, &self.entry.path)?.matches_capture_except_change_time(&self.entry)
+            || !snapshot(&self.file, &self.entry.path)?
+                .matches_capture_except_change_time(&self.entry)
         {
             return Err(changed(&self.entry.path));
         }
@@ -196,7 +200,8 @@ impl FindSource for Source {
                 )
                 .map_err(|error| failure(&self.entry.path, error))?,
             );
-            if !snapshot(&reader, &self.entry.path)?.matches_capture(&self.entry) {
+            if !snapshot(&reader, &self.entry.path)?.matches_capture_except_change_time(&self.entry)
+            {
                 return Err(changed(&self.entry.path));
             }
             self.reader = Some(reader);

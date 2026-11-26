@@ -103,3 +103,62 @@ fn find_rejects_ambiguous_roots_and_empty_or_unbounded_content_queries() {
     request.content.as_mut().unwrap().text = "č".repeat(4097);
     assert!(request.validate().is_err());
 }
+
+fn captured_file() -> FindEntry {
+    FindEntry {
+        path: "a.zip".into(),
+        kind: EntryKind::File,
+        metadata: Default::default(),
+        identity: TransferIdentity {
+            device: 7,
+            object: [9; 16],
+        },
+        revision: FindRevision([11, 12, 13, 14, 15, 16]),
+    }
+}
+
+/// Only the change time may move: on Windows ChangeTime (slot 4), on Linux the ctime
+/// seconds and nanoseconds (slots 3 and 4). Every other slot (size, write time, creation
+/// time or mtime nanoseconds, attributes or mode) still counts as a change.
+#[test]
+fn find_accepts_a_change_of_the_change_time_alone() {
+    let captured = captured_file();
+    assert!(captured.matches_capture_except_change_time(&captured));
+    #[cfg(windows)]
+    assert_eq!(FindRevision::CHANGE_TIME, &[4]);
+    #[cfg(not(windows))]
+    assert_eq!(FindRevision::CHANGE_TIME, &[3, 4]);
+    let mut all_change_slots = captured.clone();
+    for slot in 0..6 {
+        let mut moved = captured.clone();
+        moved.revision.0[slot] += 1;
+        let change_time = FindRevision::CHANGE_TIME.contains(&slot);
+        assert_eq!(
+            moved.matches_capture_except_change_time(&captured),
+            change_time,
+            "slot {slot}"
+        );
+        assert!(!moved.matches_capture(&captured), "slot {slot}");
+        if change_time {
+            all_change_slots.revision.0[slot] += 100;
+        }
+    }
+    assert!(all_change_slots.matches_capture_except_change_time(&captured));
+}
+
+#[test]
+fn find_rejects_another_object_whatever_its_change_time() {
+    let captured = captured_file();
+    let mut other = captured.clone();
+    other.identity.device += 1;
+    assert!(!other.matches_capture_except_change_time(&captured));
+    let mut other = captured.clone();
+    other.identity.object[0] ^= 1;
+    assert!(!other.matches_capture_except_change_time(&captured));
+    let mut other = captured.clone();
+    other.path = "b.zip".into();
+    assert!(!other.matches_capture_except_change_time(&captured));
+    let mut other = captured.clone();
+    other.kind = EntryKind::Directory;
+    assert!(!other.matches_capture_except_change_time(&captured));
+}

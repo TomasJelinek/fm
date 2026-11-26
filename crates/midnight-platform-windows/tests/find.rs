@@ -3,7 +3,16 @@
 mod test_fixtures;
 use midnight_core::*;
 use midnight_platform_windows::WindowsFileSystem;
-use std::{fs, io::Read};
+use std::{
+    fs,
+    io::{Read, Write},
+    mem::size_of,
+    os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_HIDDEN, FILE_BASIC_INFO, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES,
+    FileBasicInfo, GetFileInformationByHandleEx, SetFileInformationByHandle,
+};
 
 #[test]
 fn native_find_streams_roots_and_children_and_rejects_changed_results() {
@@ -103,8 +112,11 @@ fn native_find_rejects_cancelled_or_special_namespace_roots() {
     );
 }
 
+/// Decided limit (VIEW-05, as for viewers): a same-size rewrite that restores the
+/// LastWriteTime moves only the ChangeTime, which Find accepts so that endpoint
+/// protection tagging a file does not fail it. The exact capture still tells them apart.
 #[test]
-fn native_find_rejects_same_size_edits_even_when_last_write_time_is_restored() {
+fn native_find_accepts_same_size_edits_that_restore_the_last_write_time() {
     let temporary = test_fixtures::build_temp("fixture-");
     let path = temporary.path().join("restored-time.txt");
     fs::write(&path, b"AAAA").unwrap();
@@ -120,9 +132,13 @@ fn native_find_rejects_same_size_edits_even_when_last_write_time_is_restored() {
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(modified))
         .unwrap();
+    source.revalidate(&cancel).unwrap();
+    let reopened = service.open_find_source(&path, &cancel).unwrap();
+    assert!(!reopened.entry().matches_capture(source.entry()));
     assert!(
-        source.revalidate(&cancel).is_err(),
-        "Same-size content with restored LastWriteTime must not validate as the captured result"
+        reopened
+            .entry()
+            .matches_capture_except_change_time(source.entry())
     );
 }
 
@@ -340,5 +356,128 @@ fn native_find_nested_child_capture_matches_untouched_absolute_reopen() {
     drop(ancestors);
     for _ in 0..3 {
         assert_reopen();
+    }
+}
+
+/// Rewrite `path`'s basic information (times and attributes) through a handle; a zero
+/// field is left as it is.
+fn set_basic(path: &std::path::Path, change: impl FnOnce(&mut FILE_BASIC_INFO)) {
+    let file = fs::OpenOptions::new()
+        .access_mode(FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES)
+        .open(path)
+        .unwrap();
+    let mut basic = FILE_BASIC_INFO::default();
+    // SAFETY: a live handle and a writable FILE_BASIC_INFO of the queried size.
+    assert_ne!(
+        unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&mut basic as *mut FILE_BASIC_INFO).cast(),
+                size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        },
+        0
+    );
+    let mut wanted = FILE_BASIC_INFO {
+        CreationTime: 0,
+        LastAccessTime: 0,
+        LastWriteTime: 0,
+        ChangeTime: 0,
+        FileAttributes: 0,
+    };
+    let mut current = basic;
+    change(&mut current);
+    if current.ChangeTime != basic.ChangeTime {
+        wanted.ChangeTime = current.ChangeTime;
+    }
+    if current.LastWriteTime != basic.LastWriteTime {
+        wanted.LastWriteTime = current.LastWriteTime;
+    }
+    if current.CreationTime != basic.CreationTime {
+        wanted.CreationTime = current.CreationTime;
+    }
+    if current.FileAttributes != basic.FileAttributes {
+        wanted.FileAttributes = current.FileAttributes;
+    }
+    // SAFETY: a live handle opened for attribute writes and a valid FILE_BASIC_INFO.
+    assert_ne!(
+        unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&wanted as *const FILE_BASIC_INFO).cast(),
+                size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        },
+        0
+    );
+}
+
+/// Endpoint protection tags a freshly read file with extended attributes, which moves its
+/// ChangeTime alone: Find still takes it for the file it captured, before and after
+/// reading it. A new write time, creation time, attribute or size is still a change, and
+/// names what changed.
+#[test]
+fn native_find_accepts_a_moved_change_time_alone() {
+    let temporary = test_fixtures::build_temp("find-change-time-");
+    let path = temporary.path().join("archive.zip");
+    let service = WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let reset = |path: &std::path::Path| {
+        let _ = fs::remove_file(path);
+        fs::write(path, b"content").unwrap();
+    };
+
+    reset(&path);
+    let mut source = service.open_find_source(&path, &cancel).unwrap();
+    set_basic(&path, |basic| basic.ChangeTime += 10_000_000);
+    source.revalidate(&cancel).unwrap();
+    let mut bytes = [0; 16];
+    let count = source.read_chunk(&mut bytes, &cancel).unwrap();
+    assert_eq!(&bytes[..count], b"content");
+    set_basic(&path, |basic| basic.ChangeTime += 10_000_000);
+    source.revalidate(&cancel).unwrap();
+    let reopened = service.open_find_source(&path, &cancel).unwrap();
+    assert!(
+        reopened
+            .entry()
+            .matches_capture_except_change_time(source.entry())
+    );
+    assert!(!reopened.entry().matches_capture(source.entry()));
+
+    type Change = fn(&std::path::Path);
+    let changes: [(&str, Change); 4] = [
+        ("last write time", |path| {
+            set_basic(path, |basic| basic.LastWriteTime -= 10_000_000)
+        }),
+        ("creation time", |path| {
+            set_basic(path, |basic| basic.CreationTime -= 10_000_000)
+        }),
+        ("attributes", |path| {
+            set_basic(path, |basic| basic.FileAttributes |= FILE_ATTRIBUTE_HIDDEN)
+        }),
+        ("size", |path| {
+            fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .unwrap()
+                .write_all(b"!")
+                .unwrap()
+        }),
+    ];
+    for (fact, change) in changes {
+        reset(&path);
+        let mut source = service.open_find_source(&path, &cancel).unwrap();
+        change(&path);
+        let error = source.revalidate(&cancel).unwrap_err();
+        assert!(error.message.contains(fact), "{fact}: {}", error.message);
+        let error = source.read_chunk(&mut bytes, &cancel).unwrap_err();
+        assert!(error.message.contains(fact), "{fact}: {}", error.message);
+        if fact == "attributes" {
+            set_basic(&path, |basic| {
+                basic.FileAttributes &= !FILE_ATTRIBUTE_HIDDEN
+            });
+        }
     }
 }

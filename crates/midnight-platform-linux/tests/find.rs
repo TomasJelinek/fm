@@ -192,3 +192,68 @@ fn native_find_leaves_dates_to_the_engine_locale_which_formats_them_like_listing
         );
     }
 }
+
+/// A ctime that moved alone (here: a new hard link, as xattr, chown and link-count
+/// changes do) leaves the file the one Find captured, before and after reading it. A new
+/// mode (chmod), mtime or size is still a change.
+#[test]
+fn native_find_accepts_a_moved_ctime_alone() {
+    use std::{io::Write, os::unix::fs::PermissionsExt, time::Duration};
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("archive.zip");
+    let service = LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let reset = |path: &std::path::Path| {
+        let _ = fs::remove_file(path);
+        fs::write(path, b"content").unwrap();
+    };
+
+    reset(&path);
+    let mut source = service.open_find_source(&path, &cancel).unwrap();
+    // A coarse ctime clock may not move within the same tick.
+    std::thread::sleep(Duration::from_millis(20));
+    fs::hard_link(&path, temporary.path().join("second-name")).unwrap();
+    let reopened = service.open_find_source(&path, &cancel).unwrap();
+    assert!(
+        reopened
+            .entry()
+            .matches_capture_except_change_time(source.entry())
+    );
+    source.revalidate(&cancel).unwrap();
+    let mut bytes = [0; 16];
+    let count = source.read_chunk(&mut bytes, &cancel).unwrap();
+    assert_eq!(&bytes[..count], b"content");
+    source.revalidate(&cancel).unwrap();
+    fs::remove_file(temporary.path().join("second-name")).unwrap();
+
+    let changes: [fn(&std::path::Path); 3] = [
+        |path| fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap(),
+        |path| {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(86_400))
+                .unwrap()
+        },
+        |path| {
+            fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .unwrap()
+                .write_all(b"!")
+                .unwrap()
+        },
+    ];
+    for (index, change) in changes.into_iter().enumerate() {
+        reset(&path);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let mut source = service.open_find_source(&path, &cancel).unwrap();
+        change(&path);
+        assert!(source.revalidate(&cancel).is_err(), "change {index}");
+        assert!(
+            source.read_chunk(&mut bytes, &cancel).is_err(),
+            "change {index}"
+        );
+    }
+}

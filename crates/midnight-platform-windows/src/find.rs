@@ -193,8 +193,9 @@ impl FindSource for Source {
         }
         if self.reader.is_none() {
             // Find is a live read-only scan: do not deny an application's log
-            // writer. Identity and ChangeTime are checked before/after reading;
-            // concurrent edits produce an explicit incomplete result. The pinned object
+            // writer. Identity, size, write and creation times and attributes are checked
+            // before/after reading (a ChangeTime that moved alone is accepted, see
+            // `unchanged`); concurrent edits produce an explicit incomplete result. The pinned object
             // is reopened, never its path; a cloud placeholder or deduplicated file is
             // read through its filter instead of returning the raw reparse stub.
             let reader = crate::reparse::reopen_content(
@@ -332,10 +333,13 @@ fn changed(path: &Path) -> FsError {
     )
 }
 
-/// Ok when `now` is still the `captured` object at the same revision; otherwise the
-/// `changed` error naming each fact that differs, so that a report says what changed.
+/// Ok when `now` is still the `captured` object at the same revision, where a ChangeTime
+/// that moved alone counts as the same (`FindEntry::matches_capture_except_change_time`:
+/// endpoint protection tags a file with extended attributes within a second of its first
+/// read, Find's own reads included); otherwise the `changed` error naming each fact that
+/// differs, so that a report says what changed.
 fn unchanged(captured: &FindEntry, now: &FindEntry) -> Result<(), FsError> {
-    if now.matches_capture(captured) {
+    if now.matches_capture_except_change_time(captured) {
         return Ok(());
     }
     let mut error = changed(&captured.path);
