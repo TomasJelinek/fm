@@ -123,9 +123,11 @@ is bounded as follows instead:
   text font come first, outside the gate, so an open that blocks on an unresponsive share
   holds back no other comparison. The image workers start inside the gate: each may grow
   to its 1 GiB job limit, which is the memory the gate bounds. A session that waits shows
-  *Waiting for other comparisons to finish…*; it stops waiting when it is closed, and when a replacement pair is chosen
-  (it then opens the new files and waits in its own turn). The presented comparison (scrolling, find, identity and byte scans, image renders) runs
-  outside the gate; byte scans and reads still pass the process-wide I/O gate.
+  *Waiting for other comparisons to finish…*, then *Preparing the comparison…* once
+  admitted; it stops waiting when it is closed, and when a replacement pair is chosen
+  (it then opens the new files and waits in its own turn). The presented comparison
+  (scrolling, find, identity and byte scans, image renders) runs outside the gate; byte
+  scans and reads still pass the process-wide I/O gate.
 - **Memory.** Each open comparison keeps what its files need: up to about 2.5 times its
   two texts (at most 64 MiB each), the byte-view and scan buffers, or two image workers
   (each at most 1 GiB, with at most 256 MiB of decoded RGBA, `MAX_DECODED_BYTES` of the

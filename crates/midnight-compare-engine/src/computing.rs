@@ -4,9 +4,10 @@
 //! for input. Preparing a comparison (reading and aligning text, starting and decoding in
 //! the image workers) is the CPU- and memory-heavy phase, so the service admits at most
 //! `COMPUTING` preparations at once, first come first served. The others wait,
-//! cancellable, with the status `WAITING`. Opening the files and resolving the text font
-//! come before the wait: an open that blocks on an unresponsive share holds no permit. A
-//! replacement queued while a comparison waits ends its wait.
+//! cancellable, with the status `WAITING`, and show `PREPARING` once admitted. Opening the
+//! files and resolving the text font come before the wait: an open that blocks on an
+//! unresponsive share holds no permit. A replacement queued while a comparison waits ends
+//! its wait.
 use crate::check_cancel;
 use std::{
     collections::VecDeque,
@@ -18,6 +19,7 @@ use std::{
 /// 2.5 times its two texts, or two image workers of at most 1 GiB each).
 pub(crate) const COMPUTING: usize = 2;
 pub(crate) const WAITING: &str = "Waiting for other comparisons to finish…";
+pub(crate) const PREPARING: &str = "Preparing the comparison…";
 
 pub(crate) struct Gate {
     state: Mutex<State>,

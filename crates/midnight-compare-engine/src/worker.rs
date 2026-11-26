@@ -519,10 +519,12 @@ fn compare(
     // It is released before the comparison is presented and stays open for input. The
     // image workers start within it: each may use up to its job memory limit, which is
     // what the permit bounds.
+    let mut waited = false;
     let preparing = context.computing.acquire(
         cancel,
         || !output.is_current(generation),
         || {
+            waited = true;
             output.put(generation, Output::Status(crate::computing::WAITING.into()));
         },
     )?;
@@ -530,6 +532,12 @@ fn compare(
         // A replacement was queued while this comparison waited: take it up instead.
         return wait_replacement(context, viewport);
     };
+    if waited {
+        output.put(
+            generation,
+            Output::Status(crate::computing::PREPARING.into()),
+        );
+    }
     let mut awaiting_fonts = None;
     let mut content = match plan {
         BuiltInPlan::Images {
