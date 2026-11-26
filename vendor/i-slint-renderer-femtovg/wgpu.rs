@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 //
 // Modified by the Midnight Explorer project on 2026-11-25: an application-selected present
-// mode for window surfaces (the "Midnight Explorer patch" comments; vendor/README.md).
+// mode for window surfaces, and on 2026-11-26: no surface reconfiguration for a resize that
+// changes nothing (the "Midnight Explorer patch" comments; vendor/README.md).
 
 // cSpell: ignore readback Texel unpadded
 use std::{
@@ -384,8 +385,20 @@ impl GraphicsBackend for WGPUBackend {
         self.with_surface(|surface, device, surface_config| {
             // Prefer FIFO modes over possible Mailbox setting for frame pacing and better energy efficiency.
             // Midnight Explorer patch: unless the application selected another mode.
-            surface_config.present_mode = present_mode(&self.present_modes.borrow());
+            let present_mode = present_mode(&self.present_modes.borrow());
             self.present_mode_selected.set(PRESENT_MODE_SELECTOR.get().is_some());
+            // Midnight Explorer patch: a resize to the configured size and present mode keeps
+            // the configured surface. Each new window receives such resizes after it is
+            // created, and reconfiguring its unchanged DX12 swap chain blocked the UI thread
+            // for 30-45 ms each time. A lost or outdated surface is still reconfigured when
+            // its next frame begins.
+            if surface_config.width == width.get()
+                && surface_config.height == height.get()
+                && surface_config.present_mode == present_mode
+            {
+                return;
+            }
+            surface_config.present_mode = present_mode;
             surface_config.width = width.get();
             surface_config.height = height.get();
 

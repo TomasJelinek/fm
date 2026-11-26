@@ -232,8 +232,9 @@ source, Slint's FemtoVG renderer crate.
   platform. The local manifest marker keeps the crate in license inventories and release
   notices; it is the only manifest change.
 
-**What changed.** The one source change is in `wgpu.rs`, marked "Midnight Explorer patch",
-with the dated modification notice in the file header that GPL-3.0 section 5 asks for.
+**What changed.** Both source changes are in `wgpu.rs`, marked "Midnight Explorer patch",
+with the dated modification notice in the file header that GPL-3.0 section 5 asks for. The
+first is a present-mode hook; the second follows below.
 - Upstream configures every window surface with `AutoVsync` (FIFO). The patch adds
   `set_present_mode_selector`, a process-wide function that chooses a surface's present
   mode from the modes the surface offers.
@@ -250,3 +251,11 @@ first native Wayland window.
   ([FIFO presentation](../docs/verification/2026-11-25-wayland-fifo-presentation.md)).
 - Wayland frame callbacks keep pacing rendering, so Mailbox draws no extra frames and
   nothing while idle ([measurements](../docs/verification/2026-11-25-wayland-mailbox.md)).
+
+**Second change (26 November 2026).** `wgpu.rs` also keeps a window surface configured when
+a resize names the size and present mode it already has (the second "Midnight Explorer
+patch" comment in `WGPUBackend::resize`). Slint resizes the renderer for every `Resized`
+event, and Windows sends a new viewer window two of them with its unchanged size; each
+reconfigured the DX12 swap chain and blocked the UI thread for 30–45 ms. A lost or outdated
+surface is still reconfigured when its next frame begins, as upstream does
+([viewer startup](../docs/verification/2026-11-26-viewer-startup.md)).

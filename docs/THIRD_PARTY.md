@@ -86,7 +86,8 @@ AboutSlint attribution and release pages the Made with Slint badge. The decision
 the [dependency policy](DEPENDENCY_POLICY.md#current-decisions).
 
 Slint's FemtoVG renderer crate, i-slint-renderer-femtovg 1.18.1, is vendored with a
-present-mode hook that the application sets on native Wayland. The modified copy is
+present-mode hook that the application sets on native Wayland, and keeps a window surface
+configured when a resize changes neither its size nor its present mode. The modified copy is
 conveyed under the same GPL-3.0-only branch; see the
 [vendor notes](../vendor/README.md#slints-femtovg-wgpu-adapter).
 
