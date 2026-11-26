@@ -170,3 +170,43 @@ fn a_control_batch_cannot_report_success_before_the_first_prepared_frame() {
     assert_eq!(results.borrow().len(), 1);
     manager.close_all();
 }
+
+#[test]
+fn an_opening_takes_the_prepared_spare_component_and_leaves_none_behind() {
+    let prepared = Rc::new(Cell::new(std::ptr::null::<slint::Window>()));
+    let recorded = prepared.clone();
+    let (_runtime, manager, open, _service) = opening_with(Box::new(|_| {}), move |manager| {
+        let spare = ViewerWindow::new().unwrap();
+        recorded.set(spare.window() as *const slint::Window);
+        *manager.spare.window.borrow_mut() = Some(spare);
+    });
+    assert!(
+        std::ptr::eq(open.window.window(), prepared.get()),
+        "the opening shows the component built ahead of it"
+    );
+    assert!(
+        manager.spare.window.borrow().is_none(),
+        "a spare is used once; the next one is built later"
+    );
+    manager.close_all();
+}
+
+#[test]
+fn a_released_spare_is_dropped_and_not_refilled_by_an_opening() {
+    let (_runtime, manager, open, _service) = opening_with(Box::new(|_| {}), |manager| {
+        *manager.spare.window.borrow_mut() = Some(ViewerWindow::new().unwrap());
+        manager.release_spare_window();
+        assert!(manager.spare.window.borrow().is_none());
+    });
+    assert!(
+        !open.closed.get(),
+        "an opening without a spare builds its own component"
+    );
+    assert!(
+        !manager.spare.timer.running(),
+        "a released spare schedules no refill"
+    );
+    manager.prepare_spare_window();
+    assert!(manager.spare.timer.running());
+    manager.close_all();
+}

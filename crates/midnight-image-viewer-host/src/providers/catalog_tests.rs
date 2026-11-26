@@ -134,7 +134,10 @@ fn a_redirected_object_deep_in_the_package_is_refused_at_discovery_and_validatio
     #[cfg(unix)]
     std::os::unix::fs::symlink(&outside, &link).unwrap();
     let result = discover_with_diagnostics(&executable).unwrap();
-    assert!(result.providers.is_empty(), "a redirected package was admitted");
+    assert!(
+        result.providers.is_empty(),
+        "a redirected package was admitted"
+    );
     assert_eq!(result.diagnostics.len(), 1);
     assert!(
         provider.validate().is_err(),

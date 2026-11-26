@@ -176,6 +176,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Like the application once its settings are read: prepare an image worker spare.
     service.prepare_image_workers(Some(Arc::from([])), Arc::default());
     let manager = Rc::new(ViewerWindows::new(service));
+    // Like the application: the first viewer component is built while idle.
+    manager.prepare_spare_window();
     let shortcuts = ShortcutMap::new(&[])?;
     let keys: midnight_viewer_ui::KeyResolver =
         Rc::new(move |chord: &ShortcutChord, _search: bool| {

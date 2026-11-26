@@ -143,6 +143,54 @@ pub struct ViewerWindows {
     appearance: RefCell<Option<appearance::AppAppearance>>,
     motion_preference: MotionPreference,
     link_listener: links::Relay,
+    /// One viewer component constructed ahead of the next opening (`SpareWindow`).
+    spare: Rc<SpareWindow>,
+}
+
+/// At most one never-shown viewer component, built on the UI thread while it is idle.
+///
+/// Creating a viewer component also creates its window renderer, and Slint's winit
+/// backend checks for a hardware graphics adapter each time it does so by enumerating
+/// every adapter: 150-180 ms on the UI thread on Windows, although every window renders
+/// with the application's one shared device. The spare moves that cost off the opening:
+/// it is built `SPARE_DELAY` after the application asks for it and after each opening
+/// takes it. It is a component only: no native window, surface, backend session or
+/// helper process exists until an opening shows it. `release_spare_window` drops it and
+/// stops refilling. Building it still occupies the UI thread once per opening, while
+/// nothing is being opened.
+#[derive(Default)]
+struct SpareWindow {
+    window: RefCell<Option<ViewerWindow>>,
+    timer: Timer,
+    released: Cell<bool>,
+}
+
+const SPARE_DELAY: Duration = Duration::from_millis(1500);
+
+impl SpareWindow {
+    fn schedule(self: &Rc<Self>) {
+        if self.released.get() {
+            return;
+        }
+        let spare = Rc::downgrade(self);
+        self.timer
+            .start(TimerMode::SingleShot, SPARE_DELAY, move || {
+                if let Some(spare) = spare.upgrade()
+                    && !spare.released.get()
+                    && spare.window.borrow().is_none()
+                    && let Ok(window) = ViewerWindow::new()
+                {
+                    *spare.window.borrow_mut() = Some(window);
+                }
+            });
+    }
+
+    /// The prepared component, or a new one when none is ready; schedules the next.
+    fn take(self: &Rc<Self>) -> Result<ViewerWindow, slint::PlatformError> {
+        let window = self.window.borrow_mut().take();
+        self.schedule();
+        window.map_or_else(ViewerWindow::new, Ok)
+    }
 }
 
 struct OpenWindow {
@@ -322,7 +370,25 @@ impl ViewerWindows {
             appearance: RefCell::new(None),
             motion_preference: Rc::new(RefCell::new(Rc::new(|| false))),
             link_listener: links::relay(),
+            spare: Rc::default(),
         }
+    }
+
+    /// Build one viewer component ahead of the next opening while the UI thread is idle
+    /// (`SpareWindow`). Call once the main window is shown; every opening then schedules
+    /// the next spare itself.
+    pub fn prepare_spare_window(&self) {
+        self.spare.released.set(false);
+        if self.spare.window.borrow().is_none() {
+            self.spare.schedule();
+        }
+    }
+
+    /// Drop the spare component and build no other one until `prepare_spare_window`.
+    pub fn release_spare_window(&self) {
+        self.spare.released.set(true);
+        self.spare.timer.stop();
+        drop(self.spare.window.borrow_mut().take());
     }
 
     /// What the main window does for a link followed in a viewer: open a folder or
@@ -481,7 +547,7 @@ impl ViewerWindows {
         let palette = prepare_session(&session, &appearance)?;
         // A failed native construction/show drops this session. Its Drop closes the
         // worker, which retires its capture and any already-started decoder.
-        let window = ViewerWindow::new().map_err(|error| error.to_string())?;
+        let window = self.spare.take().map_err(|error| error.to_string())?;
         opening_trace.mark(2, 0, 0, 0); // Slint component and renderer constructed.
         window.set_app_icon(self.app_icon.borrow().clone());
         window.set_case_sensitive(preferences.case_sensitive);

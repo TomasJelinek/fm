@@ -1059,6 +1059,7 @@ fn run_window(
     if let Some(retirement) = image_spare_retirement.as_ref() {
         retirement.stop_spare();
     }
+    viewers.release_spare_window();
     viewers.close_all();
     comparators.close_all();
     window.invoke_close_find_windows();

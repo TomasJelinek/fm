@@ -150,6 +150,8 @@ pub(crate) fn install(
     *retirement = Some(service.image_spare_retirement());
     let image_preparation = Rc::new(ImagePreparation::new(service.clone()));
     let viewers = Rc::new(ViewerWindows::new(service));
+    // The first viewer's component is built while the started application is idle.
+    viewers.prepare_spare_window();
     // A tab's archive that a viewer still shows is not replaced by the tab's next one.
     let census = Rc::downgrade(&viewers);
     presenter.borrow_mut().set_viewer_archives(Rc::new(move || {
