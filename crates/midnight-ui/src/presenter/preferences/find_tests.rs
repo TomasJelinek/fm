@@ -40,7 +40,7 @@ fn find_saves_survive_options_reset_and_cancel_without_saving_previewed_theme() 
     p.preferences.loaded = true;
     let original_theme = p.preferences.values.light_theme;
     p.begin_options();
-    p.preferences.values.light_theme = PreferenceTheme::Light;
+    p.preferences.values.light_theme = PreferenceTheme::Iris;
     let saved = std::cell::RefCell::new(Vec::new());
     let send = |command| {
         if let Command::SavePreferences { preferences, .. } = command {
@@ -113,12 +113,12 @@ fn final_placement_flush_retries_rejected_save_without_committing_options_previe
     p.preferences.loaded = true;
     let original_theme = p.preferences.values.light_theme;
     p.begin_options();
-    p.preferences.values.light_theme = PreferenceTheme::Light;
+    p.preferences.values.light_theme = PreferenceTheme::Iris;
     *p.finds.pending_window_geometry.borrow_mut() = Some(geometry());
     p.flush_find_window_preferences(&|_| false);
     assert!(p.finds.pending_window_geometry.borrow().is_none());
     assert_eq!(p.preferences.values.find.window_geometry, Some(geometry()));
-    assert_eq!(p.preferences.values.light_theme, PreferenceTheme::Light);
+    assert_eq!(p.preferences.values.light_theme, PreferenceTheme::Iris);
     let Command::SavePreferences { preferences, .. } = p.pending_preferences_save().unwrap() else {
         panic!()
     };

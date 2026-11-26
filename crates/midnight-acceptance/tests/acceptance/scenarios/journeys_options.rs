@@ -104,7 +104,7 @@ fn run(context: &mut Context) -> Result<(), String> {
         folder,
         target,
         plugins: context.work.join("plugins"),
-        store: SettingsStore::new(),
+        store: SettingsStore::seeded(|prefs| prefs.light_theme = PreferenceTheme::Letterhead),
     };
     let mut journey = Journey::default();
     let mut app = App::start(setup.config());

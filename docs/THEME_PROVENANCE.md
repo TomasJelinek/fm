@@ -47,7 +47,7 @@ this is not a claim about a global popularity ranking.
 | Plum Smoke | `45` / `plum-smoke` | Original palette. Violet-tinted charcoal with a lilac cursor edge and neutral graphite file marks. |
 
 Options groups the catalog by appearance and sorts the names within each group.
-The initial choices are Blue for a dark desktop and Letterhead for a light
+The initial choices are Blue for a dark desktop and Light for a light
 desktop. The saved pair follows operating-system appearance changes.
 
 In a dark-theme choice, `dos-commander` is an alias for Amber Terminal. Saving

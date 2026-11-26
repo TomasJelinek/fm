@@ -215,7 +215,7 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
     }
     failures.extend(narrow_picker(&mut app, &store)?);
     options::page(&mut app, "Appearance")?;
-    options::choose(&mut app, "Light theme", "Light")?;
+    options::choose(&mut app, "Light theme", "Iris")?;
     app.set_host_dark(false);
     options::review_shot(
         &mut app,
@@ -223,7 +223,7 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
         "narrow-light",
         "Options in a narrow touch window: Appearance chosen with the topic picker",
     );
-    if !options::ok(&mut app, &store)? || store.current().light_theme != PreferenceTheme::Light {
+    if !options::ok(&mut app, &store)? || store.current().light_theme != PreferenceTheme::Iris {
         failures.push(format!(
             "OK in the narrow layout saved {:?}",
             store.current().light_theme

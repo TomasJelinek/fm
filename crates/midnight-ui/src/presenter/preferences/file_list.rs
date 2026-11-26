@@ -87,7 +87,7 @@ mod tests {
         p.preferences.loaded = true;
         let original_theme = p.preferences.values.light_theme;
         p.begin_options();
-        p.preferences.values.light_theme = PreferenceTheme::Light;
+        p.preferences.values.light_theme = PreferenceTheme::Iris;
         let mut accepted = p.preferences.values.file_list.clone();
         accepted.destination = 1;
         let saved = std::cell::RefCell::new(Vec::new());

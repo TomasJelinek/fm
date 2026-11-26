@@ -269,12 +269,12 @@ fn a_start_without_changes_saves_nothing_and_the_next_save_keeps_its_panels() {
                 );
             }
             // The first change the user makes saves the panels as they are shown.
-            p.change_preferences(2, 0, 0, &send);
+            p.change_preferences(PreferenceTheme::Iris.index(), 0, 0, &send);
             let saves = sent.into_inner();
             let [save] = saves.as_slice() else {
                 panic!("{case}: a changed theme saves once, not {}", saves.len());
             };
-            assert_eq!(save.light_theme, PreferenceTheme::Light, "{case}");
+            assert_eq!(save.light_theme, PreferenceTheme::Iris, "{case}");
             assert_eq!(save.tabs, expected, "{case}");
         }
     }

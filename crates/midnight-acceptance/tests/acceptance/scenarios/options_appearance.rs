@@ -16,7 +16,7 @@ const ICON_PICKER: &str = "Application icon";
 /// The theme ids `Theme.scheme` uses (PreferenceTheme order).
 const DEFAULT_DARK: i32 = PreferenceTheme::DEFAULT_DARK.index();
 const DARK: i32 = PreferenceTheme::Dark.index();
-const LIGHT: i32 = PreferenceTheme::Light.index();
+const PAPER: i32 = PreferenceTheme::PaperContrast.index();
 
 fn config(folder: &Path, store: &Arc<SettingsStore>) -> Config {
     let mut config = Config::new(folder, folder);
@@ -81,13 +81,13 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     }
 
     // Theme: the panels follow the previewed theme (the right list is mostly outside
-    // the dialog), the light pick too while the host stays dark; Light is much brighter
+    // the dialog), the light pick too while the host stays dark; Paper Contrast is much brighter
     // than Dark.
     options::open(&mut app)?;
     options::page(&mut app, "Appearance")?;
-    options::choose(&mut app, "Light theme", "Light")?;
-    app.until("the Light theme preview on a dark host", |app| {
-        app.window.get_theme_index() == LIGHT
+    options::choose(&mut app, "Light theme", "Paper Contrast")?;
+    app.until("the Paper Contrast preview on a dark host", |app| {
+        app.window.get_theme_index() == PAPER
     });
     app.idle(std::time::Duration::from_millis(300));
     let light_list = Frame::of(&mut app).luma(options::list_area(&app, PaneId::Right));
@@ -97,7 +97,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     let dark_list = Frame::of(&mut app).luma(options::list_area(&app, PaneId::Right));
     if light_list < dark_list + 60.0 {
         return Err(format!(
-            "the theme preview is not visible: panel luma {light_list:.1} in Light, {dark_list:.1} in Dark"
+            "the theme preview is not visible: panel luma {light_list:.1} in Paper Contrast, {dark_list:.1} in Dark"
         ));
     }
 
@@ -174,7 +174,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         return Err(format!("OK saved application icon {:?}", saved.app_icon));
     }
     if saved.dark_theme != PreferenceTheme::Dark
-        || saved.light_theme != PreferenceTheme::Light
+        || saved.light_theme != PreferenceTheme::PaperContrast
         || saved.density != UiDensity::Touch
         || saved.font_family != "DejaVu Sans Mono"
         || saved.desktop_font_size != 16
@@ -224,7 +224,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     });
     for (label, wanted) in [
         ("Dark theme", "Dark"),
-        ("Light theme", "Light"),
+        ("Light theme", "Paper Contrast"),
         (ICON_PICKER, "Interleave"),
         ("Spacing", SPACING_TOUCH),
         ("Font family", "DejaVu Sans Mono"),
@@ -253,7 +253,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     });
     for (label, wanted) in [
         ("Dark theme", "Blue"),
-        ("Light theme", "Letterhead"),
+        ("Light theme", "Light"),
         (ICON_PICKER, "Harvest Navigator"),
         ("Spacing", SPACING_DESKTOP),
         ("Font family", "Application default"),
@@ -310,6 +310,6 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         ));
     }
     context.note("All three icon choices displayed distinct window artwork. OK saved Interleave, restart restored it, cancelling Reset kept it, and accepting Reset saved Harvest Navigator.");
-    context.note("Appearance: Cancel restored the previewed theme. The Light pick was previewed on a dark host, then the Dark pick. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Blue and Letterhead with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
+    context.note("Appearance: Cancel restored the previewed theme. Paper Contrast was previewed on a dark host, then the Dark pick. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Blue and Light with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
     app.shutdown()
 }

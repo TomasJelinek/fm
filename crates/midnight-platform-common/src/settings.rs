@@ -1834,7 +1834,7 @@ mod tests {
             .join("x".repeat(70_000));
         let mut stored: serde_json::Value = serde_json::from_slice(
             &encode_preferences(UserPreferences {
-                light_theme: PreferenceTheme::Light,
+                light_theme: PreferenceTheme::Letterhead,
                 ..Default::default()
             })
             .unwrap(),
@@ -1846,7 +1846,7 @@ mod tests {
             {"id":9,"name":"Other","path":std::env::temp_dir().join("Other"),"slot":10}
         ]);
         let decoded = decode_preferences(&serde_json::to_vec(&stored).unwrap()).unwrap();
-        assert_eq!(decoded.light_theme, PreferenceTheme::Light);
+        assert_eq!(decoded.light_theme, PreferenceTheme::Letterhead);
         assert_eq!(decoded.bookmarks.len(), 2);
         assert_eq!(
             decoded.bookmarks[0],

@@ -188,7 +188,7 @@ impl PreferenceTheme {
     ];
 
     pub const DEFAULT_DARK: Self = Self::Blue;
-    pub const DEFAULT_LIGHT: Self = Self::Letterhead;
+    pub const DEFAULT_LIGHT: Self = Self::Light;
 
     pub const fn is_light(self) -> bool {
         matches!(

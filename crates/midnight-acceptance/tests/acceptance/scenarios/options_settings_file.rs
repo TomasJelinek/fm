@@ -223,6 +223,7 @@ fn settings_file(context: &mut Context) -> Result<(), String> {
         let hot = hot.clone();
         SettingsStore::seeded(move |preferences| {
             preferences.dark_theme = PreferenceTheme::Dark;
+            preferences.light_theme = PreferenceTheme::Letterhead;
             preferences.bookmarks = vec![bookmark(1, "Current", &hot, 3)];
         })
     };
@@ -344,7 +345,7 @@ fn settings_file(context: &mut Context) -> Result<(), String> {
     let current = store.current();
     if store.saves() != saves
         || current.dark_theme != PreferenceTheme::Dark
-        || current.light_theme != PreferenceTheme::DEFAULT_LIGHT
+        || current.light_theme != PreferenceTheme::Letterhead
     {
         return Err("Cancel after the import saved settings".into());
     }

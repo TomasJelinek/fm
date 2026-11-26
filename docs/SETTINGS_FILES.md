@@ -234,9 +234,8 @@ saves to the current location; it never changes the old file.
     Navigator and is not written back.
   - 45: choosing a custom dark or light palette saves both `dark_theme` and
     `light_theme`. Earlier profiles, and files that keep both defaults, open with Blue
-    for dark appearance and Letterhead for light appearance and retain their other
-    settings. Pencil Lead, the dark default of the first 0.6.0 builds, is a choice
-    like any other: a file that names it keeps it.
+    for dark appearance and Light for light appearance and retain their other
+    settings. Files with explicit choices keep them, including Pencil Lead and Letterhead.
 
   Historical schemas 34 through 44 require at least one of the fields each introduced.
   Schema 45 requires both theme choices. The reader also checks that fields belong to

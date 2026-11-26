@@ -75,6 +75,9 @@ fn run(context: &mut Context) -> Result<(), String> {
     let root = prepare(context)?;
     let mut config = Config::new(&root, &context.work);
     config.plugins = Some(context.work.join("plugins"));
+    config.settings = Some(options::SettingsStore::seeded(|prefs| {
+        prefs.light_theme = PreferenceTheme::Letterhead;
+    }));
     let mut app = App::start(config);
     let failures = Failures::default();
     if let Some(reason) = probe::html_unavailable() {
