@@ -148,7 +148,10 @@ fn cancelled_actor_retires_service(actor: Actor) {
             Actor::Volumes => Box::new(crate::volumes::Controller::new(
                 scope.clone(),
                 service.clone(),
-                None,
+                crate::volumes::Services {
+                    locale: None,
+                    notifications: None,
+                },
                 outbox,
                 tokio::sync::watch::channel(Vec::new()).0,
                 tokio::sync::watch::channel(0).0,

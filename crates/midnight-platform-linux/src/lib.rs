@@ -49,6 +49,7 @@ mod storage_kind;
 mod test_support;
 mod transfer;
 mod volume_information;
+mod volume_watch;
 mod watch;
 
 /// Native linux volume discovery combined with safe portable directory operations.

@@ -507,6 +507,13 @@ impl WatchService for LinuxFileSystem {
         self.watch_directories(&[path.to_path_buf()], Arc::new(move |_| changed()))
     }
 
+    fn watch_volumes(
+        &self,
+        changed: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        Ok(Box::new(crate::volume_watch::watch(changed)?))
+    }
+
     fn watch_directories(
         &self,
         paths: &[PathBuf],

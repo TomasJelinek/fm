@@ -60,6 +60,8 @@ mod user_command_process;
 mod user_command_templates;
 mod user_command_tree_preparation;
 mod volumes;
+#[cfg(windows)]
+mod volumes_subst;
 mod watch_native;
 mod windows_paths;
 

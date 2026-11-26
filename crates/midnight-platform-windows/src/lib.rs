@@ -65,6 +65,7 @@ pub use test_fixtures::{
 mod transfer;
 mod volume_details;
 mod volume_information;
+mod volume_watch;
 mod watch;
 mod watch_service;
 mod window_geometry;

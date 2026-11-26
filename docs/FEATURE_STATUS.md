@@ -71,7 +71,9 @@ How to read it:
 ## Panels and navigation
 
 - **Windows and Linux:** two panels with tabs; history (Alt+Left, Alt+Right and the
-  toolbar menus); drives and mounted volumes; a path bar with clickable segments and a
+  toolbar menus); drives and mounted volumes, whose drive bars and dropdowns follow
+  drives being added and removed (system notifications; a panel on a removed drive
+  moves to the nearest folder that opens); a path bar with clickable segments and a
   path editor (Ctrl+G, or a click after the path), which opens with the whole path
   selected, keeps a pasted path exactly as copied and opens it with Enter or its Go
   button, where a file path opens its folder with the cursor on the file; parent
@@ -92,12 +94,16 @@ How to read it:
   [parent navigation](developer/PARENT_NAVIGATION.md),
   [path paste](developer/PATH_PASTE.md), [pixel scrolling](developer/SCROLLING.md),
   [panel diagnostics](developer/PANEL_DIAGNOSTICS.md),
-  [settings files](SETTINGS_FILES.md).
+  [settings files](SETTINGS_FILES.md),
+  [drive changes](DRIVE_INFORMATION.md#when-drives-come-and-go).
 - **Verified:** `startup`, `startup_paths`, `navigation`, `files_navigation`,
   `panels_paths`, `panels_root_keys`, `panels_tabs`, `files_tabs`, `panels_view_sort`,
   `files_sorting`, `panels_scrolling`, `panels_hot_digits`, `files_hot_paths`,
   `panels_notices`, `panels_busy_ops`, `files_busy_folder`, `folder_sizes`,
-  `tools_folder_sizes`; statuses in the [panels record](developer/acceptance/panels.md).
+  `tools_folder_sizes`; statuses in the [panels record](developer/acceptance/panels.md);
+  drive changes in the [drive events record](verification/2026-11-26-drive-events.md)
+  (`subst` on Windows; a real USB insertion and the Linux mount watch in a running
+  window are not yet verified).
 
 ## Selection, search and filters
 

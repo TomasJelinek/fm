@@ -1,6 +1,7 @@
 use midnight_core::{
     Cancellation, Command, DirectoryService, Entry, EntryMetadata, Event, FsError, NavigationId,
-    PaneId, SortSpec, SpaceInfo, StorageService, Volume, VolumeService,
+    PaneId, SortSpec, SpaceInfo, StorageService, Volume, VolumeService, WatchService,
+    WatchSubscription,
 };
 use midnight_engine::Engine;
 use std::{
@@ -345,6 +346,210 @@ async fn replaced_raw_root_rejects_old_metadata_for_same_volume_id() {
         assert_eq!(volume_id, "old");
         assert_eq!(root, PathBuf::from("new"));
     }
+    commands.send(Command::Shutdown).await.unwrap();
+    engine.await.unwrap();
+}
+
+type Hint = Arc<dyn Fn() + Send + Sync>;
+
+/// A native drive watch whose hints the test sends by hand.
+#[derive(Default)]
+struct Drives {
+    hint: Mutex<Option<Hint>>,
+    registrations: AtomicUsize,
+    dropped: Arc<AtomicUsize>,
+}
+
+struct DrivesSubscription(Arc<AtomicUsize>);
+impl WatchSubscription for DrivesSubscription {}
+impl Drop for DrivesSubscription {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl WatchService for Drives {
+    fn watch_directory(
+        &self,
+        path: &Path,
+        _: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        Err(FsError::from_io(
+            "watch",
+            path,
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
+    fn watch_volumes(&self, changed: Hint) -> Result<Box<dyn WatchSubscription>, FsError> {
+        self.registrations.fetch_add(1, Ordering::SeqCst);
+        *self.hint.lock().unwrap() = Some(changed);
+        Ok(Box::new(DrivesSubscription(self.dropped.clone())))
+    }
+}
+
+impl Drives {
+    async fn registered(&self) -> Hint {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(hint) = self.hint.lock().unwrap().clone() {
+                return hint;
+            }
+            assert!(std::time::Instant::now() < deadline, "no drive watch");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+}
+
+fn watched_engine(
+    files: Arc<Files>,
+    drives: Arc<Drives>,
+) -> (
+    midnight_engine::CommandSender,
+    mpsc::Receiver<Event>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (sender, events) = mpsc::channel(256);
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        files,
+        sender,
+    );
+    engine.configure_watch().unwrap().install(drives);
+    let (commands, receiver) = engine.command_channel(8).unwrap();
+    (commands, events, tokio::spawn(engine.run(receiver)))
+}
+
+fn names(volumes: &[Volume]) -> Vec<&str> {
+    volumes.iter().map(|volume| volume.id.as_str()).collect()
+}
+
+/// Wait for every event the engine sends within `quiet` of the previous one.
+async fn drain(events: &mut mpsc::Receiver<Event>, quiet: Duration) -> Vec<Event> {
+    let mut drained = Vec::new();
+    while let Ok(Some(event)) = tokio::time::timeout(quiet, events.recv()).await {
+        drained.push(event);
+    }
+    drained
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_drive_hint_lists_the_new_drive_at_once_before_its_blocked_details() {
+    let gate = Arc::new(Gate::default());
+    let _release = Release(gate.clone());
+    let mut files = Files::new(&["C:"]);
+    files.metadata_gate = Some(gate.clone());
+    let files = Arc::new(files);
+    let drives = Arc::new(Drives::default());
+    let (commands, mut events, engine) = watched_engine(files.clone(), drives.clone());
+    commands.send(Command::ListVolumes).await.unwrap();
+    until(&mut events, |event| {
+        matches!(event, Event::VolumesUpdated(_))
+    })
+    .await;
+    let hint = drives.registered().await;
+    // The label read of C: holds one of the two details workers.
+    tokio::time::timeout(Duration::from_secs(3), gate.entered.notified())
+        .await
+        .unwrap();
+    files.roots.lock().unwrap().push(volume("E:"));
+    let hinted = std::time::Instant::now();
+    hint();
+    let Event::VolumesUpdated(volumes) = until(
+        &mut events,
+        |event| matches!(event, Event::VolumesUpdated(volumes) if volumes.len() == 2),
+    )
+    .await
+    else {
+        unreachable!()
+    };
+    let latency = hinted.elapsed();
+    assert_eq!(names(&volumes), ["C:", "E:"]);
+    assert!(
+        latency < Duration::from_millis(200),
+        "listed after {latency:?}"
+    );
+    files.roots.lock().unwrap().pop();
+    hint();
+    let Event::VolumesUpdated(volumes) = until(&mut events, |event| {
+        matches!(event, Event::VolumesUpdated(_))
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(names(&volumes), ["C:"]);
+    assert_eq!(drives.registrations.load(Ordering::SeqCst), 1);
+    gate.release();
+    commands.send(Command::Shutdown).await.unwrap();
+    engine.await.unwrap();
+    assert_eq!(drives.dropped.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unchanged_hints_publish_nothing_and_a_burst_coalesces() {
+    let files = Arc::new(Files::new(&["C:", "D:"]));
+    let drives = Arc::new(Drives::default());
+    let (commands, mut events, engine) = watched_engine(files.clone(), drives.clone());
+    commands.send(Command::ListVolumes).await.unwrap();
+    let hint = drives.registered().await;
+    // The first list, its details and the check after registration.
+    let settled = drain(&mut events, Duration::from_millis(300)).await;
+    assert_eq!(
+        settled
+            .iter()
+            .filter(|event| matches!(event, Event::VolumesUpdated(_)))
+            .count(),
+        1
+    );
+    let before = files.discovery_calls.load(Ordering::SeqCst);
+    for _ in 0..500 {
+        hint();
+    }
+    let quiet = drain(&mut events, Duration::from_millis(300)).await;
+    assert!(
+        quiet
+            .iter()
+            .all(|event| !matches!(event, Event::VolumesUpdated(_))),
+        "an unchanged list was published again"
+    );
+    let calls = files.discovery_calls.load(Ordering::SeqCst) - before;
+    assert!(
+        (1..=2).contains(&calls),
+        "{calls} discoveries for one burst"
+    );
+    assert_eq!(files.label_calls.load(Ordering::SeqCst), 2);
+    // An explicit request still answers with the unchanged list.
+    commands.send(Command::ListVolumes).await.unwrap();
+    until(&mut events, |event| {
+        matches!(event, Event::VolumesUpdated(_))
+    })
+    .await;
+    commands.send(Command::Shutdown).await.unwrap();
+    engine.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hint_reads_failed_details_again() {
+    let files = Arc::new(Files::new(&["space-error", "good"]));
+    let drives = Arc::new(Drives::default());
+    let (commands, mut events, engine) = watched_engine(files.clone(), drives.clone());
+    commands.send(Command::ListVolumes).await.unwrap();
+    let hint = drives.registered().await;
+    drain(&mut events, Duration::from_millis(300)).await;
+    assert_eq!(files.space_calls.load(Ordering::SeqCst), 2);
+    hint();
+    let Event::VolumeDetailsUpdated { volume_id, .. } = until(&mut events, |event| {
+        matches!(event, Event::VolumeDetailsUpdated { .. })
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    // Only the drive whose details failed (an empty card reader, say) is read again.
+    assert_eq!(volume_id, "space-error");
+    drain(&mut events, Duration::from_millis(100)).await;
+    assert_eq!(files.space_calls.load(Ordering::SeqCst), 3);
     commands.send(Command::Shutdown).await.unwrap();
     engine.await.unwrap();
 }

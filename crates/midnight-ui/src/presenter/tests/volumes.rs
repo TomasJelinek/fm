@@ -148,3 +148,72 @@ fn failed_volume_details_do_not_become_pane_errors_or_fake_capacity() {
     presenter.retire_all();
     assert!(presenter.volume_details.is_empty());
 }
+
+fn volume(name: &str) -> Volume {
+    Volume {
+        id: name.into(),
+        label: name.into(),
+        root: name.into(),
+    }
+}
+
+fn refreshed_paths(p: &mut Presenter, volumes: Vec<Volume>) -> Vec<(PaneId, PathBuf)> {
+    let sent = RefCell::new(Vec::new());
+    p.apply_with_sender(Event::VolumesUpdated(volumes), &|command| {
+        if let Command::Refresh { pane, path, .. } = command {
+            sent.borrow_mut().push((pane, path));
+        }
+        true
+    });
+    sent.into_inner()
+}
+
+#[test]
+fn a_removed_drive_rereads_only_the_panels_on_it_at_once() {
+    let mut p = Presenter::new("usb".into(), "disk".into());
+    for (pane, path) in [(PaneId::Left, "usb/docs"), (PaneId::Right, "disk/usb")] {
+        let navigation = begin(&mut p, pane, path);
+        finish(
+            &mut p,
+            pane,
+            navigation,
+            vec![entry(1, &format!("{path}/a"))],
+        );
+    }
+    // The first list removes nothing; a new drive leaves both panels alone.
+    assert!(refreshed_paths(&mut p, vec![volume("disk"), volume("usb")]).is_empty());
+    assert!(
+        refreshed_paths(&mut p, vec![volume("disk"), volume("usb"), volume("card")]).is_empty()
+    );
+    // The left panel's drive is gone. The right panel's folder only has the
+    // removed drive's name and stays.
+    assert_eq!(
+        refreshed_paths(&mut p, vec![volume("disk"), volume("card")]),
+        [(PaneId::Left, PathBuf::from("usb/docs"))]
+    );
+    assert!(p.panes[0].loading);
+    assert!(!p.panes[1].loading);
+    // The re-read is in flight; the same list again sends nothing more.
+    assert!(refreshed_paths(&mut p, vec![volume("disk"), volume("card")]).is_empty());
+}
+
+#[test]
+fn a_panel_on_a_remaining_inner_volume_is_not_reread() {
+    let mut p = Presenter::new("disk/mnt/usb".into(), "disk".into());
+    let navigation = begin(&mut p, PaneId::Left, "disk/mnt/usb/x");
+    finish(&mut p, PaneId::Left, navigation, Vec::new());
+    assert!(
+        refreshed_paths(
+            &mut p,
+            vec![volume("disk"), volume("disk/mnt/usb"), volume("other")]
+        )
+        .is_empty()
+    );
+    // Removing a drive that only contains the inner volume's mount point does not
+    // touch a panel on the inner volume.
+    assert!(refreshed_paths(&mut p, vec![volume("disk/mnt/usb"), volume("other")]).is_empty());
+    assert_eq!(
+        refreshed_paths(&mut p, vec![volume("other")]),
+        [(PaneId::Left, PathBuf::from("disk/mnt/usb/x"))]
+    );
+}

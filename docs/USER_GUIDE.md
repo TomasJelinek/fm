@@ -1615,7 +1615,11 @@ and only when a new total moves a folder. The cursor and the selection stay on
 their items. A Find result list fed to a panel orders folder rows by their totals
 among the files (it does not group folders) and re-sorts when its calculation ends.
 In the tree view, totals update without reordering rows; sort again to apply them.
-Quick drive/location buttons sit beside the drive dropdown.
+Quick drive/location buttons sit beside the drive dropdown. Both follow the system: a
+drive that is added (a USB stick, a card, a mapped network drive, a mount) or removed
+appears or disappears within a fraction of a second, its name and free space following
+once they are read, and a panel showing a removed drive goes to the nearest folder
+that still opens ([details](DRIVE_INFORMATION.md#when-drives-come-and-go)).
 
 ## Updates
 

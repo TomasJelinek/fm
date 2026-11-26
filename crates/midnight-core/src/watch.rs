@@ -81,6 +81,25 @@ pub trait WatchService: Send + Sync + 'static {
         path: &Path,
         changed: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Box<dyn WatchSubscription>, FsError>;
+
+    /// Report that the set of volumes may have changed: a drive letter or mount was
+    /// added or removed, or media was inserted into or removed from a drive.
+    ///
+    /// The callback is a hint to list the volumes again, never the new list; it can
+    /// fire for changes that leave the list as it was, and several times for one
+    /// change. It must stay short and bounded and is never called after the
+    /// subscription is dropped. Registration and destruction belong on backend
+    /// workers. The default is unsupported, and the backend then only polls.
+    fn watch_volumes(
+        &self,
+        _changed: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        Err(FsError::from_io(
+            "watch volumes",
+            Path::new(""),
+            std::io::ErrorKind::Unsupported.into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -110,6 +129,13 @@ mod tests {
             &[PathBuf::from("directory")],
             Arc::new(|_| panic!("unsupported watch invoked callback")),
         );
+        assert!(matches!(result, Err(error) if error.kind == io::ErrorKind::Unsupported));
+    }
+
+    #[test]
+    fn volume_watch_defaults_to_unsupported() {
+        let result =
+            SingleDirectoryOnly.watch_volumes(Arc::new(|| panic!("unsupported watch invoked")));
         assert!(matches!(result, Err(error) if error.kind == io::ErrorKind::Unsupported));
     }
 }

@@ -178,8 +178,11 @@ read of it:
 
 The drive buttons' tooltips and the drive menu use a separate per-volume cache
 (`volumes::Controller`, `Event::VolumeDetailsUpdated`) that reads every listed
-volume's label and free space again every 45 seconds; it is never matched to a
-panel's value by path.
+volume's label and free space again every 45 seconds, and a new volume's (or one
+whose read failed) when a drive-change notice arrives; it is never matched to a
+panel's value by path. The drive list itself follows native drive notices
+(`WatchService::watch_volumes`; see
+[when drives come and go](../DRIVE_INFORMATION.md#when-drives-come-and-go)).
 
 ## Presentation and viewing
 

@@ -57,6 +57,39 @@ exact native form and are never rebuilt from display text.
   label comes from the device's udev record, when there is one. The storage class is
   discarded if the path no longer names the held mount by the time it is known.
 
+## When drives come and go
+
+The drive dropdown and the drive bar follow the system: a USB stick or card that gets
+a drive letter or is mounted, a mapped network drive, a `subst` letter, an unmount or
+a removal shows in both panels' drive bars and dropdowns without a refresh, normally
+within a few tens of milliseconds of the system's notice.
+
+- **Windows.** A hidden window of the application receives the system's
+  `WM_DEVICECHANGE` broadcasts of volume arrival and removal and the shell's drive
+  and media notifications (`SHCNE_DRIVEADD`, `SHCNE_DRIVEREMOVED`,
+  `SHCNE_MEDIAINSERTED`, `SHCNE_MEDIAREMOVED`). The system sends its broadcast to
+  every top-level window in turn, so another program's slow window can delay it (it
+  arrived 45 to 620 ms after a `subst` command); the same window therefore compares
+  the session's drive letters (`GetLogicalDrives`, which reads no drive) every
+  250 ms and reports a change at once.
+- **Linux.** A thread waits in `poll` for the kernel's `POLLPRI` notice on
+  `/proc/self/mountinfo`, which every mount and unmount in the application's mount
+  namespace raises, including udisks' automounts of removable media. Locations
+  opened through GVfs are folders of one FUSE mount and raise none: the list is read
+  again after a panel opens one, and the periodic refresh finds the others.
+- **Both.** A notice only asks for the list again. Listing the drives reads the drive
+  letters or the mount table, never a drive, on a backend worker; up to one listing
+  runs and one waits, however many notices arrive. A list equal to the one shown is
+  not sent to the window. A new drive is shown at once; its name and free space are
+  read afterwards, two drives at a time, so a slow or disconnected drive never holds
+  up the list. A notice also reads again the name and free space of drives whose
+  last read failed, such as a card reader that was empty. Every 45 seconds the list
+  is read again in case a notice was missed, and each drive's name and free space
+  are read again.
+- **A panel on a removed drive** reads its folder again at once. The folder no longer
+  opens, so the panel goes to the nearest parent folder that opens, or to the system
+  drive (Windows) or `/` (Linux), and says why, as for any folder that disappears.
+
 ## The drive list on Linux
 
 The drive dropdown and the drive bar show `/`, Home and useful mounted storage: local

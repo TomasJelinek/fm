@@ -70,6 +70,7 @@ mod panel_warnings_tests;
 pub(crate) mod path_paste;
 mod path_target;
 mod preferences;
+mod removed_volumes;
 mod rename_decisions;
 mod search;
 mod search_commands;
@@ -1075,7 +1076,9 @@ impl Presenter {
             _ => None,
         };
         self.dispatch_selection_actions(&event, send);
+        let removed_volume_panes = self.panes_on_removed_volumes(&event);
         self.apply(event);
+        self.refresh_removed_volumes(removed_volume_panes, send);
         if let Some(pane) = network_session_changed {
             self.tab_session_changed(pane, send);
         }

@@ -599,6 +599,7 @@ impl EngineServices {
                 comparator_policies,
             )
         });
+        let volume_notifications = self.watch.clone();
         let watcher = self.watch.map(|native| {
             watch::Controller::new(
                 &resident,
@@ -807,7 +808,10 @@ impl EngineServices {
         let volumes = volumes::Controller::new(
             scope.clone(),
             self.filesystem.clone(),
-            self.locale.clone(),
+            volumes::Services {
+                locale: self.locale.clone(),
+                notifications: volume_notifications,
+            },
             self.outbox.clone(),
             desktop.volume_icon_sender(),
             desktop.context_sender(),
