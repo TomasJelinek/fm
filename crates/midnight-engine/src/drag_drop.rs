@@ -955,13 +955,16 @@ fn prepare_worker(
     cancel: Cancellation,
 ) {
     loop {
+        // Read cancellation before draining: `shutdown` retires its owners under the state
+        // lock before it cancels, so a worker that stops has dropped every one of them.
+        let stopping = cancel.is_cancelled();
         let retired = state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retired
             .take();
         drop(retired);
-        if cancel.is_cancelled() {
+        if stopping {
             break;
         }
         let work = state
