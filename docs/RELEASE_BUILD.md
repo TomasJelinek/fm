@@ -265,8 +265,7 @@ authority; image decoding also runs in the required restricted worker.
 **Retry with authorization** uses the shipped `midnight-elevated-listing` only when an
 administrator (Windows, for example below `C:\Program Files`) or root (Linux, for
 example `/opt/midnight-explorer`) installs the extracted folder where standard users
-cannot change it, or chooses **For all users** in the Windows MSI; the bundled README
-explains this. In a private per-user installation,
+cannot change it; the bundled README explains this. In a private per-user installation,
 including `build.bat`'s, and in an extracted folder that its user can change, the retry
 is still offered but refused with that requirement. Packages built before this check
 used the shipped helper from such a folder; see
@@ -339,8 +338,7 @@ refuses an existing MSI.
     when installation starts. Not `C:\Program Files\Midnight Explorer`, which the
     user guide names for an administrator's copy of a build. The package sets no
     permissions, so the folder inherits Program Files' (only administrators can
-    change it) and **Retry with authorization** accepts its helper
-    ([SECURITY.md](../SECURITY.md#directory-authorization-helper)).
+    change it).
 
   The `INSTALLDIR` property follows the scope: `Directory` puts it below
   `ProgramFiles64Folder`, and the property-setting action `SetUserInstallFolder` sets the
@@ -410,8 +408,7 @@ refuses an existing MSI.
 - **Release notes:** describe the one MSI with both choices: Just for me (no
   administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, updates an
   installed per-user MSI) and For all users (administrator approval,
-  `C:\Program Files\Midnight Explorer (MSI)`, needed for Retry with authorization; an
-  existing per-user copy stays installed beside it).
+  `C:\Program Files\Midnight Explorer (MSI)`; an existing per-user copy stays installed beside it).
 - **Tests:** `scripts/tests/test_package_msi.py`, in the scripts suite that CI runs on
   Windows and Linux, checks the payload rules and the database plan on both and, on
   Windows, builds and verifies an MSI of a small stand-in release. CI does not package

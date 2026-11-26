@@ -32,8 +32,8 @@ How to read it:
   one, and it updates through a newer MSI rather than the update dialog. 0.6.1 and 0.6.2
   install per user only. From the next release the installer asks: **Just for me** (the
   default, no administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`)
-  or **For all users** (UAC, `C:\Program Files\Midnight Explorer (MSI)`), the copy in
-  which **Retry with authorization** works. Only the built package is checked; no
+  or **For all users** (UAC, `C:\Program Files\Midnight Explorer (MSI)`). Only the
+  built package is checked; no
   installation of that kind has been run yet (REL-05).
 - **Linux specifics:** native Wayland drag and drop with other applications is new, not
   yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On

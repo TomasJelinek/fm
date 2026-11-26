@@ -342,8 +342,7 @@ as Administrator or root, the host uses it only from beside an installed `midnig
 standard users cannot change: on Windows a folder on a local fixed drive whose
 permissions only administrators can change, such as one below `C:\Program Files`; on
 Linux a root-owned directory such as `/opt/midnight-explorer` (see
-[Linux desktop launcher](#linux-desktop-launcher)). The Windows installer's **For all
-users** choice installs such a copy ([Windows installer](#windows-installer)). Build output, the Windows private
+[Linux desktop launcher](#linux-desktop-launcher)). Build output, the Windows private
 runtime, anything in a user profile and other user-writable locations are refused,
 and so is a folder created directly below a drive root such as `C:\`, even by an
 administrator, because it inherits Modify permission for all authenticated users. In
@@ -2046,13 +2045,11 @@ who can use Midnight Explorer on this computer (0.6.1 and 0.6.2 install just for
 
 - **Just for me** (the default): without administrator rights, into
   `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, the folder of the earlier per-user
-  installer, which it updates in place. **Retry with authorization** does not work from
-  this copy, because your account can change its files.
+  installer, which it updates in place.
 - **For all users of this computer:** into `C:\Program Files\Midnight Explorer (MSI)`;
   Windows asks for administrator approval (UAC) before installing, and the Install button
   shows the UAC shield. The folder keeps Program Files' permissions, which only
-  administrators can change, so **Retry with authorization** lists folders you may not
-  open. Pick this if you need that, or if several accounts use the computer.
+  administrators can change. Pick this if several accounts use the computer.
 
 Either way it adds **Midnight Explorer** to the Start menu (yours, or every account's)
 and an entry to **Settings › Apps › Installed apps** (Add/Remove Programs), from which
@@ -2068,8 +2065,7 @@ in `%LOCALAPPDATA%\Midnight Explorer`. Running the installed version's MSI again
 - **Without the dialog:** `msiexec /i <file>.msi /qn` installs just for you. From a
   PowerShell started with **Run as administrator**, `msiexec /i <file>.msi /qn ALLUSERS=1`
   installs for all users. `INSTALLDIR=<folder>` chooses another folder in a silent
-  installation; for Retry with authorization it must be one that only administrators can
-  change.
+  installation.
 
 - **Updates:** a copy installed this way is updated by downloading and running the newer
   release's MSI with the same choice, which replaces the installed version; the update

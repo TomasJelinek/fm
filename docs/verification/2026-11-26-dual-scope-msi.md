@@ -41,5 +41,5 @@ below `_build/msi-dual`.
 The dialogs were not displayed; no installation in either scope, UAC prompt, upgrade of
 an installed 0.6.1/0.6.2 per-user MSI, repair or uninstall was run; the Program Files
 folder's permissions after installation, the all-users shortcut's start folder (the
-literal `%USERPROFILE%`) and **Retry with authorization** from an all-users copy were not
+literal `%USERPROFILE%`) and **Retry with authorization** from either copy were not
 seen; the Windows SDK's ICE validation was not run (REL-05).

@@ -34,8 +34,8 @@ Targets Windows 10 22H2 / Windows 11 x64; tested on Windows 11 25H2.
 The executable is unsigned. This ZIP has no installer; each release also
 publishes an unsigned MSI with the same files, which asks whether to install just
 for you (no administrator rights, %LOCALAPPDATA%\Programs\Midnight Explorer (MSI))
-or for all users (administrator approval, C:\Program Files\Midnight Explorer (MSI),
-where Retry with authorization works), and is updated by a newer MSI. Check for updates (toolbar
+or for all users (administrator approval to install,
+C:\Program Files\Midnight Explorer (MSI)), and is updated by a newer MSI. Check for updates (toolbar
 and About) asks GitHub for a newer release, at startup too (at most once in 20
 hours; Options > General > Updates turns it off). Download and install accepts only
 an archive whose checksums are signed with the project's release key, installs it

@@ -503,11 +503,10 @@ def user_interface():
          "InstallUser", None),
         ("ScopeDlg", "UserText", "Text", 15, 124, WIDTH - 30, 30, TEXT, None,
          "Just for me: into %LOCALAPPDATA%\\Programs\\Midnight Explorer (MSI), without administrator "
-         "rights. Retry with authorization does not work from this copy.", None, None),
+         "rights.", None, None),
         ("ScopeDlg", "MachineText", "Text", 15, 156, WIDTH - 30, 30, TEXT, None,
          "For all users: into Program Files\\Midnight Explorer (MSI); Windows asks for administrator "
-         "approval. Only such a copy can Retry with authorization to list a folder you may not open.",
-         None, None),
+         "approval to install.", None, None),
         ("ScopeDlg", "UserCopyNote", "Text", 15, 192, WIDTH - 30, 36, HIDDEN_TEXT, None,
          "Midnight Explorer is also installed just for you. That copy stays installed beside this "
          "one; remove it in Settings > Apps > Installed apps if you no longer need it.", None, None),
