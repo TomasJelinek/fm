@@ -135,7 +135,14 @@ class BuildSetupTests(unittest.TestCase):
         result = self.run_build()
         self.assertEqual(result.returncode, 42)
         self.assertNotIn("apt-get", self.output)
-        self.assertIn("cargo build -p midnight-explorer -p midnight-elevation --locked\n", self.output)
+        # The first step builds the authorization helper alone; its failure ends the build
+        # before the explorer, which would record that helper's digest, is built.
+        self.assertIn(
+            "cargo build -p midnight-explorer -p midnight-elevation "
+            "--bin midnight-elevated-listing --locked\n",
+            self.output,
+        )
+        self.assertNotIn("midnight-elevation --locked\n", self.output)
         self.assertIn(f"cwd={self.repo} tmp={self.repo}/_build/tmp", self.output)
 
     def test_prefers_cargo_already_on_path(self):
