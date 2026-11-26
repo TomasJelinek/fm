@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod binary;
+mod computing;
 mod discovery;
 mod external_compare;
 mod file_choice;
@@ -21,6 +22,8 @@ mod worker;
 mod appearance_tests;
 #[cfg(test)]
 mod capture_tests;
+#[cfg(test)]
+mod computing_tests;
 #[cfg(test)]
 mod external_routes_tests;
 #[cfg(test)]
@@ -45,9 +48,11 @@ use midnight_core::{
 };
 use midnight_work_budget::resident;
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::{
     Arc, Mutex, MutexGuard,
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Receiver, SyncSender, TrySendError},
 };
 
@@ -68,7 +73,6 @@ pub type StorageHint = Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>;
 pub enum OpenError {
     /// Refresh both accepted policy snapshot fields once, then retry admission.
     PolicyChanged,
-    SessionLimit,
     Unavailable(String),
 }
 
@@ -77,9 +81,6 @@ impl std::fmt::Display for OpenError {
         match self {
             Self::PolicyChanged => output
                 .write_str("Comparator settings changed before this comparison opened. Try again."),
-            Self::SessionLimit => {
-                output.write_str("Close a comparator before opening another (maximum two).")
-            }
             Self::Unavailable(message) => output.write_str(message),
         }
     }
@@ -683,7 +684,8 @@ pub struct Service {
     handle: tokio::runtime::Handle,
     spawner: resident::Spawner,
     capture: NativeCapture,
-    active: Arc<AtomicUsize>,
+    /// Bounds concurrent preparation; any number of sessions may be open (`computing`).
+    computing: Arc<computing::Gate>,
     picker: Option<Arc<dyn PathPickerService>>,
     policy_source: Option<Arc<dyn FileComparatorPolicySource>>,
     launcher: Option<Arc<dyn ExternalCompareLauncher>>,
@@ -692,6 +694,9 @@ pub struct Service {
     fonts: Arc<discovery::FixedPitchFonts>,
     #[cfg(test)]
     turns: Option<Arc<AtomicUsize>>,
+    /// Session credits alive (`SessionCredit`).
+    #[cfg(test)]
+    active: Arc<AtomicUsize>,
 }
 
 pub struct Session {
@@ -701,29 +706,10 @@ pub struct Session {
     pub mailbox: Arc<Mailbox>,
     handle: tokio::runtime::Handle,
     worker: resident::Ticket,
-    slot: SessionSlot,
-}
-
-/// Whether a session still holds one of the two places the service admits. A closed
-/// session keeps its place until everything that holds its admission credit is gone:
-/// its worker with the comparison's state, the comparator policy it pinned (destroyed
-/// by the backend's retirement) and an external launch's accounting. `is_free` turns
-/// true only after the service's count has been lowered, so an opening that follows is
-/// never refused because of this session.
-#[derive(Clone, Debug)]
-pub struct SessionSlot(Arc<AtomicBool>);
-
-impl SessionSlot {
-    pub fn is_free(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
+    computing: Arc<computing::Gate>,
 }
 
 impl Session {
-    /// This session's place in the service's count; it outlives the session.
-    pub fn slot(&self) -> SessionSlot {
-        self.slot.clone()
-    }
     /// Read the accepted palette revision, including after close or disconnect.
     pub fn palette_revision(&self) -> u64 {
         self.mailbox
@@ -810,6 +796,8 @@ impl Session {
         self.mailbox.close();
         self.worker.abort();
         self.inbox.close();
+        // A worker waiting to prepare observes its cancellation now.
+        self.computing.interrupt();
     }
 }
 impl Drop for Session {
@@ -820,16 +808,18 @@ impl Drop for Session {
     }
 }
 
-struct Permit {
+/// A session's credit, as the policy pin and an external launch retain it. Sessions are
+/// not counted, so it holds nothing; it only names the session to those owners.
+struct SessionCredit {
+    /// Tests count the credits alive: a session whose owners are all gone has none.
+    #[cfg(test)]
     active: Arc<AtomicUsize>,
-    free: Arc<AtomicBool>,
 }
-impl ExternalCompareSessionCredit for Permit {}
-impl Drop for Permit {
+impl ExternalCompareSessionCredit for SessionCredit {}
+#[cfg(test)]
+impl Drop for SessionCredit {
     fn drop(&mut self) {
         self.active.fetch_sub(1, Ordering::AcqRel);
-        // After the count: whoever sees the slot free is admitted against the new count.
-        self.free.store(true, Ordering::Release);
     }
 }
 
@@ -866,10 +856,7 @@ struct ComparisonWork {
     picker: file_choice::Picker,
     #[cfg(test)]
     turns: Option<Arc<AtomicUsize>>,
-    // Keep this last: skipped and rejected envelopes drop their captured
-    // work before releasing admission. Policy/process retirement may hold
-    // the same credit beyond the envelope's lifetime.
-    _permit: Arc<Permit>,
+    computing: Arc<computing::Gate>,
 }
 
 impl ComparisonWork {
@@ -898,6 +885,7 @@ impl ComparisonWork {
                     launcher: self.launcher,
                     credit: self.credit,
                     cancellation: self.cancellation,
+                    computing: &self.computing,
                 },
                 self.picker,
             )
@@ -907,8 +895,9 @@ impl ComparisonWork {
     }
 }
 
-// If Tokio can no longer run retirement, retain the refused work and its
-// admission credit. At most two such envelopes can exist for this service.
+// If Tokio can no longer run retirement, retain the refused work rather than drop it on
+// the caller. Only a pool that is sealed or failed (the application is ending) or that
+// cannot start a thread refuses work, so such envelopes do not accumulate in normal use.
 struct RejectedComparison(Option<resident::Work>);
 
 impl RejectedComparison {
@@ -948,7 +937,7 @@ impl Service {
             handle,
             spawner,
             capture,
-            active: Arc::new(AtomicUsize::new(0)),
+            computing: Arc::new(computing::Gate::new(computing::COMPUTING)),
             picker: None,
             policy_source: None,
             launcher: None,
@@ -957,6 +946,8 @@ impl Service {
             fonts: Arc::new(discovery::FixedPitchFonts::installed()),
             #[cfg(test)]
             turns: None,
+            #[cfg(test)]
+            active: Arc::default(),
         }
     }
     #[cfg(test)]
@@ -1000,6 +991,12 @@ impl Service {
     #[cfg(test)]
     fn with_turn_counter(mut self, turns: Arc<AtomicUsize>) -> Self {
         self.turns = Some(turns);
+        self
+    }
+    /// Admit `permits` concurrent preparations instead of `computing::COMPUTING`.
+    #[cfg(test)]
+    fn with_computing(mut self, permits: usize) -> Self {
+        self.computing = Arc::new(computing::Gate::new(permits));
         self
     }
     pub fn with_path_picker(mut self, picker: Arc<dyn PathPickerService>) -> Self {
@@ -1058,17 +1055,13 @@ impl Service {
         geometry: ViewerGeometry,
         wake: Option<Wake>,
     ) -> Result<Session, OpenError> {
-        self.active
-            .try_update(Ordering::AcqRel, Ordering::Relaxed, |count| {
-                (count < 2).then_some(count + 1)
-            })
-            .map_err(|_| OpenError::SessionLimit)?;
-        let free = Arc::new(AtomicBool::new(false));
-        let permit = Arc::new(Permit {
+        // Sessions are not counted: any number may be open.
+        #[cfg(test)]
+        self.active.fetch_add(1, Ordering::AcqRel);
+        let credit: Arc<dyn ExternalCompareSessionCredit> = Arc::new(SessionCredit {
+            #[cfg(test)]
             active: self.active.clone(),
-            free: free.clone(),
         });
-        let credit: Arc<dyn ExternalCompareSessionCredit> = permit.clone();
         let generation = GENERATIONS.next().map_err(OpenError::Unavailable)?;
         let (sender, receiver) = mpsc::sync_channel(INPUT_QUEUE);
         let inbox = Arc::new(Inbox::new(sender));
@@ -1136,7 +1129,7 @@ impl Service {
             picker,
             #[cfg(test)]
             turns: self.turns.clone(),
-            _permit: permit,
+            computing: self.computing.clone(),
         };
         let worker = match self
             .spawner
@@ -1161,7 +1154,7 @@ impl Service {
             mailbox,
             handle: self.handle.clone(),
             worker,
-            slot: SessionSlot(free),
+            computing: self.computing.clone(),
         })
     }
     pub fn retire<T: Send + 'static>(&self, value: T) {

@@ -17,7 +17,11 @@ mod inline;
 
 /// Larger files, and pairs that are not text, are compared as bytes. Measurements are in
 /// docs/developer/FILE_COMPARISON.md.
-pub(crate) const MAX_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// The alignment's cost follows the lines, not the bytes: this bound, unchanged when the
+/// byte limit doubled from 32 MiB, keeps the worst case of the earlier measurements. A
+/// 64 MiB file holds at most this many lines when they average 67 bytes or more; one
+/// with more lines is compared as bytes.
 pub(crate) const MAX_LINES: usize = 1_000_000;
 /// Each visible row is shaped whole, so this bounds the work of one paint.
 const MAX_LINE_BYTES: usize = 16 * 1024;

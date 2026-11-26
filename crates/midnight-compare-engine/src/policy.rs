@@ -11,8 +11,8 @@ pub enum FileComparatorPinError {
     /// The expected policy ID or exact raw-preferences Arc is no longer current.
     /// Only this error permits the caller's one metadata refresh and retry.
     PolicyChanged,
-    /// No actual backend retirement capacity is currently available for a pin.
-    /// Map to `OpenError::Unavailable`, never to a stale-policy refresh.
+    /// The source cannot pin now (Engine's source, which needs no cleanup slot per pin,
+    /// never returns it). Map to `OpenError::Unavailable`, never to a stale-policy refresh.
     RetirementBusy,
 }
 
@@ -42,18 +42,18 @@ pub trait FileComparatorPolicySource: Send + Sync + 'static {
     /// Atomically accept BOTH `expected.id` and the exact preferences Arc identity.
     /// Value-equal reconstructed preferences are not an accepted launch snapshot.
     ///
-    /// The caller first admits the existing maximum-two session counter and
-    /// completes fallible local setup. `session` is that SAME counter-only credit;
-    /// neither policy nor paths/captures/process state may be stored inside it.
+    /// The caller first completes fallible local setup. Sessions are not counted;
+    /// `session` is the session's credit, retained by the pin; neither policy nor
+    /// paths/captures/process state may be stored inside it.
     ///
-    /// Before accepting a policy, implementations reserve actual backend cleanup
-    /// capacity and arm every owner required for non-fallible successful handoff.
     /// The returned non-Clone owner must remain safe to drop on ANY calling thread,
-    /// including UI, an uninvoked blocking closure and after runtime shutdown.
-    /// Backend final policy destruction precedes release of its retained credit.
+    /// including UI, an uninvoked blocking closure and after runtime shutdown: its drop
+    /// never runs a compiled policy's destructor there (Engine's store keeps every
+    /// pinned set, and each pin keeps the guarded store, whose cleanup is the backend's).
+    /// Any number of sessions pin; pins of one generation share its set.
     ///
-    /// Both errors acquired no accepted policy. Release the unused credit and
-    /// certified-empty reservation synchronously, without queuing no-op cleanup.
+    /// Both errors acquired no accepted policy. Release the unused credit
+    /// synchronously, without queuing no-op cleanup.
     /// A stale second open must not prevent one immediate refreshed retry while
     /// retirement work is blocked. Never synchronously destroy an accepted policy
     /// on an error path; that guarantee belongs to the already armed Engine owner.

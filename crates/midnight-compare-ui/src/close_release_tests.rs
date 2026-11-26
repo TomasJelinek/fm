@@ -1,11 +1,11 @@
 //! A closed comparator window is released, with its session and any output left in its
 //! mailbox, on the next turn of the event loop: never inside its own callback, and
-//! without waiting for another comparator to open. Until the engine has released a
-//! closed comparator's session, the window list counts it as the engine does.
+//! without waiting for another comparator to open. Any number of comparators open; a
+//! closing one, still tearing down in the engine, never stands in the way of the next.
 use super::identity_tests::{TestRuntime, platform, runtime, text_service};
 use super::*;
 use midnight_compare_engine::{
-    FileComparatorPinError, FileComparatorPolicySource, OpenError, OwnedFileComparatorPolicy,
+    FileComparatorPinError, FileComparatorPolicySource, OwnedFileComparatorPolicy,
 };
 use midnight_core::{
     ExternalCompareSessionCredit, FileComparatorPolicyStore, FileComparatorPreferences,
@@ -86,32 +86,20 @@ fn a_closed_comparator_is_released_on_the_next_loop_turn() {
         );
         assert!(manager.windows.borrow().is_empty(), "{close}");
     }
-    // The two-window limit counts open windows only.
-    let first = open(&manager, &service).unwrap();
-    let _second = open(&manager, &service).unwrap();
-    assert!(open(&manager, &service).is_err(), "a third is refused");
-    first.window.invoke_close_comparator();
-    drop(first);
-    slint::platform::update_timers_and_animations();
-    assert_eq!(manager.windows.borrow().len(), 1);
-    // The engine counts the closed session until its worker has torn down, a moment
-    // after the window is released, and the window list counts it with the engine: once
-    // the engine reports the session released, the next opening is admitted.
-    released_by_engine(&manager, 1);
-    let _third = open(&manager, &service).expect("admitted once the engine released it");
     manager.close_all();
 }
 
-/// Wait for the engine to release closed comparators' sessions until `counted` remain.
-fn released_by_engine(manager: &ComparatorWindows, counted: usize) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while manager.counted() > counted {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the engine never released a closed comparator's session"
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
+/// The owner's decision of 26 November 2026: no limit on the number of comparators.
+#[test]
+fn six_comparators_open_at_once() {
+    let _native = platform();
+    let runtime = runtime();
+    let (service, _) = text_service(&runtime);
+    let manager = ComparatorWindows::new_polled(service.clone());
+    let opened: Vec<_> = (0..6).map(|_| open(&manager, &service).unwrap()).collect();
+    assert_eq!(manager.windows.borrow().len(), 6);
+    drop(opened);
+    manager.close_all();
 }
 
 /// Whether a closed comparator's worker is held in its teardown. While held, the policy
@@ -218,26 +206,10 @@ fn held_service(runtime: &TestRuntime) -> (Service, Arc<Teardown>) {
     (service, teardown)
 }
 
-/// Whether the engine itself admits an opening now (the session is dropped at once).
-fn engine_admits(service: &Service) -> bool {
-    let geometry = ViewerGeometry {
-        width: 640,
-        height: 300,
-        scale: 1.0,
-    };
-    match service.open(launch(service), appearance(), geometry) {
-        Ok(_) => true,
-        Err(OpenError::SessionLimit) => false,
-        Err(error) => panic!("{error}"),
-    }
-}
-
-/// Backlog COMPARE-03: the engine counts a closed comparator's session until its worker
-/// has torn down, after its window is released. The window list counts it too: an
-/// opening in that moment is refused by the window list as the engine would refuse it,
-/// and admitted once the engine has released the session.
+/// Backlog COMPARE-03, now without a limit: a closed comparator whose session the engine
+/// is still tearing down never stands in the way of the next opening.
 #[test]
-fn a_closing_comparator_is_counted_until_the_engine_releases_it() {
+fn a_closing_comparator_does_not_hold_back_the_next_opening() {
     let _native = platform();
     let runtime = runtime();
     let (service, teardown) = held_service(&runtime);
@@ -249,22 +221,11 @@ fn a_closing_comparator_is_counted_until_the_engine_releases_it() {
     drop(first);
     slint::platform::update_timers_and_animations();
     assert_eq!(manager.windows.borrow().len(), 1, "the window is released");
-    // Its teardown is held: the window list and the engine both still count it.
+    // Its teardown is held, and further comparators open beside it at once.
     std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(
-        manager.counted(),
-        2,
-        "the window list counts the closing one"
-    );
-    assert!(!engine_admits(&service), "the engine counts it");
-    assert_eq!(
-        open(&manager, &service).err().as_deref(),
-        Some("Close a comparator before opening another (maximum two).")
-    );
-    assert_eq!(manager.windows.borrow().len(), 1);
+    let _third = open(&manager, &service).expect("admitted while another tears down");
+    let _fourth = open(&manager, &service).expect("admitted while another tears down");
+    assert_eq!(manager.windows.borrow().len(), 3);
     drop(held);
-    released_by_engine(&manager, 1);
-    let _third = open(&manager, &service).expect("admitted once the engine released it");
-    assert_eq!((manager.windows.borrow().len(), manager.counted()), (2, 2));
     manager.close_all();
 }

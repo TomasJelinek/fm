@@ -591,10 +591,10 @@ fn pending_external_refuses_real_input_and_retains_only_counter_credit_after_clo
             ))
             .is_err()
     );
-    assert!(matches!(
-        open(&service, unresolved(&snapshot)),
-        Err(OpenError::SessionLimit)
-    ));
+    // Sessions are not counted: a third opens beside the two.
+    let third = open(&service, unresolved(&snapshot)).unwrap();
+    third.close();
+    drop(third);
 
     let (current, _next) = source.publish(FileComparatorTarget::Automatic);
     drop(policy);
@@ -633,14 +633,12 @@ fn pending_external_refuses_real_input_and_retains_only_counter_credit_after_clo
             .is_cancelled()
     );
 
-    // Only the external owner's erased credit remains from the closed Session.
+    // Only the external owner's erased credit remains from the closed Session; it
+    // refuses no opening.
     let fresh = open(&service, unresolved(&current)).unwrap();
-    assert!(matches!(
-        open(&service, unresolved(&current)),
-        Err(OpenError::SessionLimit)
-    ));
-    drop(launcher.held.lock().unwrap().take());
     let other = open(&service, unresolved(&current)).unwrap();
+    drop(launcher.held.lock().unwrap().take());
+    wait_for(|| (service.active.load(Ordering::Acquire) == 2).then_some(()));
     assert_eq!(calls.load(Ordering::Acquire), 0);
     fresh.close();
     other.close();

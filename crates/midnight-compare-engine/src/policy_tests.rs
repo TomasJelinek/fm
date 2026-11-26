@@ -201,23 +201,21 @@ fn installed_source_pins_even_its_exact_default_snapshot() {
 }
 
 #[test]
-fn two_session_refusal_precedes_a_third_policy_pin() {
+fn every_opening_pins_its_policy_without_a_session_limit() {
     let runtime = runtime();
     let source = FakePolicySource::new();
     let (snapshot, _) = source.publish(FileComparatorTarget::Automatic);
     let (_owner, service, captures, launcher) = service(&runtime);
     let service = service.with_comparator_policies(source.clone());
-    let first = open(&service, launch(&snapshot)).unwrap();
-    let second = open(&service, launch(&snapshot)).unwrap();
-    assert!(matches!(
-        refused(open(&service, launch(&snapshot))),
-        OpenError::SessionLimit
-    ));
-    assert_eq!(source.pins.load(Ordering::Acquire), 2);
-    assert_eq!(source.credits.lock().unwrap().len(), 2);
-    assert_eq!(service.active.load(Ordering::Acquire), 2);
-    first.close();
-    second.close();
+    let sessions: Vec<_> = (0..6)
+        .map(|_| open(&service, launch(&snapshot)).unwrap())
+        .collect();
+    assert_eq!(source.pins.load(Ordering::Acquire), 6);
+    assert_eq!(source.credits.lock().unwrap().len(), 6);
+    assert_eq!(service.active.load(Ordering::Acquire), 6);
+    for session in &sessions {
+        session.close();
+    }
     wait_for(|| service.active.load(Ordering::Acquire) == 0);
     wait_for(|| source.live_pins.load(Ordering::Acquire) == 0);
     no_io(&captures, &launcher);

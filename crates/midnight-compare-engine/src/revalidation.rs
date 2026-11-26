@@ -52,7 +52,7 @@ fn drifted(
 /// Revalidate both sources. A source whose revision drifted only in its change time is
 /// replaced by its fresh capture when that capture's complete text equals the text retained
 /// for its side; strict decoding makes equal text and encoding equal bytes. The content is
-/// read like the initial read: at most 32 MiB in 256 KiB blocks, each admitted by the shared
+/// read like the initial read: at most 64 MiB in 256 KiB blocks, each admitted by the shared
 /// I/O gate, with cancellation between blocks. Returns whether a source was replaced, which
 /// invalidates work keyed to the previous capture.
 pub(crate) fn revalidate(

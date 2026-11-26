@@ -1,5 +1,6 @@
 //! External policy owners survive dormant UI, queued closures and runtime loss.
 use super::*;
+use crate::retirement::RetirementDomain;
 use midnight_core::{CompiledFileComparatorPolicy, PreparedFileComparatorPolicy};
 use std::{
     sync::{
@@ -17,13 +18,10 @@ impl Drop for Credit {
         self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
-fn admit(active: &Arc<AtomicUsize>) -> Option<Arc<dyn ExternalCompareSessionCredit>> {
-    active
-        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-            (value < 2).then_some(value + 1)
-        })
-        .ok()?;
-    Some(Arc::new(Credit(active.clone())))
+/// A session credit that only counts the credits alive: sessions are not limited.
+fn admit(active: &Arc<AtomicUsize>) -> Arc<dyn ExternalCompareSessionCredit> {
+    active.fetch_add(1, Ordering::AcqRel);
+    Arc::new(Credit(active.clone()))
 }
 
 struct Gate {
@@ -97,15 +95,14 @@ fn publish(
     );
     observed
 }
-fn source(capacity: usize) -> ComparisonPolicySource {
-    let retirement = RetirementDomain::try_start(capacity, 0).unwrap();
-    ComparisonPolicySource::new(
-        ComparatorPolicies::new(
-            retirement.try_reserve().unwrap(),
-            Arc::new(FileComparatorPolicyStore::default()),
-        ),
-        retirement,
-    )
+/// A source whose retirement domain has room for its store's slot and nothing else:
+/// pins reserve no slot.
+fn source() -> ComparisonPolicySource {
+    let retirement = RetirementDomain::try_start(1, 0).unwrap();
+    ComparisonPolicySource::new(ComparatorPolicies::new(
+        retirement.try_reserve().unwrap(),
+        Arc::new(FileComparatorPolicyStore::default()),
+    ))
 }
 fn assert_retired(observed: mpsc::Receiver<(thread::ThreadId, Option<String>)>) {
     let (id, name) = observed.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -130,42 +127,76 @@ fn dormant_source_after_engine_and_runtime_exit_retires_current_policy() {
     assert_retired(observed);
 }
 
+/// Sessions are not counted: any number pin the current set without a cleanup slot of
+/// their own, and pins of one generation share its set.
 #[test]
-fn two_historical_pins_retire_independently_after_store_replacement() {
-    let source = source(3);
+fn any_number_of_pins_share_one_set_and_reserve_no_cleanup_slot() {
+    let source = source();
+    let active = Arc::new(AtomicUsize::new(0));
+    let observed = publish(&source, None);
+    let pins: Vec<_> = (0..6)
+        .map(|_| source.pin(&source.snapshot(), admit(&active)).unwrap())
+        .collect();
+    assert_eq!(active.load(Ordering::Acquire), 6);
+    assert!(
+        pins.iter()
+            .all(|pin| Arc::ptr_eq(pin.preferences(), pins[0].preferences()))
+    );
+    drop(pins);
+    assert_eq!(
+        active.load(Ordering::Acquire),
+        0,
+        "pins return their credits"
+    );
+    assert!(
+        observed.try_recv().is_err(),
+        "the store keeps its current set"
+    );
+    drop(source);
+    assert_retired(observed);
+}
+
+/// Dropping the last pin of a displaced set never destroys it; the next publication
+/// does, on the settings writer.
+#[test]
+fn a_historical_set_is_destroyed_by_the_next_publication_after_its_last_pin() {
+    let source = source();
     let active = Arc::new(AtomicUsize::new(0));
     let first = publish(&source, None);
-    let a = source
-        .pin(&source.snapshot(), admit(&active).unwrap())
-        .unwrap();
+    let a = source.pin(&source.snapshot(), admit(&active)).unwrap();
+    let b = source.pin(&source.snapshot(), admit(&active)).unwrap();
     let first_raw = a.preferences().clone();
     let second = publish(&source, None);
-    let b = source
-        .pin(&source.snapshot(), admit(&active).unwrap())
+    let c = source.pin(&source.snapshot(), admit(&active)).unwrap();
+    assert!(Arc::ptr_eq(&first_raw, b.preferences()));
+    assert!(!Arc::ptr_eq(a.preferences(), c.preferences()));
+    assert_eq!(source.policies.pinned_history(), 1);
+    drop((a, b));
+    assert!(first.try_recv().is_err(), "a pin never destroys a set");
+    let writer = source.clone();
+    let third = thread::Builder::new()
+        .name("settings-writer".into())
+        .spawn(move || publish(&writer, None))
+        .unwrap()
+        .join()
         .unwrap();
-    let current = publish(&source, None);
-    assert!(Arc::ptr_eq(&first_raw, a.preferences()));
-    assert!(!Arc::ptr_eq(a.preferences(), b.preferences()));
-    assert!(admit(&active).is_none());
-    let uninvoked = move || drop(a);
-    drop(uninvoked);
-    assert_retired(first);
+    let (_, name) = first.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(name.as_deref(), Some("settings-writer"));
+    // The second set, still pinned, waits in the history.
+    assert_eq!(source.policies.pinned_history(), 1);
+    drop(c);
     assert!(second.try_recv().is_err());
-    assert!(current.try_recv().is_err());
-    drop(b);
-    assert_retired(second);
     drop(source);
-    assert_retired(current);
+    assert_retired(second);
+    assert_retired(third);
 }
 
 #[test]
 fn accepted_pin_in_aborted_uninvoked_blocking_closure_retires_after_runtime_exit() {
-    let source = source(3);
+    let source = source();
     let active = Arc::new(AtomicUsize::new(0));
     let old = publish(&source, None);
-    let pin = source
-        .pin(&source.snapshot(), admit(&active).unwrap())
-        .unwrap();
+    let pin = source.pin(&source.snapshot(), admit(&active)).unwrap();
     let current = publish(&source, None);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
@@ -184,6 +215,7 @@ fn accepted_pin_in_aborted_uninvoked_blocking_closure_retires_after_runtime_exit
     drop(source);
     runtime.shutdown_timeout(Duration::ZERO);
     drop(release);
+    // The pin was the store's last owner: the store and its history retire together.
     assert_retired(old);
     assert_retired(current);
     assert!(!invoked.load(Ordering::Acquire));
@@ -191,110 +223,46 @@ fn accepted_pin_in_aborted_uninvoked_blocking_closure_retires_after_runtime_exit
 
 #[test]
 fn unwind_after_acceptance_keeps_historical_policy_retirement_armed() {
-    let source = source(3);
+    let source = source();
     let active = Arc::new(AtomicUsize::new(0));
     let old = publish(&source, None);
-    let pin = source
-        .pin(&source.snapshot(), admit(&active).unwrap())
-        .unwrap();
+    let pin = source.pin(&source.snapshot(), admit(&active)).unwrap();
     let current = publish(&source, None);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _pin = pin;
         panic!("injected comparison handoff unwind");
     }));
     assert!(result.is_err());
-    assert_retired(old);
+    assert!(
+        old.try_recv().is_err(),
+        "the unwound pin did not destroy it"
+    );
     drop(source);
+    assert_retired(old);
     assert_retired(current);
 }
 
 #[test]
-fn blocked_policy_cleanup_keeps_same_credit_until_actual_destructor_returns() {
-    let source = source(4); // one extra test-only FIFO barrier slot
+fn stale_or_reconstructed_snapshot_is_refused_and_returns_its_credit_at_once() {
+    let source = source();
     let active = Arc::new(AtomicUsize::new(0));
-    let (blocker, entered, release) = gate();
-    let old = publish(&source, Some(blocker));
-    let a = source
-        .pin(&source.snapshot(), admit(&active).unwrap())
-        .unwrap();
-    let second = publish(&source, None);
-    let b = source
-        .pin(&source.snapshot(), admit(&active).unwrap())
-        .unwrap();
-    drop(a);
-    entered.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(active.load(Ordering::Acquire), 2);
-    assert!(admit(&active).is_none());
-    drop(release);
-    assert_retired(old);
-    // FIFO barrier observes payload credit destruction after the compiled Drop signal.
-    let (done, observed) = mpsc::channel();
-    struct Done(mpsc::Sender<()>);
-    impl Drop for Done {
-        fn drop(&mut self) {
-            let _ = self.0.send(());
-        }
-    }
-    let lease = source.retirement.try_reserve().unwrap();
-    drop(lease.own(Done(done)));
-    observed.recv_timeout(Duration::from_secs(5)).unwrap();
-    let next = admit(&active).expect("cleanup returned the original credit");
-    drop(next);
-    drop(b);
-    drop(source);
-    assert_retired(second);
-}
-
-#[test]
-fn stale_second_open_returns_empty_slot_and_credit_before_immediate_retry() {
-    let source = source(4); // store + two session slots + test-only blocking payload
-    let active = Arc::new(AtomicUsize::new(0));
-    let old = publish(&source, None);
+    let _old = publish(&source, None);
     let snapshot = source.snapshot();
-    let first = source.pin(&snapshot, admit(&active).unwrap()).unwrap();
+    let first = source.pin(&snapshot, admit(&active)).unwrap();
     let _current = publish(&source, None);
-    let (blocker, entered, release) = gate();
-    drop(source.retirement.try_reserve().unwrap().own(blocker));
-    entered.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(matches!(
-        source.pin(&snapshot, admit(&active).unwrap()),
+        source.pin(&snapshot, admit(&active)),
         Err(ComparisonPolicyPinError::PolicyChanged)
     ));
-    assert_eq!(active.load(Ordering::Acquire), 1);
-    let refreshed = source.snapshot();
-    let second = source.pin(&refreshed, admit(&active).unwrap()).unwrap();
-    assert_eq!(active.load(Ordering::Acquire), 2);
-    assert!(
-        source.retirement.try_reserve().is_err(),
-        "only four actual owners fit"
-    );
-    drop(release);
-    drop(first);
-    assert_retired(old);
-    drop(second);
-}
-
-#[test]
-fn same_id_different_arc_and_busy_release_unused_credit_synchronously() {
-    let source = source(2);
-    let active = Arc::new(AtomicUsize::new(0));
     let mut wrong = source.snapshot();
     wrong.preferences = Arc::new((*wrong.preferences).clone());
     assert!(matches!(
-        source.pin(&wrong, admit(&active).unwrap()),
+        source.pin(&wrong, admit(&active)),
         Err(ComparisonPolicyPinError::PolicyChanged)
     ));
+    assert_eq!(active.load(Ordering::Acquire), 1);
+    let second = source.pin(&source.snapshot(), admit(&active)).unwrap();
+    assert_eq!(active.load(Ordering::Acquire), 2);
+    drop((first, second));
     assert_eq!(active.load(Ordering::Acquire), 0);
-    let held = source.retirement.try_reserve().unwrap();
-    assert!(matches!(
-        source.pin(&source.snapshot(), admit(&active).unwrap()),
-        Err(ComparisonPolicyPinError::RetirementBusy)
-    ));
-    assert_eq!(active.load(Ordering::Acquire), 0);
-    drop(held);
-    assert!(
-        source
-            .pin(&source.snapshot(), admit(&active).unwrap())
-            .is_ok()
-    );
 }

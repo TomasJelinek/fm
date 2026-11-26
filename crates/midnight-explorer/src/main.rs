@@ -297,7 +297,9 @@ impl ContentWorkers {
         let (viewer_owner, viewer) =
             resident::Owner::start("midnight-viewer", midnight_viewer_engine::RESIDENT_WORKERS)
                 .map_err(|error| format!("Cannot start viewer workers: {error}"))?;
-        let (compare_owner, compare) = match resident::Owner::start("midnight-compare", 2) {
+        // One worker per open comparator, mostly waiting for input: elastic, so any number
+        // of comparators open. Their heavy preparation is bounded by the comparison service.
+        let (compare_owner, compare) = match resident::Owner::start_elastic("midnight-compare", 2) {
             Ok(workers) => workers,
             Err(error) => {
                 let cleanup = runtime.block_on(async {

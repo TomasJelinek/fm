@@ -398,7 +398,7 @@ fn oversized_and_binary_files_are_refused_as_text_without_reading_them_whole() {
     let Err(ReadError::Refused(reason)) = read(&file, false, &cancel, &mut |_| {}) else {
         panic!("a file over the limit must be refused as text");
     };
-    assert!(reason.contains("32 MiB"), "{reason}");
+    assert!(reason.contains("64 MiB"), "{reason}");
     assert_eq!(source.reads.load(Ordering::Acquire), 0);
 
     let (source, file) = generated(4 * 1024 * 1024, 0);
@@ -529,4 +529,22 @@ fn thousands_are_grouped() {
     assert_eq!(grouped(8192), "8,192");
     assert_eq!(grouped(1_000_000), "1,000,000");
     assert_eq!(grouped(u64::MAX), "18,446,744,073,709,551,615");
+}
+
+/// Owner decision of 26 November 2026: text comparison admits files up to 64 MiB. A
+/// 50 MiB pair (819,200 lines of 64 bytes) is read and compared as text.
+#[test]
+fn a_fifty_mib_file_is_compared_as_text() {
+    let cancel = AtomicBool::new(false);
+    let length = 50 * 1024 * 1024;
+    assert!(length > 32 * 1024 * 1024 && length <= MAX_BYTES);
+    let (_, left) = generated(length, b'a');
+    let (_, right) = generated(length, b'a');
+    let left = read(&left, false, &cancel, &mut |_| {}).expect("50 MiB is read as text");
+    let right = read(&right, false, &cancel, &mut |_| {}).unwrap();
+    assert_eq!(left.lines.len(), length as usize / 64);
+    let diff = TextComparison::from_lines([left.lines, right.lines], &cancel).unwrap();
+    assert_eq!(diff.rows.len(), length as usize / 64);
+    assert!(diff.rows.iter().all(|row| !row.changed));
+    assert!(!diff.approximate);
 }

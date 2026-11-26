@@ -1,5 +1,5 @@
 //! One shared policy store with final destruction on the existing cleanup worker.
-use crate::retirement::{RetirementDomain, RetirementLease, WorkerOwned};
+use crate::retirement::{RetirementLease, WorkerOwned};
 use midnight_core::{
     AcceptedFileComparatorPolicy, ExternalCompareSessionCredit, FileComparatorPolicyStore,
     FileComparatorPreferences, FileComparatorSnapshot,
@@ -16,18 +16,21 @@ mod tests;
 #[derive(Clone)]
 pub struct ComparisonPolicySource {
     policies: ComparatorPolicies,
-    retirement: RetirementDomain,
 }
 
-/// A non-Clone comparison session pin with runtime-independent final retirement.
-/// Keep this in worker state, never Session/UI output, capture or process tracking.
+/// A non-Clone comparison session pin. Keep this in worker state, never Session/UI
+/// output, capture or process tracking.
+///
+/// It needs no cleanup slot of its own, so any number of sessions may pin: the store
+/// keeps a reference to every set a pin references (its current set, or a displaced
+/// one in its history), and this pin keeps the guarded store alive. Dropping a pin on
+/// any thread therefore never runs a compiled policy's destructor; the store's next
+/// publication (on the settings writer) or its own retirement (on the cleanup worker)
+/// does.
 pub struct ComparisonPolicy {
-    payload: WorkerOwned<AcceptedPolicyPayload>,
-}
-
-// Field order keeps the SAME session credit occupied through actual policy Drop.
-struct AcceptedPolicyPayload {
-    policy: Option<AcceptedFileComparatorPolicy>,
+    // Field order: the policy reference goes before the store it relies on.
+    policy: AcceptedFileComparatorPolicy,
+    _store: ComparatorPolicies,
     _session: Arc<dyn ExternalCompareSessionCredit>,
 }
 
@@ -36,26 +39,20 @@ struct AcceptedPolicyPayload {
 pub enum ComparisonPolicyPinError {
     /// The ID or exact raw-preferences Arc no longer matches the published set.
     PolicyChanged,
-    /// No actual cleanup slot was available; this is not a stale-policy retry.
-    RetirementBusy,
 }
 
 impl fmt::Display for ComparisonPolicyPinError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
         output.write_str(match self {
             Self::PolicyChanged => "Comparator settings changed before this comparison opened.",
-            Self::RetirementBusy => "Comparison cleanup capacity is occupied.",
         })
     }
 }
 impl std::error::Error for ComparisonPolicyPinError {}
 
 impl ComparisonPolicySource {
-    pub(crate) fn new(policies: ComparatorPolicies, retirement: RetirementDomain) -> Self {
-        Self {
-            policies,
-            retirement,
-        }
+    pub(crate) fn new(policies: ComparatorPolicies) -> Self {
+        Self { policies }
     }
 
     /// Short metadata-only snapshot; never compiles, captures or discovers content.
@@ -63,50 +60,30 @@ impl ComparisonPolicySource {
         self.policies.snapshot()
     }
 
-    /// Call only after acquiring the existing two-session admission credit.
-    /// Pass a clone of that SAME credit. Its final reference is retained until
-    /// actual policy destruction; it must contain no policy or service ownership.
-    /// Definite refusals return unused ownership synchronously, allowing a single
-    /// immediate stale-snapshot retry without waiting for the cleanup worker.
+    /// Pin the published set `expected` names for one comparison session. Sessions are
+    /// not counted; `session` is that session's credit, retained with the pin and
+    /// containing no policy or service ownership. A refusal acquired nothing, allowing
+    /// a single immediate stale-snapshot retry.
     pub fn pin(
         &self,
         expected: &FileComparatorSnapshot,
         session: Arc<dyn ExternalCompareSessionCredit>,
     ) -> Result<ComparisonPolicy, ComparisonPolicyPinError> {
-        let lease = self
-            .retirement
-            .try_reserve()
-            .map_err(|_| ComparisonPolicyPinError::RetirementBusy)?;
-        let mut payload = lease.own(AcceptedPolicyPayload {
-            policy: None,
+        let policy = self
+            .policies
+            .pin(expected)
+            .map_err(|_| ComparisonPolicyPinError::PolicyChanged)?;
+        Ok(ComparisonPolicy {
+            policy,
+            _store: self.policies.clone(),
             _session: session,
-        });
-        match self.policies.pin(expected) {
-            Ok(policy) => {
-                // No allocation, callback or cancellation boundary after acceptance.
-                payload.policy = Some(policy);
-                Ok(ComparisonPolicy { payload })
-            }
-            Err(_) => {
-                // Certify emptiness WHILE armed. Only this metadata-only branch
-                // may use into_parts on the caller: no compiled owner was acquired.
-                // An unexpected unwind above still retires the armed payload.
-                assert!(payload.policy.is_none(), "refused pin must remain empty");
-                let (empty, lease) = payload.into_parts();
-                drop(empty);
-                drop(lease);
-                Err(ComparisonPolicyPinError::PolicyChanged)
-            }
-        }
+        })
     }
 }
 
 impl ComparisonPolicy {
     fn accepted(&self) -> &AcceptedFileComparatorPolicy {
-        self.payload
-            .policy
-            .as_ref()
-            .expect("successful pin owns its policy")
+        &self.policy
     }
 
     /// Raw metadata for this exact accepted generation, without a compiled owner.

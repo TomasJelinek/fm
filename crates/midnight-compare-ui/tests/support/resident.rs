@@ -10,8 +10,9 @@ pub(crate) struct TestRuntime {
 
 impl TestRuntime {
     pub(crate) fn new(runtime: tokio::runtime::Runtime) -> Self {
-        // Compare's approved domain is two workers, started before any Service.
-        let (owner, spawner) = Owner::start("compare-ui-test", 2).unwrap();
+        // As the application: two resident workers, elastic beyond them (one per open
+        // comparison), started before any Service.
+        let (owner, spawner) = Owner::start_elastic("compare-ui-test", 2).unwrap();
         Self {
             runtime,
             owner: Some(owner),

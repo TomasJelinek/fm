@@ -1,8 +1,9 @@
 //! Trusted host bridge for an already-armed backend request; never a plugin callback API.
 use std::{any::Any, fmt};
 
-/// Existing session admission credit only. The production implementation contains no policy,
-/// capture or native service; unconfirmed checked cleanup may retain this credit after close.
+/// A comparison session's credit, retained by its policy pin and external launch accounting.
+/// Sessions are not counted, so it limits nothing. The production implementation contains no
+/// policy, capture or native service; unconfirmed checked cleanup may retain it after close.
 pub trait ExternalCompareSessionCredit: Send + Sync + 'static {}
 
 /// Backend-only construction contract, not a security seal against untrusted host code.

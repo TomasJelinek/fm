@@ -332,7 +332,7 @@ impl Plugins {
             resident::Owner::start("midnight-viewer", midnight_viewer_engine::RESIDENT_WORKERS)
                 .expect("viewer workers");
         let (compare_owner, compare_spawner) =
-            resident::Owner::start("midnight-compare", 2).expect("comparison workers");
+            resident::Owner::start_elastic("midnight-compare", 2).expect("comparison workers");
         let viewer_service = midnight_viewer_engine::Service::with_native_capture(
             runtime.clone(),
             viewer_spawner,

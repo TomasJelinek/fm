@@ -79,8 +79,8 @@ Production composition supplies `Service::with_native_capture` with the shared
 installed-native-filesystem callback used by F3 and thumbnails. Both automatically
 resolved and manually supplied inputs are captured on the comparator worker. A
 provider error returns to the input form; it never tries a direct native opener.
-The callback receives live cancellation, checked again before content use. Session
-capacity remains reserved until an in-flight callback returns after cancellation.
+The callback receives live cancellation, checked again before content use. The
+session's worker remains busy until an in-flight callback returns after cancellation.
 The standalone `Service::new` constructor retains its default capture behavior for
 embedding/tests; the application explicitly uses the injected provider constructor.
 See [native media verification](../verification/2026-11-08-native-media-capture.md).
@@ -88,9 +88,9 @@ See [native media verification](../verification/2026-11-08-native-media-capture.
 The app injects its existing `Arc<dyn PathPickerService>` into `Service`; it also
 provides the existing platform-specific `native_path_picker_owner` to the UI.
 Windows uses its Common Item Dialog and Linux the desktop file chooser portal.
-Only the backend calls these implementations. The comparator permits two sessions,
-one worker and one picker at a time per session, with bounded input/latest-output
-mailboxes. Closing cancels both the comparison and the picker's shared cancellation
+Only the backend calls these implementations. The comparator permits any number of
+sessions, each with one worker and one picker at a time, with bounded input/latest-output
+mailboxes (see [Sessions and workers](#sessions-and-workers)). Closing cancels both the comparison and the picker's shared cancellation
 token. Normal picker cancellation retains the draft and returns to the form.
 
 The form disables editing, browsing and Compare while a request is pending, but
@@ -101,6 +101,48 @@ the latest viewport geometry/revision. Large file/selection cleanup remains on t
 worker. The UI stores original PathBuf values separately from lossy display strings;
 an unchanged field keeps the exact native bytes/UTF-16. An edited field explicitly
 supplies a new Unicode path. No MAX_PATH buffer is introduced.
+
+## Sessions and workers
+
+Through 0.6.0 the service admitted two sessions and refused a third (*Close a comparator
+before opening another (maximum two).*). Since the owner's decision of 26 November 2026
+nothing counts sessions: `Service::open` never refuses for a count, and
+`ComparatorWindows` opens any number of windows. What was bounded by the two sessions
+is bounded as follows instead:
+
+- **Workers.** Each session keeps one resident worker for its lifetime, mostly waiting
+  for input. The application starts the comparison pool with
+  `resident::Owner::start_elastic("midnight-compare", 2)`: two resident threads, and one
+  more thread whenever a session finds none waiting; an extra thread ends when it finds
+  no work, and shutdown joins every thread. Only a failure to start a thread refuses an
+  opening (*Comparison workers are busy. Try again.*).
+- **Heavy work.** Opening both files and preparing the content (reading and aligning
+  text, starting and decoding in the image workers) runs under the service's preparation
+  gate (`computing.rs`): at most `COMPUTING` = 2 sessions prepare at once, first come
+  first served, as many as the two sessions could before. A session that waits shows
+  *Waiting for other comparisons to finish…* and stops waiting when it is closed. The
+  presented comparison (scrolling, find, identity and byte scans, image renders) runs
+  outside the gate; byte scans and reads still pass the process-wide I/O gate.
+- **Memory.** Each open comparison keeps what its files need: up to about 2.5 times its
+  two texts (at most 64 MiB each), the byte-view and scan buffers, or two image workers
+  (each at most 1 GiB, with at most 128 MiB of decoded RGBA, `MAX_DECODED_BYTES` of the
+  published image-viewer API) that live as long as the comparison. Many large
+  comparisons open together therefore add up; preparation peaks are bounded by the gate.
+- **Comparator policies.** Each session pins the settings generation it opened with; the
+  backend store keeps one shared set per distinct pinned generation (16 MiB matcher
+  budget each) and drops a set at the next settings save once no session pins it
+  ([engine lifetime](ENGINE_LIFETIME.md#capacity-and-ownership)). A pin reserves no
+  cleanup slot.
+- **External programs.** A launch holds one of the four shared desktop Open/Edit launch
+  permits only while it captures and starts the pair; the started program holds one of
+  the eight shared terminal, editor, Custom Command and external-comparison process
+  slots until it exits. When those are taken, the launch is refused with the shared
+  message and the comparator offers its file form again; the window stays open.
+
+`computing_tests.rs` opens six comparisons at once, holds the admitted preparations and
+checks that the next waits, shown as waiting, and starts when one finishes (with the
+application's two and with six permits), and that closing a waiting comparison ends it
+without opening a file.
 
 ## Reading, fonts and input
 
@@ -123,12 +165,12 @@ are shown as the control pictures ␋, ␌ and ␛. The explicit bidirectional e
 override and isolate controls (U+202A-U+202E, U+2066-U+2069) are shown as escapes such
 as `\u202E`, so neither file can reorder its displayed lines; the diff still compares
 the raw lines. NUL and other control characters mark the file as binary.
-Text comparison admits files up to 32 MiB, with at most 1,000,000 lines and lines up
+Text comparison admits files up to 64 MiB, with at most 1,000,000 lines and lines up
 to 16 KiB (`crates/midnight-compare-engine/src/text.rs`; the line limit bounds the
 shaping of one painted row). A pair it does not admit (binary content, another
 encoding, or a limit) is not refused: it is compared as bytes, and the summary names
 the reason, for example *File A: not UTF-8 or UTF-16 text (binary or another
-encoding); compared as bytes*. A file over 32 MiB is not read as text at all, and a
+encoding); compared as bytes*. A file over 64 MiB is not read as text at all, and a
 file whose first 256 KiB hold a control byte is refused after that first block.
 Reading a large file reports its progress (*Reading File A: 12 of 30 MiB…*), then
 *Matching lines…*; both stop at the next block or alignment step after Escape or Close.
@@ -313,11 +355,17 @@ between bounded steps. The retained text is one string and a `u32` line end per 
 each file, and 12 bytes per aligned row (`text_align.rs`, tests in `text_align_tests.rs`
 and `text_tests.rs`).
 
-The limits of 32 MiB and 1,000,000 lines per file keep the worst case near one second
+The limits of 32 MiB and 1,000,000 lines per file kept the worst case near one second
 in an optimized build (two in a debug build) and the peak memory near two and a half
-times the texts, as measured with synthetic logs of numbered 70-byte lines. Larger
-pairs, which a text view would not make readable, are compared as bytes with bounded
-memory. A pathological pair (1,750,000 lines in all, where Myers gives up and the
+times the texts, as measured with synthetic logs of numbered 70-byte lines. The byte
+limit is 64 MiB since the owner's decision of 26 November 2026 (`MAX_BYTES`). The line
+limit, which drives the alignment's cost, is unchanged, so a 64 MiB file is admitted
+when its lines average 67 bytes or more, and one with more than 1,000,000 lines is
+compared as bytes as before. The alignment's time bound therefore still holds; reading
+and peak memory follow the bytes, near 320 MiB for a pair at the limit (2.5 × 2 ×
+64 MiB; not re-measured). `a_fifty_mib_file_is_compared_as_text` reads and aligns a
+50 MiB pair. Larger pairs, which a text view would not make readable, are compared as
+bytes with bounded memory. A pathological pair (1,750,000 lines in all, where Myers gives up and the
 anchored pass emits about a million operations) aligns in about a second
 (`many_changes_between_anchors_align_in_bounded_time`).
 
@@ -325,23 +373,16 @@ anchored pass emits about a million operations) aligns in about a second
 
 The same native comparator window hosts the File A / File B form and the resulting
 text, image or byte comparison. It retains main-window placement/size, native resizing/moving,
-Escape and the close button. At most two comparator windows are open. A closed one is
+Escape and the close button. Any number of comparator windows are open. A closed one is
 hidden at once and released on the next turn of the event loop (`OpenWindow::release`),
 not inside the callback that closed it: its component, timers and session go, and the
 session's mailbox, with any output the worker left in it, is dropped on a blocking
 thread ([record](../verification/2026-11-24-ui-perf-fixes.md#closed-comparator-windows)).
-The engine still counts the closed session against its two until everything holding its
-admission credit is gone: the worker with the comparison's state, the comparator policy
-it pinned (destroyed on the backend's retirement worker) and an external launch's
-accounting, normally for milliseconds. `Session::slot()` reports this: its `SessionSlot`
-outlives the session, and `is_free` turns true only after the count has been lowered.
-`ComparatorWindows` keeps the slots of the sessions it opened and refuses an opening, with
-the usual "Close a comparator before opening another (maximum two).", while two are
-counted, so the window list and the engine never disagree. An opening right after a
-close is therefore refused only while the closed session is still tearing down; nothing
-is queued and nothing polls. `close_release_tests` holds a closed comparator's teardown
-with a test policy whose `Drop` waits: the window list and the engine both count it, and
-an opening is admitted once the engine has released it.
+A closed session tears down in the engine (its worker with the comparison's state, the
+comparator policy it pinned and an external launch's accounting) while further
+comparators open: nothing counts sessions, so nothing waits for that teardown.
+`close_release_tests` opens six comparators at once, and holds a closed comparator's
+teardown with a test policy whose `Drop` waits while two more open beside it.
 Each input has Browse; Enter submits both nonempty fields. Short forms center within the window, scroll at 320×200 and keep Compare and
 Cancel outside the scrolling area. File fields own their editing/navigation keys.
 

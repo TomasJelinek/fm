@@ -429,7 +429,7 @@ impl Harness {
         let (viewer_owner, viewer_spawner) =
             Owner::start("midnight-viewer", midnight_viewer_engine::RESIDENT_WORKERS)
                 .map_err(|error| format!("Viewer resident startup failed: {error}"))?;
-        let (compare_owner, compare_spawner) = Owner::start("midnight-compare", 2)
+        let (compare_owner, compare_spawner) = Owner::start_elastic("midnight-compare", 2)
             .map_err(|error| format!("Compare resident startup failed: {error}"))?;
         // Existing qualified installation fixture selects the real application
         // explicitly. This never changes the process-global executable resolver.

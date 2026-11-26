@@ -575,7 +575,7 @@ fn injected_rejection_on_either_side_never_falls_back_to_readable_native_files()
 }
 
 #[test]
-fn close_cancels_either_capture_retains_capacity_until_return_and_suppresses_late_output() {
+fn close_cancels_either_capture_and_suppresses_late_output_while_others_open() {
     let root = fixture();
     let paths = paths(root.path());
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -613,13 +613,11 @@ fn close_cancels_either_capture_retains_capacity_until_return_and_suppresses_lat
         session.mailbox.take();
         session.close();
         cancellation.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Sessions are not counted: others open while the capture still runs.
         let other = open(&service, unresolved()).unwrap();
-        assert!(
-            open(&service, unresolved()).is_err(),
-            "Capture still owns its slot"
-        );
+        let next = open(&service, unresolved()).unwrap();
         release.send(()).unwrap();
-        let next = wait_for(|_| open(&service, unresolved()).ok());
+        wait_for(|_| (service.active.load(Ordering::Acquire) == 2).then_some(()));
         assert_eq!(calls.load(Ordering::Relaxed), blocked + 1);
         assert_eq!(reads.load(Ordering::Relaxed), 0);
         assert!(

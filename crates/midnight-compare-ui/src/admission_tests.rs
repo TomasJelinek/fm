@@ -320,31 +320,32 @@ fn second_stale_pin_preserves_original_sources_and_stops() {
 }
 
 #[test]
-fn session_limit_is_returned_without_refresh_or_retry() {
+fn any_number_of_sessions_open_with_one_attempt_and_one_pin_each() {
     let fixture = Fixture::new(Behavior::Current);
     let current = fixture.source.store.snapshot();
-    let first = fixture.open(unresolved(&current)).unwrap();
-    let second = fixture.open(unresolved(&current)).unwrap();
-    chooser(&first);
-    chooser(&second);
-    let mut attempts = 0;
-    let result = admission::open_observed(
-        &fixture.service,
-        unresolved(&FileComparatorSnapshot::default()),
-        appearance(),
-        geometry(),
-        |_| attempts += 1,
-    );
-    assert!(matches!(result, Err(OpenError::SessionLimit)));
-    assert_eq!(attempts, 1);
-    assert_eq!(
-        fixture.pins().len(),
-        2,
-        "session refusal must happen before another pin"
-    );
+    let sessions: Vec<_> = (0..6)
+        .map(|_| {
+            let mut attempts = 0;
+            let session = admission::open_observed(
+                &fixture.service,
+                unresolved(&current),
+                appearance(),
+                geometry(),
+                |_| attempts += 1,
+            )
+            .unwrap();
+            assert_eq!(attempts, 1);
+            session
+        })
+        .collect();
+    for session in &sessions {
+        chooser(session);
+    }
+    assert_eq!(fixture.pins().len(), 6);
     fixture.assert_no_refresh_or_capture();
-    first.close();
-    second.close();
+    for session in &sessions {
+        session.close();
+    }
 }
 
 #[test]

@@ -72,9 +72,8 @@ impl FileComparatorPolicySource for PolicySource {
     ) -> Result<Box<dyn OwnedFileComparatorPolicy>, FileComparatorPinError> {
         let policy = self.0.pin(expected, session).map_err(|error| match error {
             ComparisonPolicyPinError::PolicyChanged => FileComparatorPinError::PolicyChanged,
-            ComparisonPolicyPinError::RetirementBusy => FileComparatorPinError::RetirementBusy,
         })?;
-        // Engine already armed final retirement before this adapter allocation.
+        // The pin keeps Engine's guarded store, which retains and retires its set.
         Ok(Box::new(Policy(policy)))
     }
 }

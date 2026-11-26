@@ -60,7 +60,7 @@ comparator builders are separate APIs.
 
 One engine reserves a shared retirement domain (`RetirementDomain::try_start` in
 `EngineLifetime::new`) with eight reusable waiter tokens (`DOMAIN_WAITERS`) and
-**332 payload slots** (`DOMAIN_CAPACITY` in `midnight-engine/src/engine_lifetime.rs`).
+**330 payload slots** (`DOMAIN_CAPACITY` in `midnight-engine/src/engine_lifetime.rs`).
 The test `lifetime_document_states_the_domain_capacity_and_its_breakdown` reads this
 document and fails unless the total and the table below match the code:
 
@@ -73,7 +73,6 @@ document and fails unless the total and the table below match the code:
 | Drag state, accepted drop registry and one serial backlog drain | 3 |
 | Engine run, command receiver, shared panel snapshots and shared services | 4 |
 | Shared comparator policy store, guarded from startup | 1 |
-| Accepted comparator policy pins, acquired dynamically under the two comparison credits | 2 |
 | Checksum accepted work | 32 |
 | Checksum manifest saves | 2 |
 | Checksum serialized intake and service context | 2 |
@@ -93,17 +92,22 @@ document and fails unless the total and the table below match the code:
 The eight waiter tokens serve Copy, mutations, drag backlog, archive navigation,
 clipboard rejection, checksums, shell-menu intake and desktop intake. They are
 reusable reservation metadata; their payload reservations are included in the
-table. Cloning the shared `RetirementDomain`, including `comparator_policy_pins`,
-creates neither another domain nor another payload slot.
+table. Cloning the shared `RetirementDomain` creates neither another domain nor
+another payload slot.
 
-Comparison admission is separately limited to two counter-only session credits.
-Each accepted policy pin reserves one of the two dynamically budgeted payload
-slots in the same retirement domain and retains that same credit through actual
-policy destruction. Cloning a credit does not admit another comparison. These
-two credits are not two additional payload slots. External comparison shares the
-existing four desktop Open/Edit launch permits; its captured pair uses one
-guarded payload owner, not one slot per file. The two policy-pin slots are
-separate from the six desktop capture slots.
+Comparison sessions are not counted: any number may be open. An accepted
+comparator policy pin reserves no payload slot. The guarded comparator policy store
+(its one startup slot above) keeps a reference to every set a pin references: its
+current set, and in its history each displaced set that a pin still referenced when
+settings were saved. Each pin keeps that guarded store alive, so dropping a pin on any
+thread never runs a compiled policy's destructor: the next settings publication drops,
+on the settings writer, the history sets no pin references any more, and the store's
+own retirement drops the rest. Retained sets are one per distinct settings generation
+that live sessions pinned (sessions on one generation share its set), each within the
+16 MiB matcher budget. Through 0.6.0 each pin reserved one of two payload slots under a
+limit of two sessions; that row (2 slots) is gone. External comparison shares the
+existing four desktop Open/Edit launch permits, held only while its pair is captured
+and launched; its captured pair uses one guarded payload owner, not one slot per file.
 
 Native drag admission uses Copy's existing 32 permits. It does not add another queue.
 A reservation is acquired before accepting owned payloads and remains occupied until
@@ -155,7 +159,7 @@ Custom Commands protect prepared native pins through process admission and launc
 Startup creates two bounded process trackers: eight shared terminal/editor/Custom
 Command/external-comparison process slots and sixteen independent opener slots.
 These are child-process admission/tracking limits, separate from the retirement
-payload slots, the six desktop capture slots and the two comparison credits.
+payload slots and the six desktop capture slots.
 Each tracker reserves before native launch and adopts its returned child before
 querying even its ID. They outlive
 Tokio, retain the existing process permit through observed exit and cleanup, and

@@ -791,6 +791,8 @@ impl Drop for CompareHold {
 #[test]
 #[ignore = "SERIAL: requires protected installed native provider, owned work dir and Build-precompiled existing argv recorder"]
 fn actual_cancel_before_worker_returns_two_guarded_session_credits_without_spawn() {
+    // This harness keeps a fixed pool of two workers (the application's pool is elastic),
+    // so a third opening finds its queue full: the pool, not a session count, refuses it.
     let fixtures = Fixtures::new("cancel");
     let mut harness = Harness::new();
     let snapshot = harness.accept(fixtures.program());
@@ -803,14 +805,14 @@ fn actual_cancel_before_worker_returns_two_guarded_session_credits_without_spawn
     let second = harness.open(&snapshot, Some(&fixtures.paths)).unwrap();
     assert!(matches!(
         harness.open(&snapshot, None),
-        Err(OpenError::SessionLimit)
+        Err(OpenError::Unavailable(_))
     ));
     first.close();
     second.close();
     assert!(first.send(Input::Seek(0.0)).is_err() && second.send(Input::Seek(0.0)).is_err());
     assert!(matches!(
         harness.open(&snapshot, None),
-        Err(OpenError::SessionLimit)
+        Err(OpenError::Unavailable(_))
     ));
     hold.assert_saturated();
     drop(hold);

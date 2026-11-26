@@ -1285,7 +1285,9 @@ current keys.
   matches, both files open at the top. On paired replacement lines, a stronger tint
   marks the changed portion. Jumping to an edit on a long line scrolls it into
   view horizontally. The status shows your position, such as *Difference 2 of 5*.
-  Text comparison supports files up to 32 MiB and 1,000,000 lines of at most
+  Any number of comparison windows can be open; at most two prepare a comparison at
+  once, and the others show *Waiting for other comparisons to finish…* until their
+  turn. Text comparison supports files up to 64 MiB and 1,000,000 lines of at most
   16 KiB each. **Find…** (Ctrl+F) searches both files. Image pairs provide
   **Side by side**, **Swipe** and **Onion skin** controls. Binary files, larger text
   files and other pairs are compared byte by byte in a side-by-side hex view

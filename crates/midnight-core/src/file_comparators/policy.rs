@@ -158,11 +158,21 @@ impl std::error::Error for FileComparatorPolicyChanged {}
 struct State {
     current: Published,
     last_reserved: u64,
+    /// Displaced sets that a session pin still referenced at a publication. The store
+    /// keeps one reference to each, so a pin never performs a set's final drop while the
+    /// store lives: a publication (on the sole writer) drops the sets no pin references
+    /// any more, and the store's own final drop (a backend worker) drops the rest. One
+    /// entry per distinct pinned settings generation; sessions pinning the same
+    /// generation share its `Arc`.
+    history: Vec<Arc<PolicySet>>,
 }
 
-/// One current set, no history map. The sole publisher is the serialized preferences worker.
-/// Session callers must acquire the existing two-session credit before pinning.
-/// Final store/candidate destruction belongs to a backend worker.
+/// One current set plus the displaced sets that open sessions still pin. The sole
+/// publisher is the serialized preferences worker. Any number of sessions may pin: each
+/// pin is one `Arc` reference, so identical snapshots share one compiled set and its
+/// matcher budget (at most `MAX_FILE_COMPARATOR_MATCHER_BYTES` per set). Retained sets
+/// are therefore proportional to the distinct generations live sessions pinned.
+/// Final store/candidate/set destruction belongs to a backend worker.
 pub struct FileComparatorPolicyStore {
     state: Mutex<State>,
 }
@@ -180,6 +190,7 @@ impl Default for FileComparatorPolicyStore {
                     }),
                 },
                 last_reserved: 0,
+                history: Vec::new(),
             }),
         }
     }
@@ -228,20 +239,32 @@ impl FileComparatorPolicyStore {
     }
 
     /// Reserve monotonically before writing. Abandoned candidates leave harmless ID gaps.
+    /// Also reserves the history room that the following publication may need.
     pub fn prepare_id(&self) -> Result<FileComparatorPolicyId, FsError> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let next = state.last_reserved.checked_add(1).ok_or_else(|| {
+        let failure = |message: &'static str| {
             FsError::from_io(
                 "prepare comparator policy",
                 Path::new(""),
-                io::Error::other("Comparator policy identifiers are exhausted."),
+                io::Error::other(message),
             )
-        })?;
+        };
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let next = state
+            .last_reserved
+            .checked_add(1)
+            .ok_or_else(|| failure("Comparator policy identifiers are exhausted."))?;
+        state
+            .history
+            .try_reserve(1)
+            .map_err(|_| failure("Comparator policy history cannot grow."))?;
         state.last_reserved = next;
         Ok(FileComparatorPolicyId(next))
     }
 
-    /// Sole-writer commit after successful persistence, with no fallible allocation or I/O.
+    /// Sole-writer commit after successful persistence, with no fallible allocation or I/O
+    /// (`prepare_id` reserved the history room). The displaced set joins the history;
+    /// every history set that no pin references any more is dropped here, on the writer,
+    /// after the lock is released.
     /// The candidate must carry this writer's reserved ID via with_id before saving.
     /// Panics only on a host programming error: publishing an unreserved/stale candidate.
     pub fn publish(&self, candidate: PreparedFileComparatorPolicy) -> FileComparatorSnapshot {
@@ -252,23 +275,39 @@ impl FileComparatorPolicyStore {
             id,
             preferences: candidate.set.raw.clone(),
         };
-        let displaced = {
+        let unpinned = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             assert!(
                 id.0 > state.current.id.0 && id.0 <= state.last_reserved,
                 "comparator publication requires this writer's newer reserved ID"
             );
-            std::mem::replace(
+            let displaced = std::mem::replace(
                 &mut state.current,
                 Published {
                     id,
                     set: candidate.set,
                 },
-            )
+            );
+            state.history.push(displaced.set);
+            // Only the current set can be pinned, so a history set whose one remaining
+            // reference is this store's own can never be referenced again.
+            state
+                .history
+                .extract_if(.., |set| Arc::strong_count(set) == 1)
+                .collect::<Vec<_>>()
         };
         // The expensive/foreign compiler destructor may reenter snapshot(); never hold its lock.
-        drop(displaced);
+        drop(unpinned);
         snapshot
+    }
+
+    /// The displaced sets still retained for session pins.
+    pub fn pinned_history(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .history
+            .len()
     }
 }
 

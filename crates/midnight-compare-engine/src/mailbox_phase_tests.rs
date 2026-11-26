@@ -18,7 +18,7 @@ fn session(handle: &tokio::runtime::Handle, capacity: usize) -> (Session, Receiv
             )),
             handle: handle.clone(),
             worker,
-            slot: SessionSlot(Arc::default()),
+            computing: Arc::new(crate::computing::Gate::new(1)),
         },
         receiver,
         generation,

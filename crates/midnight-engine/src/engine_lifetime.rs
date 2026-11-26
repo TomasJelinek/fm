@@ -10,7 +10,6 @@ use std::io;
 pub struct EngineLifetime {
     pub(crate) run: RetirementLease,
     pub(crate) comparator_policies: RetirementLease,
-    pub(crate) comparator_policy_pins: RetirementDomain,
     pub(crate) services: RetirementLease,
     pub(crate) commands: RetirementLease,
     pub(crate) resources: Resources,
@@ -53,7 +52,6 @@ pub(crate) const DOMAIN_CAPACITY: usize = crate::operations::MAX_JOBS
     + crate::copy_operations::MAX_JOBS
     + 11
     + 1 // Shared comparator policy store.
-    + 2 // Two comparison sessions, including pending pin cleanup.
     + crate::checksum_actor::RETIREMENT_CAPACITY
     + crate::user_commands::MAX_JOBS
     + 1
@@ -91,7 +89,6 @@ impl EngineLifetime {
         Ok(Self {
             run: domain.try_reserve().map_err(io::Error::other)?,
             comparator_policies: domain.try_reserve().map_err(io::Error::other)?,
-            comparator_policy_pins: domain.clone(),
             services: domain.try_reserve().map_err(io::Error::other)?,
             commands: domain.try_reserve().map_err(io::Error::other)?,
             resources: Resources {

@@ -243,6 +243,7 @@ pub(crate) struct Context<'a> {
     pub launcher: Option<Arc<dyn ExternalCompareLauncher>>,
     pub credit: Arc<dyn ExternalCompareSessionCredit>,
     pub cancellation: Cancellation,
+    pub computing: &'a Arc<crate::computing::Gate>,
 }
 
 impl Capture<'_> {
@@ -481,6 +482,11 @@ fn compare(
     let output = context.output;
     let capture = &context.capture;
     let cancel = capture.cancel;
+    // Opening and preparing the content is the heavy phase: wait for a permit. It is
+    // released before the comparison is presented and stays open for input.
+    let preparing = context.computing.acquire(cancel, || {
+        output.put(generation, Output::Status(crate::computing::WAITING.into()));
+    })?;
     let left = capture.open(&paths[0]).map_err(|error| {
         format!(
             "File A could not be opened: {error}\n{}",
@@ -572,6 +578,7 @@ fn compare(
             content
         }
     };
+    drop(preparing);
     viewport.geometry = bounded(viewport.geometry);
     let mut dirty = true;
     let mut painted_appearance = 0;

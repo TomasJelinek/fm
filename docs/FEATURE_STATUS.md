@@ -312,6 +312,11 @@ How to read it:
   result below the active panel and per-row match badges on the compared rows and,
   with subfolders, in the panels' inline subfolders (0.5.1); the result line's ×,
   Escape outside filename search, Ctrl+Shift+F11 and Clear comparison marks remove them.
+- **Windows and Linux, after 0.6.0 (unit-tested; acceptance not yet rerun):** any number
+  of comparator windows open at once, at most two preparing a comparison at a time
+  (the others wait, shown as waiting); text comparison admits files up to 64 MiB (was
+  32 MiB); the restricted image workers, which the image viewer shares, may use 1 GiB
+  of memory (was 512 MiB) and read up to 1 GiB of source (was 256 MiB).
 - **Open:** the time to the first frame is not measured on Linux (COMPARE-01); image
   and hex comparisons report a change of the change time alone as a change
   (COMPARE-02).

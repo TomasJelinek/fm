@@ -40,7 +40,7 @@ mod tooltip;
 #[cfg(test)]
 mod wake_tests;
 use midnight_compare_engine::{
-    ExternalCompareChoiceOutcome, ImageMode, Input, Refused, Service, Session, SessionSlot, Wake,
+    ExternalCompareChoiceOutcome, ImageMode, Input, Refused, Service, Session, Wake,
 };
 use midnight_core::{FileCompareLaunch, ShortcutChord, ViewerAppearance, ViewerGeometry};
 use slint::{
@@ -68,15 +68,13 @@ type NativeObserver =
     Rc<RefCell<dyn FnMut(&slint::winit_030::winit::event::WindowEvent) -> EventResult>>;
 pub type FontListener = Rc<dyn Fn(String)>;
 
-/// The open comparison windows of one manager (at most two), shared weakly with each
+/// The open comparison windows of one manager (any number), shared weakly with each
 /// window so that a closed one can leave the list (`OpenWindow::release`).
 type OpenWindows = RefCell<Vec<Rc<OpenWindow>>>;
 
 pub struct ComparatorWindows {
     service: Service,
     windows: Rc<OpenWindows>,
-    /// The engine's places of the sessions this manager opened (`counted`).
-    slots: RefCell<Vec<SessionSlot>>,
     app_icon: RefCell<slint::Image>,
     picker_owner: file_choice::PickerOwner,
     font_listener: Rc<RefCell<Option<FontListener>>>,
@@ -379,8 +377,7 @@ impl OpenWindow {
     /// with any output the worker left in it, is dropped on a blocking thread
     /// (`Session`'s `Drop`). Not at once: closing runs in the window's own callbacks (its
     /// Close button, the title bar), and a component must not be dropped inside one.
-    /// Until then the window is hidden and counts as closed, so it never holds one of the
-    /// two places.
+    /// Until then the window is hidden and counts as closed.
     fn release(&self) {
         let (owner, me) = (self.owner.borrow().clone(), self.me.clone());
         Timer::single_shot(Duration::ZERO, move || {
@@ -406,7 +403,6 @@ impl ComparatorWindows {
         Self {
             service,
             windows: Rc::default(),
-            slots: RefCell::default(),
             app_icon: RefCell::default(),
             picker_owner: |_| midnight_core::PathPickerOwner::None,
             font_listener: Rc::new(RefCell::new(None)),
@@ -480,9 +476,6 @@ impl ComparatorWindows {
         before_palette_read: impl FnOnce(&Session),
     ) -> Result<slint::Weak<ComparatorWindow>, String> {
         self.windows.borrow_mut().retain(|open| !open.closed.get());
-        if self.windows.borrow().len() >= 2 || self.counted() >= 2 {
-            return Err("Close a comparator before opening another (maximum two).".into());
-        }
         let window = ComparatorWindow::new().map_err(|error| error.to_string())?;
         window.set_app_icon(self.app_icon.borrow().clone());
         let placement = placement.into();
@@ -521,7 +514,6 @@ impl ComparatorWindows {
             wake,
         )
         .map_err(|error| error.to_string())?;
-        self.slots.borrow_mut().push(session.slot());
         before_palette_read(&session);
         let open = OpenWindow::new(
             window,
@@ -562,16 +554,6 @@ impl ComparatorWindows {
         *open.owner.borrow_mut() = Rc::downgrade(&self.windows);
         self.windows.borrow_mut().push(open);
         Ok(weak)
-    }
-    /// The sessions of this manager's comparators that the engine still counts against
-    /// its two: the open ones and closed ones still tearing down (their worker, the
-    /// policy they pinned, an external launch's accounting), normally for milliseconds
-    /// after the window is released. An opening is refused while two are counted, as the
-    /// engine would refuse it, so the window list and the engine never disagree.
-    fn counted(&self) -> usize {
-        let mut slots = self.slots.borrow_mut();
-        slots.retain(|slot| !slot.is_free());
-        slots.len()
     }
     pub fn close_all(&self) {
         for open in self.windows.borrow_mut().drain(..) {

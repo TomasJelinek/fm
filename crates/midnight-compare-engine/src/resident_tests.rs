@@ -205,9 +205,9 @@ fn dropping_the_final_sessions_and_service_releases_both_idle_bodies_before_seal
 }
 
 #[test]
-fn a_stuck_capture_holds_its_credit_while_the_transient_pool_can_run() {
+fn a_stuck_capture_holds_its_credit_while_other_comparisons_open() {
     let runtime = runtime();
-    let (owner, spawner) = resident::Owner::start("compare-capture-test", 2).unwrap();
+    let (owner, spawner) = resident::Owner::start_elastic("compare-capture-test", 2).unwrap();
     let (entered, arrived) = mpsc::channel();
     let (release, wait) = mpsc::channel();
     let wait = Mutex::new(wait);
@@ -227,29 +227,23 @@ fn a_stuck_capture_holds_its_credit_while_the_transient_pool_can_run() {
     )
     .unwrap();
     let capture_thread = arrived.recv_timeout(TIMEOUT).unwrap();
-    let slot = session.slot();
     drop(session);
-    let other = open(&service, Vec::new()).unwrap();
-    assert!(matches!(
-        open(&service, Vec::new()),
-        Err(OpenError::SessionLimit)
-    ));
+    // Sessions are not counted: others open beside the stuck one.
+    let others: Vec<_> = (0..3)
+        .map(|_| open(&service, Vec::new()).unwrap())
+        .collect();
 
     let (transient, ran) = mpsc::channel();
     runtime
         .handle()
         .spawn_blocking(move || transient.send(std::thread::current().id()).unwrap());
     assert_ne!(ran.recv_timeout(TIMEOUT).unwrap(), capture_thread);
-    assert_eq!(service.active.load(Ordering::Acquire), 2);
-    assert!(!slot.is_free(), "the closed session's worker still runs");
+    // The closed session's worker still runs and keeps its credit.
+    assert_eq!(service.active.load(Ordering::Acquire), 4);
 
     release.send(()).unwrap();
-    wait_for(|| slot.is_free());
-    // A free slot is already out of the count: the next opening is admitted against it.
-    assert_eq!(service.active.load(Ordering::Acquire), 1);
-    let fresh = open(&service, Vec::new()).unwrap();
-    drop(fresh);
-    drop(other);
+    wait_for(|| service.active.load(Ordering::Acquire) == 3);
+    drop(others);
     wait_for(|| service.active.load(Ordering::Acquire) == 0);
     runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
 }
@@ -322,20 +316,17 @@ fn refusal_after_transient_shutdown_never_drops_work_on_the_caller_or_returns_cr
     let service = Service::with_native_capture(handle, spawner, capture)
         .with_comparator_policies(policy.clone());
     *active.lock().unwrap() = Some(service.active.clone());
-    for _ in 0..2 {
+    // Each refusal is the sealed pool's; its envelope, credit and pin are retained.
+    for _ in 0..3 {
         assert!(matches!(
             open(&service, Vec::new()),
             Err(OpenError::Unavailable(_))
         ));
     }
-    assert!(matches!(
-        open(&service, Vec::new()),
-        Err(OpenError::SessionLimit)
-    ));
     let counter = service.active.clone();
     drop(service);
-    assert_eq!(counter.load(Ordering::Acquire), 2);
-    assert_eq!(policy.live_pins.load(Ordering::Acquire), 2);
+    assert_eq!(counter.load(Ordering::Acquire), 3);
+    assert_eq!(policy.live_pins.load(Ordering::Acquire), 3);
     assert!(matches!(
         observed.try_recv(),
         Err(mpsc::TryRecvError::Empty)

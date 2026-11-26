@@ -255,7 +255,6 @@ pub struct Engine {
     commands: Option<retirement::RetirementLease>,
     copy_admission: copy_operations::Admission,
     comparator_policies: comparator_policy_lifetime::ComparatorPolicies,
-    comparator_policy_pins: retirement::RetirementDomain,
     resources: engine_lifetime::Resources,
 }
 
@@ -430,7 +429,6 @@ impl Engine {
                 lifetime.comparator_policies,
                 Arc::new(midnight_core::FileComparatorPolicyStore::default()),
             ),
-            comparator_policy_pins: lifetime.comparator_policy_pins,
             resources: lifetime.resources,
         }
     }
@@ -480,12 +478,10 @@ impl Engine {
     }
 
     /// Guarded comparison policy composition for services that may outlive Engine.
-    /// Both dormant source and admitted session pins retire independently of Tokio.
+    /// The dormant source and every session pin keep the guarded store, whose
+    /// final drop (with the sets pins referenced) retires independently of Tokio.
     pub fn comparator_policy_source(&self) -> ComparisonPolicySource {
-        ComparisonPolicySource::new(
-            self.comparator_policies.clone(),
-            self.comparator_policy_pins.clone(),
-        )
+        ComparisonPolicySource::new(self.comparator_policies.clone())
     }
 
     /// Run commands admitted by this Engine's typed channel. A foreign receiver

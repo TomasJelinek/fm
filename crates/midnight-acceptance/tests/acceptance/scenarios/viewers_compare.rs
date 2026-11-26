@@ -16,7 +16,7 @@
 //! position bar); the window's
 //! close request (its ×); the image controls (Fit, Zoom in and out,
 //! Ctrl+wheel, the Swipe divider and Right image opacity sliders, dragging the divider
-//! on the picture); text over the comparator's limits (32 MiB, 1,000,000 lines, a line
+//! on the picture); text over the comparator's limits (64 MiB, 1,000,000 lines, a line
 //! over 16 KiB) compared as bytes with the reason; and File A / File B chosen by hand
 //! (one side resolved from the panel, a missing path refused in the form, Browse…, the
 //! Compare button, Cancel).
@@ -401,7 +401,7 @@ fn run(context: &mut Context) -> Result<(), String> {
         (
             "big-a.txt",
             "big-b.txt",
-            "text comparison supports files up to 32 MiB",
+            "text comparison supports files up to 64 MiB",
         ),
         (
             "lines-a.txt",
@@ -430,7 +430,7 @@ fn run(context: &mut Context) -> Result<(), String> {
 /// Text pairs over each of the comparator's text limits, each differing in one line.
 fn prepare_limits(folder: &std::path::Path) -> Result<(), String> {
     let line = "0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ text\n";
-    let big = line.repeat((33 << 20) / line.len() + 1);
+    let big = line.repeat((65 << 20) / line.len() + 1);
     generated::write(folder, "big-a.txt", &big)?;
     generated::write(folder, "big-b.txt", big.replacen("text\n", "TEXT\n", 1))?;
     let lines = "x\n".repeat(1_000_001);
