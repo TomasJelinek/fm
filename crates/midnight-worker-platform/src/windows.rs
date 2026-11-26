@@ -341,33 +341,88 @@ pub(super) fn pipe() -> io::Result<(File, File)> {
 
 static PROCESS_CREATION: Mutex<()> = Mutex::new(());
 
-/// Serializes acquiring the per-user AppContainer profile: concurrent first creation of the
-/// same profile can fail with E_UNEXPECTED (seen on a fresh CI user while workers started in
-/// parallel).
-static WORKER_PROFILE: Mutex<()> = Mutex::new(());
+/// Whether this process has already tried to ensure the per-user AppContainer profile. The
+/// lock also serializes ensuring the profile within this process.
+///
+/// `CreateAppContainerProfile` is not safe to call concurrently for one name from several
+/// processes: besides E_UNEXPECTED (first seen on a fresh CI user while workers started in
+/// parallel), calls racing in other processes fail with ERROR_PATH_NOT_FOUND,
+/// ERROR_KEY_DELETED, ERROR_SHARING_VIOLATION, ERROR_BAD_ENVIRONMENT or E_ACCESSDENIED, and a
+/// failed call rolls the profile back, so the profile can be missing for a moment and a
+/// racing call may create it anew. Eight processes calling it in a loop failed about 5% of
+/// their calls, each call taking about 26 ms. Calling it for every worker, and failing the
+/// start when it failed, made a worker start fail whenever another Midnight Explorer process
+/// started one at the same moment (an archive that Find left unsearched, an archive, viewer
+/// or thumbnail that did not open).
+///
+/// So a process tries to ensure the profile once, at its first worker start, and afterwards
+/// only derives the SID, which is computed from the name without the profile store. Even
+/// that first attempt is best effort: the profile normally exists already, and other
+/// processes that keep failing their calls must not fail a worker whose profile is there.
+/// `CreateProcessW` is the real check: when it finds the profile missing
+/// (`profile_missing`), the profile is ensured again and the creation retried, within
+/// `PROFILE_PATIENCE`.
+///
+/// Not handled here: after minutes of four processes calling it in a loop, the profile was
+/// left without its mapping and folder but with a Storage key that denies the user, so every
+/// later `CreateAppContainerProfile` failed with E_ACCESSDENIED and every worker start with
+/// ERROR_FILE_NOT_FOUND until `DeleteAppContainerProfile` removed that key.
+static WORKER_PROFILE: Mutex<bool> = Mutex::new(false);
 
-/// The SID of the restricted workers' AppContainer, creating its per-user profile when absent.
-/// A concurrent creator in another process is given a few short retries.
+/// How long one attempt to ensure the profile retries failures of concurrent callers, and
+/// how long a worker creation keeps ensuring a missing profile again. Racing calls fail only
+/// while other calls run (each about 26 ms), so this is many times what a few concurrent
+/// processes need.
+const PROFILE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+const WORKER_PROFILE_NAME: &str = "MidnightExplorer.RestrictedWorker.v1";
+
+/// The SID of the restricted workers' AppContainer. The first call in a process tries to
+/// ensure its per-user profile (`WORKER_PROFILE`).
 fn worker_profile_sid() -> io::Result<Sid> {
-    const ALREADY_EXISTS: i32 = 0x800700b7u32 as i32;
-    const UNEXPECTED: i32 = 0x8000ffffu32 as i32;
-    let name: Vec<u16> = "MidnightExplorer.RestrictedWorker.v1"
-        .encode_utf16()
-        .chain([0])
-        .collect();
-    let _profile = WORKER_PROFILE
+    let name = worker_profile_name();
+    let mut tried = WORKER_PROFILE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut result = UNEXPECTED;
-    for attempt in 0..5 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(10 << attempt));
-        }
-        let mut sid = null_mut();
+    if !*tried {
+        // A failure here is left to `CreateProcessW`, which tells a missing profile.
+        let _ = create_worker_profile(&name);
+        *tried = true;
+    }
+    drop(tried);
+    let mut sid = null_mut();
+    // SAFETY: the same terminated name and a writable SID output.
+    let result = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+    if result < 0 {
+        return Err(io::Error::other(format!(
+            "AppContainer SID unavailable: {result:#x}"
+        )));
+    }
+    Ok(Sid(sid))
+}
+
+fn worker_profile_name() -> Vec<u16> {
+    WORKER_PROFILE_NAME.encode_utf16().chain([0]).collect()
+}
+
+/// Ensure the profile now: `CreateProcessW` found it missing, as on a new user account whose
+/// first attempt failed, or while a call racing in another process rolls a failed creation
+/// back (seen as ERROR_FILE_NOT_FOUND for an executable that exists).
+fn ensure_worker_profile_again() -> io::Result<()> {
+    let _tried = WORKER_PROFILE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    create_worker_profile(&worker_profile_name())
+}
+
+/// One bounded `ensure_worker_profile` through `CreateAppContainerProfile`.
+fn create_worker_profile(name: &[u16]) -> io::Result<()> {
+    ensure_worker_profile(PROFILE_PATIENCE, || {
         // SAFETY: fixed terminated name, no granted capabilities, and writable SID output.
         // Windows requires the per-user profile to exist; merely deriving its SID makes
         // CreateProcess fail.
-        result = unsafe {
+        let mut sid = null_mut();
+        let result = unsafe {
             CreateAppContainerProfile(
                 name.as_ptr(),
                 name.as_ptr(),
@@ -377,20 +432,45 @@ fn worker_profile_sid() -> io::Result<Sid> {
                 &mut sid,
             )
         };
-        if result == ALREADY_EXISTS {
-            // SAFETY: the same terminated name and a writable SID output.
-            result = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
-        }
         if result >= 0 {
-            return Ok(Sid(sid));
+            drop(Sid(sid));
         }
-        if result != UNEXPECTED {
-            break;
+        result
+    })
+}
+
+/// Whether a failed `CreateProcessW` of an existing `executable` is the AppContainer profile
+/// missing: Windows then reports the file or path as not found.
+fn profile_missing(error: &io::Error, executable: &Path) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(code) if code == ERROR_FILE_NOT_FOUND as i32 || code == ERROR_PATH_NOT_FOUND as i32
+    ) && executable.is_file()
+}
+
+/// Call `create` (one `CreateAppContainerProfile`, returning its HRESULT) until the profile
+/// exists: created now or already there. Every failure is retried, with a growing pause of at
+/// most 160 ms, until `patience` has passed; then the last failure is reported.
+fn ensure_worker_profile(
+    patience: std::time::Duration,
+    mut create: impl FnMut() -> i32,
+) -> io::Result<()> {
+    const ALREADY_EXISTS: i32 = 0x800700b7u32 as i32;
+    let started = std::time::Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        let result = create();
+        if result >= 0 || result == ALREADY_EXISTS {
+            return Ok(());
         }
+        if started.elapsed() >= patience {
+            return Err(io::Error::other(format!(
+                "AppContainer profile unavailable after {attempt} retries: {result:#x}"
+            )));
+        }
+        attempt += 1;
+        std::thread::sleep(std::time::Duration::from_millis(10 << attempt.min(4)));
     }
-    Err(io::Error::other(format!(
-        "AppContainer SID unavailable: {result:#x}"
-    )))
 }
 
 /// Serializes the short intervals in which this process holds handles marked inheritable for
@@ -598,26 +678,51 @@ fn spawn_impl(
     #[cfg(feature = "startup-diagnostics")]
     timing.mark("environment");
     create_with_inherited([child_input, child_output, error], || {
-        // SAFETY: explicit executable avoids command parsing/search; no arguments or secret
-        // environment. The attribute list assigns the resource-limited job before successful
-        // creation; suspended start prevents execution until the process guard is installed.
-        check(unsafe {
-            CreateProcessW(
-                wide.as_ptr(),
-                null_mut(),
-                null(),
-                null(),
-                1,
-                EXTENDED_STARTUPINFO_PRESENT
-                    | CREATE_UNICODE_ENVIRONMENT
-                    | CREATE_SUSPENDED
-                    | DETACHED_PROCESS,
-                environment.as_ptr().cast(),
-                null(),
-                &startup.StartupInfo,
-                &mut process,
-            )
-        })
+        // A profile that another process removed for a moment is ensured again (the SID is
+        // derived from the name, so it stays the same), within the profile's patience.
+        let started = std::time::Instant::now();
+        let mut profile = None;
+        loop {
+            // SAFETY: explicit executable avoids command parsing/search; no arguments or
+            // secret environment. The attribute list assigns the resource-limited job before
+            // successful creation; suspended start prevents execution until the process guard
+            // is installed. A failed call created no process and left the inputs untouched.
+            let created = check(unsafe {
+                CreateProcessW(
+                    wide.as_ptr(),
+                    null_mut(),
+                    null(),
+                    null(),
+                    1,
+                    EXTENDED_STARTUPINFO_PRESENT
+                        | CREATE_UNICODE_ENVIRONMENT
+                        | CREATE_SUSPENDED
+                        | DETACHED_PROCESS,
+                    environment.as_ptr().cast(),
+                    null(),
+                    &startup.StartupInfo,
+                    &mut process,
+                )
+            });
+            match created {
+                Err(error)
+                    if started.elapsed() < PROFILE_PATIENCE
+                        && profile_missing(&error, executable) =>
+                {
+                    profile = ensure_worker_profile_again().err();
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(match profile {
+                        Some(profile) => {
+                            io::Error::new(error.kind(), format!("{error}; {profile}"))
+                        }
+                        None => error,
+                    });
+                }
+                created => return created,
+            }
+        }
     })
     .map_err(|error| {
         io::Error::new(
@@ -682,6 +787,75 @@ mod tests {
         // SAFETY: a live handle owned by the calling test; the output is a valid u32.
         check(unsafe { GetHandleInformation(handle, &mut flags) }).unwrap();
         flags & HANDLE_FLAG_INHERIT != 0
+    }
+
+    /// The failures that `CreateAppContainerProfile` returned to eight processes calling it
+    /// for one name at once: each is retried, and the profile counts as ensured once a call
+    /// creates it or finds it.
+    #[test]
+    fn ensuring_the_profile_retries_the_failures_of_concurrent_callers() {
+        const ALREADY_EXISTS: i32 = 0x800700b7u32 as i32;
+        let failures = [
+            0x8000ffffu32 as i32, // E_UNEXPECTED
+            0x80070003u32 as i32, // ERROR_PATH_NOT_FOUND
+            0x800703fau32 as i32, // ERROR_KEY_DELETED
+            0x80070020u32 as i32, // ERROR_SHARING_VIOLATION
+            0x80070005u32 as i32, // E_ACCESSDENIED
+            0x8007000au32 as i32, // ERROR_BAD_ENVIRONMENT
+        ];
+        for last in [0, ALREADY_EXISTS] {
+            let mut results = failures.iter().copied().chain([last]);
+            let mut calls = 0;
+            ensure_worker_profile(Duration::from_secs(60), || {
+                calls += 1;
+                results.next().unwrap()
+            })
+            .unwrap();
+            assert_eq!(calls, failures.len() + 1);
+        }
+    }
+
+    #[test]
+    fn ensuring_the_profile_reports_the_last_failure_once_its_patience_is_spent() {
+        let mut calls = 0;
+        let error = ensure_worker_profile(Duration::ZERO, || {
+            calls += 1;
+            0x800703fau32 as i32
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(error.to_string().contains("0x800703fa"), "{error}");
+
+        let started = Instant::now();
+        let error =
+            ensure_worker_profile(Duration::from_millis(300), || 0x8000ffffu32 as i32).unwrap_err();
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(error.to_string().contains("0x8000ffff"), "{error}");
+    }
+
+    /// Only "not found" for an executable that exists is taken for a missing profile.
+    #[test]
+    fn a_missing_profile_is_told_from_a_missing_executable() {
+        let existing = std::env::current_exe().unwrap();
+        let missing = existing.with_file_name("no-such-worker.exe");
+        let not_found = io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32);
+        let path_not_found = io::Error::from_raw_os_error(ERROR_PATH_NOT_FOUND as i32);
+        let denied = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+        assert!(profile_missing(&not_found, &existing));
+        assert!(profile_missing(&path_not_found, &existing));
+        assert!(!profile_missing(&not_found, &missing));
+        assert!(!profile_missing(&denied, &existing));
+    }
+
+    /// After the first start, a worker start derives the SID without touching the profile
+    /// store, so other processes ensuring the profile at that moment cannot fail it.
+    #[test]
+    fn the_profile_is_ensured_at_the_first_start_of_a_process() {
+        let first = worker_profile_sid().unwrap();
+        assert!(*WORKER_PROFILE.lock().unwrap_or_else(|e| e.into_inner()));
+        let second = worker_profile_sid().unwrap();
+        // SAFETY: two valid SIDs that Windows allocated.
+        assert!(unsafe { windows_sys::Win32::Security::EqualSid(first.0, second.0) } != 0);
     }
 
     #[test]
