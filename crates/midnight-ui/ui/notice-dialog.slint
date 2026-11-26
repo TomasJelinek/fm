@@ -3,7 +3,7 @@ import { DialogText } from "dialog-text.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { HScrollView } from "scroll-view.slint";
-import { FallbackIcons } from "action-icons.slint";
+import { ActionButton, FallbackIcons } from "action-icons.slint";
 
 export component NoticeDialog inherits Rectangle {
     in property <string> title;
@@ -32,8 +32,10 @@ export component NoticeDialog inherits Rectangle {
         + (root.can-authorize && root.narrow ? 12px + copy-button.preferred-height : 0px)
         + root.choices.length * (12px + copy-button.preferred-height)
         + 12px + root.action-row-height;
-    // Below this width the authorization offer is a row of its own.
-    private property <bool> narrow: root.width < 500px;
+    // The authorization offer is a row of its own only where it does not fit with its
+    // caption beside the other actions and Close.
+    private property <bool> narrow: root.can-authorize
+        && root.caption-actions + 8px + authorize-measure.preferred-width > root.action-room;
     // The folder box shows its whole wrapped path when the dialog has room: its natural
     // height is the label and the measured path inside the box's padding and border, and
     // it takes the height the dialog has to spare. A smaller dialog keeps at least the
@@ -41,21 +43,23 @@ export component NoticeDialog inherits Rectangle {
     private property <length> folder-height: min(88px, Theme.font-size * 3 + 18px);
     private property <length> folder-natural: 2px + 16px + 3px + folder-label-measure.preferred-height
         + folder-measure.preferred-height;
+    // Glyph-only actions keep room for the row's scroll bar, should even they not fit.
     private property <length> action-row-height: max(32px, Theme.control-height, copy-button.preferred-height)
-        + (root.narrow ? 14px : 0px);
-    // The actions beside Close with their captions, measured in the actions' font: each
-    // is its caption, its glyph and 28px of padding, 8px from the next, and Details
+        + (root.glyph-actions ? 14px : 0px);
+    // The room beside Close for the other actions: the row inside the regular padding,
+    // less Close and the 8px before it. It takes the regular padding, like natural-height,
+    // which depends on the buttons' height: the compact padding would follow the dialog's
+    // own height.
+    private property <length> action-room: root.width - 2 * 20px - close-button.preferred-width - 8px;
+    // Details and Copy details with their captions, 8px apart: the preferred widths of
+    // hidden buttons that show them, so that the measure is the button's own. Details
     // counts as Hide details, so that showing the details moves nothing. Where they do
-    // not fit, they show their glyphs only, as a job window's footer does: each keeps its
-    // caption as its accessible label and on its tooltip's first line.
-    private property <length> action-pad: Theme.icon-size + 28px + 8px;
-    private property <length> caption-actions: (root.details != "" ? hide-caption.preferred-width + root.action-pad : 0px)
-        + copy-caption.preferred-width + root.action-pad
-        + (root.can-authorize && !root.narrow ? authorize-caption.preferred-width + root.action-pad : 0px);
-    // Measured with the regular padding, like natural-height, which depends on the
-    // buttons' height: the compact padding would follow the dialog's own height.
-    private property <bool> glyph-actions: root.caption-actions
-        > root.width - 2 * 20px - close-button.preferred-width;
+    // not fit, the actions beside Close show their glyphs only, as a job window's footer
+    // does: each keeps its caption as its accessible label and on its tooltip's first
+    // line. The authorization offer then has a row of its own, with its caption.
+    private property <length> caption-actions: (root.details != "" ? hide-measure.preferred-width + 8px : 0px)
+        + copy-measure.preferred-width;
+    private property <bool> glyph-actions: root.caption-actions > root.action-room;
     private property <bool> compact: root.height < 280px;
     // A short dialog has no room for a details box beside the message and the folder
     // box: shown details follow them in the message's own scrolling text instead, and
@@ -97,17 +101,22 @@ export component NoticeDialog inherits Rectangle {
         visible: false; accessible-role: none;
         text: "Folder"; font-size: Theme.small-font;
     }
-    hide-caption := Text {
-        visible: false; accessible-role: none; text: "Hide details";
-        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    // The captioned actions as the row shows them, for their widths only: hidden, out of
+    // the focus chain and of the accessibility tree.
+    hide-measure := ActionButton {
+        visible: false; focusable: false; enabled: false;
+        accessible-role: none; accessible-label: "";
+        text: "Hide details"; fallback-icon: FallbackIcons.properties;
     }
-    copy-caption := Text {
-        visible: false; accessible-role: none; text: "Copy details";
-        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    copy-measure := ActionButton {
+        visible: false; focusable: false; enabled: false;
+        accessible-role: none; accessible-label: "";
+        text: "Copy details"; fallback-icon: FallbackIcons.copy;
     }
-    authorize-caption := Text {
-        visible: false; accessible-role: none; text: root.authorization-text;
-        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    authorize-measure := ActionButton {
+        visible: false; focusable: false; enabled: false;
+        accessible-role: none; accessible-label: "";
+        text: root.authorization-text; fallback-icon: FallbackIcons.refresh;
     }
     FocusScope {
         // A key router, not a Tab stop.
