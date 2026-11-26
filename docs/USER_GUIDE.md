@@ -1995,8 +1995,10 @@ discovered; video playback uses the video thumbnailer package under `thumbnailer
 Options → Plugins lists available/refused packages and lets you disable
 or enable them, edit their extension associations and choose precedence for the next
 startup. Missing or disabled plugins remove their
-capability; the host has no built-in parser fallback. At most four viewer windows
-may be open. Reading, parsing, search, layout and rasterization run on backend workers.
+capability; the host has no built-in parser fallback. Any number of viewer windows
+may be open at once; each has its own backend worker, and each image, PDF, HTML or video
+window its own helper process. Reading, parsing, search, layout and rasterization run on
+backend workers.
 
 Native plugin code is trusted application code, **not sandboxed**. Keep the executable
 with its `viewers/`, `filesystems/` and `thumbnailers/` folders together, and never

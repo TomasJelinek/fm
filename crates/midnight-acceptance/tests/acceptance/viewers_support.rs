@@ -328,9 +328,11 @@ impl Plugins {
         picker: Arc<dyn PathPickerService>,
         state: &Path,
     ) -> Self {
-        let (viewer_owner, viewer_spawner) =
-            resident::Owner::start("midnight-viewer", midnight_viewer_engine::RESIDENT_WORKERS)
-                .expect("viewer workers");
+        let (viewer_owner, viewer_spawner) = resident::Owner::start_elastic(
+            "midnight-viewer",
+            midnight_viewer_engine::RESIDENT_WORKERS,
+        )
+        .expect("viewer workers");
         let (compare_owner, compare_spawner) =
             resident::Owner::start_elastic("midnight-compare", 2).expect("comparison workers");
         let viewer_service = midnight_viewer_engine::Service::with_native_capture(

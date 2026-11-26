@@ -294,11 +294,13 @@ struct ContentWorkers {
 
 impl ContentWorkers {
     fn start(runtime: &tokio::runtime::Runtime) -> Result<Self, String> {
-        let (viewer_owner, viewer) =
-            resident::Owner::start("midnight-viewer", midnight_viewer_engine::RESIDENT_WORKERS)
-                .map_err(|error| format!("Cannot start viewer workers: {error}"))?;
-        // One worker per open comparator, mostly waiting for input: elastic, so any number
-        // of comparators open. Their heavy preparation is bounded by the comparison service.
+        // One worker per open viewer window or comparator, mostly waiting for input:
+        // elastic, so any number of either open. Their heavy work is bounded separately.
+        let (viewer_owner, viewer) = resident::Owner::start_elastic(
+            "midnight-viewer",
+            midnight_viewer_engine::RESIDENT_WORKERS,
+        )
+        .map_err(|error| format!("Cannot start viewer workers: {error}"))?;
         let (compare_owner, compare) = match resident::Owner::start_elastic("midnight-compare", 2) {
             Ok(workers) => workers,
             Err(error) => {

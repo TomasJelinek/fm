@@ -482,19 +482,24 @@ positive controls, not reasons to add redundant completion guards.
 
 ## Resident worker threads
 
-Long-lived jobs that need a stable physical thread run on fixed resident worker sets
+Long-lived jobs that need a stable physical thread run on resident worker sets
 (`midnight_work_budget::resident`), separate from Tokio's runtime:
 
 - the engine starts 13 resident threads in `EngineLifetime::new`: two each for the
   model, presence, archive and watch lanes, two for drag and drop, one for the
   clipboard and two report readers;
-- the viewer starts `midnight_viewer_engine::RESIDENT_WORKERS` (5) and comparison 2
-  (`ContentWorkers::start` in `midnight-explorer/src/main.rs`);
+- the viewer starts `midnight_viewer_engine::RESIDENT_WORKERS` (5) threads in an elastic
+  set (`Owner::start_elastic`): every open viewer window holds one thread for its
+  lifetime, and the set starts another thread whenever a new window finds no thread
+  waiting, so the number of viewer windows is not limited; `shutdown` joins the added
+  threads with the first five. An added thread ends as soon as it finds no pending work,
+  so the set has about max(5, open windows + the image-spare manager) threads; comparison starts an elastic set of 2
+  the same way, one thread per open comparator (`ContentWorkers::start` in
+  `midnight-explorer/src/main.rs`);
 - the application's Tokio runtime has 2 async worker threads and at most 16 blocking
   threads.
 
-Each set has a fixed number of threads and adds no payload or waiter capacity to the
-retirement domain. At shutdown the engine first stops and aborts its
+No set adds payload or waiter capacity to the retirement domain. At shutdown the engine first stops and aborts its
 actors and drains the resident tickets, then shuts down the tree roots, and only
 then observes the resident pool's exit for at most 200 ms; expiry leaves the
 retirement unconfirmed and grants no cleanup or resource credit. That wait stays

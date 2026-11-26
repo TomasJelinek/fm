@@ -463,7 +463,7 @@ delegated systemd user scope.
 | X1 | F3 on a result in the Find window | `viewers_combinations` › Find results and a fed list | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | X2 | F3 in results fed to a panel; Space and Backspace follow the results | `viewers_combinations` › Find results and a fed list | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | X3 | F3 in an expanded inline tree branch; Space follows the visible file order | `viewers_combinations` › an inline tree branch | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
-| X4 | Four viewer windows at once, each with its own file; a fifth refused with the reason; closing one keeps the others | `viewers_combinations` › four viewer windows | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| X4 | Six viewer windows at once (more than the former maximum of four), each with its own file, no notice; closing one keeps the others; a seventh opens beside them | `viewers_combinations` › six viewer windows | Not run since the change (the four-window version passed: Windows `20261122-135339`, Linux `20261122-110817`) |
 | X5 | A theme previewed in Options recolours an open viewer, its syntax colours (glyph cores of at least 300 pixels, right of the gutter) keep 5:1 against the Light page; Cancel restores it | `viewers_combinations` › a theme previewed in Options | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | X6 | A viewer moved to a display of twice the scale shows the same lines twice as tall | `viewers_combinations` › a viewer at twice the scale | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | X7 | Viewers on archive members (and inner archives' members) | `viewers_archives` | PASS |

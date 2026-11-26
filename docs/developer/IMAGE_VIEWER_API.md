@@ -229,8 +229,10 @@ let session = ImageSession::open_prepared(&provider, prepared, source, &cancel, 
 ```
 
 The viewer engine shares at most one source-free spare across its service's
-windows. Four actual-child reservations cover starting, ready, active and retiring
-children together. Preparation has a 30-second start budget; an unused ready
+windows. Every open image or PDF window has its own child: opening never waits for a
+child count. The spare is prepared only while fewer than four children (starting, ready,
+active and retiring together) are live, so speculative warm-up never adds to a busy
+machine. Preparation has a 30-second start budget; an unused ready
 spare expires after 60 seconds. These limits do not interrupt a blocked native
 process-creation call: its reservation remains owned until that call returns and
 the child is terminated and reaped.

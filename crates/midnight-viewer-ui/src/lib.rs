@@ -452,13 +452,10 @@ impl ViewerWindows {
         copy: Rc<dyn Fn(String)>,
         ready: OpenReady,
     ) -> Result<slint::Weak<ViewerWindow>, String> {
+        // Release closed windows. The number of open viewer windows is the user's choice.
         self.windows
             .borrow_mut()
             .retain(|window| !window.closed.get());
-        if self.windows.borrow().len() >= 4 {
-            self.service.retire(launch);
-            return Err("Close a viewer before opening another (maximum four windows).".into());
-        }
         let opening_trace = pixel_preparation::OpeningTrace::new();
         self.service.prepare_catalogs();
         let app_appearance = self.appearance.borrow().clone();

@@ -66,7 +66,7 @@ use midnight_core::{
 use midnight_plugin_host::Runtime;
 use std::sync::{
     Arc, Mutex, OnceLock,
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// Backend-only native source capture. Failure never invokes a fallback opener.
@@ -78,7 +78,10 @@ pub type NativeCapture = Arc<
 >;
 pub use mailbox::Mailbox;
 
-/// Four admitted windows plus the one source-free image-spare manager.
+/// Viewer threads started up front: the source-free image-spare manager and the first windows.
+/// Start the pool with `Owner::start_elastic`: every open window holds one thread for its
+/// lifetime, and the pool starts another thread whenever none is waiting, so the number of
+/// viewer windows is not limited.
 pub const RESIDENT_WORKERS: usize = 5;
 
 #[derive(Clone)]
@@ -89,7 +92,6 @@ pub struct Service {
     runtime: Arc<Mutex<Option<Arc<Runtime>>>>,
     images: Arc<Mutex<Option<Arc<[midnight_image_viewer_host::Provider]>>>>,
     web: Arc<Mutex<Option<Arc<[midnight_web_viewer_host::Provider]>>>>,
-    windows: Arc<AtomicUsize>,
     raster_budget: Arc<raster_budget::Budget>,
     fonts: Arc<OnceLock<Arc<[String]>>>,
     /// Installed video support, discovered on demand (see `video_installation`).
@@ -143,19 +145,9 @@ pub struct WindowSession {
     audio_volume: Arc<midnight_media_host::AudioVolume>,
 }
 
-struct WindowPermit(Arc<AtomicUsize>);
-impl Drop for WindowPermit {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-/// Owns an admitted window's slot. If the resident pool drops the worker job without
-/// running it (a refused or skipped submission), the slot is released and the opening
-/// fails. A started worker keeps it until its window work is destroyed and releases it
-/// before publishing Closed.
+/// Reports a failed opening if the resident pool drops the window job without running it
+/// (a refused or skipped submission). A started worker reports its own result.
 struct WindowStart {
-    _permit: WindowPermit,
     output: Arc<Mailbox>,
     started: bool,
 }
@@ -315,7 +307,6 @@ impl Service {
             runtime: Arc::new(Mutex::new(runtime)),
             images: Arc::new(Mutex::new(images)),
             web: Arc::new(Mutex::new(web)),
-            windows: Arc::new(AtomicUsize::new(0)),
             raster_budget: Arc::new(raster_budget::Budget::default()),
             fonts: Arc::new(OnceLock::new()),
             video: Arc::default(),
@@ -470,18 +461,7 @@ impl Service {
         let preferences = Arc::new(preferences::Preferences::new(launch.preferences.clone()));
         let palette = Arc::new(palette::State::new(&appearance));
         let worker_preferences = preferences.clone();
-        if self
-            .windows
-            .try_update(Ordering::AcqRel, Ordering::Relaxed, |count| {
-                (count < 4).then_some(count + 1)
-            })
-            .is_err()
-        {
-            self.retire(launch);
-            return Err("Close a viewer before opening another (maximum four windows).".into());
-        }
         let start = WindowStart {
-            _permit: WindowPermit(self.windows.clone()),
             output: Arc::new(if negotiate_layout {
                 Mailbox::with_layout()
             } else {

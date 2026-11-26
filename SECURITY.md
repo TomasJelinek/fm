@@ -1545,9 +1545,10 @@ classifications.
   later; a same-length rewrite that restores the modification time is then not detected
   while a file is displayed or an archive is open, nor when a saved tab or Hot Path
   reopens that archive. A different file at the path, a link and every other change are
-  still refused. Reads are bounded to 256 KiB and use u64 offsets. Four live sessions
-  share the host limits; decoded pages, wire items, retained service replies and raster
-  surfaces have separate explicit budgets. Selection/copy is limited to the loaded page.
+  still refused. Reads are bounded to 256 KiB and use u64 offsets. Each open document
+  has its own session with its own host limits (no count limits sessions: the user decides
+  how many viewer windows are open); decoded pages, wire items, retained service replies
+  and raster surfaces have separate explicit budgets. Selection/copy is limited to the loaded page.
 - Markdown returns semantic text blocks and inert link metadata; a link is followed only
   on an explicit action, through the host link policy described above. The host does not
   execute HTML/scripts or load remote images, styles or fonts. Source syntax definitions

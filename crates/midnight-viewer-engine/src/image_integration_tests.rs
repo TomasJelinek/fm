@@ -72,7 +72,6 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         capture: crate::capture::native(),
         runtime: Arc::new(Mutex::new(Some(runtime))),
         images: Arc::new(Mutex::new(Some(providers.into()))),
-        windows: Arc::new(AtomicUsize::new(0)),
         fonts: Default::default(),
         video: Default::default(),
         catalog_preparation: Default::default(),
@@ -202,12 +201,6 @@ fn image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override() {
         "previous-image input is rejected"
     );
     session.close();
-    let started = Instant::now();
-    while service.windows.load(Ordering::Acquire) != 0 && started.elapsed() < Duration::from_secs(5)
-    {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(service.windows.load(Ordering::Acquire), 0);
     let basic = service
         .open(
             launch(files.path(), &["first.BMP"], true),

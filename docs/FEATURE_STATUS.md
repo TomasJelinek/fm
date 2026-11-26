@@ -257,6 +257,7 @@ How to read it:
   64 MiB of its text, read in the background with progress; the hex view selects the
   rows shown), zoom images and PDFs, and step through the panel's files with Space and
   Backspace. Viewer choices persist. Options › Plugins assigns file types to viewers.
+  Any number of viewer windows may be open at once (no count refuses one).
 - **Links:** Markdown and HTML documents follow a link when it is clicked: a fragment
   scrolls to its heading, a file that a viewer shows opens in the same window, a folder
   or any other file is shown in the active panel, and web and mail links open with the

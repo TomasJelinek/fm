@@ -1,4 +1,4 @@
-//! Concrete queued ownership: all window work is destroyed before its admission credit.
+//! Concrete queued ownership of one window's backend work.
 use crate::{Mailbox, Service, ViewerAppearance, ViewerGeometry, ViewerLaunch, ViewerOutput};
 use std::sync::{
     Arc,
@@ -30,14 +30,13 @@ impl Job {
     pub fn run(self) {
         let Self { work, mut start } = self;
         start.started = true;
-        work.run(start);
+        drop(start);
+        work.run();
     }
 }
 
 impl Work {
-    /// `window` is dropped (returning the credit) by the worker before it publishes
-    /// Closed, or with the closure on an early error or unwinding.
-    fn run(self, window: crate::WindowStart) {
+    fn run(self) {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if self.service.fonts.get().is_none()
                 && let Some(names) =
@@ -62,7 +61,6 @@ impl Work {
                     palette: self.palette_lifetime.state(),
                     video: Box::new(move || service.video_installation()),
                     audio_volume: self.audio_volume,
-                    window,
                 },
                 self.launch,
                 self.appearance,

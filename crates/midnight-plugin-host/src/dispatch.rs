@@ -110,7 +110,7 @@ pub(crate) fn run(
         busy |= drain_events(api, instance, &shared);
         if shutting_down && bridge.empty() {
             // SDK v1 reports quiescence using NOT_QUIESCENT until destroy can succeed.
-            // No forced unload: uncooperative native code keeps its bounded session permit.
+            // No forced unload: uncooperative native code keeps its own session thread.
             let status = unsafe { api.destroy.unwrap()(instance) };
             if status == abi::OK {
                 break;

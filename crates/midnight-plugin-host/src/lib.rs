@@ -170,11 +170,7 @@ mod trust {
     }
 }
 
-use std::{
-    path::Path,
-    sync::{Arc, OnceLock, atomic::AtomicUsize},
-};
-static SESSIONS: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct Error(pub String);
@@ -194,7 +190,6 @@ impl From<std::io::Error> for Error {
 pub struct Runtime {
     catalog: Vec<PluginInfo>,
     diagnostics: Vec<Diagnostic>,
-    sessions: Arc<AtomicUsize>,
 }
 impl Runtime {
     pub fn discover(executable_directory: &Path) -> Result<Self, Error> {
@@ -202,9 +197,6 @@ impl Runtime {
         Ok(Self {
             catalog,
             diagnostics,
-            sessions: SESSIONS
-                .get_or_init(|| Arc::new(AtomicUsize::new(0)))
-                .clone(),
         })
     }
     pub fn catalog(&self) -> &[PluginInfo] {
@@ -231,6 +223,8 @@ impl Runtime {
             .iter()
             .find(|info| info.id == plugin_id)
             .ok_or_else(|| Error("Viewer plugin is unavailable".into()))?;
-        session::Session::open(info, file, generation, mode, self.sessions.clone())
+        // Every open document has its own session; the number of viewer windows is the
+        // user's choice, so no count refuses one.
+        session::Session::open(info, file, generation, mode)
     }
 }

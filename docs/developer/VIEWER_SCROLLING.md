@@ -96,7 +96,9 @@ the window keeps their conversions and images), and a frame's pixel identity cha
 when its set of strips does. The frontend moves over
 the strips without waiting for the backend and keeps the gutter horizontally fixed;
 each strip becomes one image when it first arrives. Strips of one viewer hold at most
-64 MiB and those of all viewers 256 MiB; the engine's budget and the UI's frame check
+64 MiB; strips painted ahead of a window stop while those of all viewers hold 256 MiB,
+while the strips under each window are always admitted within its own 64 MiB, so no
+number of open viewers leaves one blank; the engine's budget and the UI's frame check
 take these from `midnight-core` (`VIEWER_PREPARED_TEXT_BYTES`,
 `VIEWER_PREPARED_TEXT_TOTAL_BYTES`). Refills keep the request ceilings: 12 KiB for
 text and source, 64 KiB for Markdown and 4 KiB for binary, at most 512 lines (the viewer

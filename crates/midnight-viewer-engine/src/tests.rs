@@ -169,10 +169,10 @@ fn capture_uses_visible_order_and_skips_directories_and_filtered_files() {
 }
 
 #[test]
-fn window_slot_and_opening_fail_cleanly_when_the_resident_refuses_the_worker() {
+fn opening_fails_cleanly_when_the_resident_refuses_the_worker() {
     // New work requires the original transient runtime to remain alive. Resident refusal is
     // the supported backend-unavailable boundary; resident_tests separately covers accepted
-    // queued ownership and credit disposal after the original transient runtime exits.
+    // queued ownership after the original transient runtime exits.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -205,14 +205,6 @@ fn window_slot_and_opening_fail_cleanly_when_the_resident_refuses_the_worker() {
             .unwrap()
             .contains("resident worker is unavailable")
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while service.windows.load(Ordering::Acquire) != 0 {
-        assert!(
-            Instant::now() < deadline,
-            "refused window retained its admission credit"
-        );
-        std::thread::yield_now();
-    }
     drop(service);
     runtime.block_on(async {
         tokio::time::timeout(
@@ -225,17 +217,18 @@ fn window_slot_and_opening_fail_cleanly_when_the_resident_refuses_the_worker() {
     });
 }
 
-/// The window treats Closed as "this viewer is gone" and may open another at once, so
-/// the closed window's admission credit is already returned when Closed is delivered.
+/// The number of viewer windows is the user's choice: eight windows (twice the former
+/// maximum of four) open at once, each on its own resident thread, and each publishes Closed.
 #[test]
-fn closed_window_has_returned_its_credit_when_closed_is_delivered() {
+fn eight_windows_open_and_run_at_once_and_each_publishes_closed() {
+    const WINDOWS: usize = 8;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
         .build()
         .unwrap();
-    let (resident_owner, resident) = midnight_work_budget::resident::Owner::start(
-        "viewer-closed-credit",
+    let (resident_owner, resident) = midnight_work_budget::resident::Owner::start_elastic(
+        "viewer-eight-windows",
         crate::RESIDENT_WORKERS,
     )
     .unwrap();
@@ -245,36 +238,37 @@ fn closed_window_has_returned_its_credit_when_closed_is_delivered() {
     *service.images.lock().unwrap() = Some(Arc::from([]));
     *service.web.lock().unwrap() = Some(Arc::from([]));
     let files = tempfile::tempdir().unwrap();
-    std::fs::write(files.path().join("file.txt"), "closed window\n").unwrap();
-    let session = service
-        .open(
-            launch(files.path(), &["file.txt"], true),
-            appearance(),
-            ViewerGeometry {
-                width: 200,
-                height: 100,
-                scale: 1.0,
-            },
-        )
-        .unwrap();
-    assert_eq!(service.windows.load(Ordering::Acquire), 1);
-    // Closing during preparation ends the worker with an error instead of Closed, so
-    // wait until the opening was answered (no plugin is installed) and the worker idles.
-    status(&session, &["no compatible viewer plugin"]);
-    session.close();
-    let mut seen = Vec::new();
-    await_output(&session, Duration::from_secs(10), |output| {
-        let closed = matches!(output, ViewerOutput::Closed);
-        seen.push(format!("{output:?}").chars().take(200).collect::<String>());
-        closed.then_some(())
-    })
-    .unwrap_or_else(|| panic!("the closed window publishes Closed: {seen:?}"));
-    // No waiting: a UI reacting to Closed must already be able to open another window.
-    assert_eq!(
-        service.windows.load(Ordering::Acquire),
-        0,
-        "Closed was published before the window's admission credit was returned"
-    );
+    std::fs::write(files.path().join("file.txt"), "one of many windows\n").unwrap();
+    let sessions: Vec<_> = (0..WINDOWS)
+        .map(|_| {
+            service
+                .open(
+                    launch(files.path(), &["file.txt"], true),
+                    appearance(),
+                    ViewerGeometry {
+                        width: 200,
+                        height: 100,
+                        scale: 1.0,
+                    },
+                )
+                .expect("no count refuses a viewer window")
+        })
+        .collect();
+    // Every window's worker runs while all of them stay open: each answers its opening
+    // (no plugin is installed) without waiting for another window to close.
+    for session in &sessions {
+        status(session, &["no compatible viewer plugin"]);
+    }
+    for session in &sessions {
+        session.close();
+    }
+    for session in &sessions {
+        await_output(session, Duration::from_secs(10), |output| {
+            matches!(output, ViewerOutput::Closed).then_some(())
+        })
+        .expect("every closed window publishes Closed");
+    }
+    drop(sessions);
     drop(service);
     runtime.block_on(async {
         tokio::time::timeout(
@@ -355,7 +349,6 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         capture: crate::capture::native(),
         runtime: Arc::new(Mutex::new(Some(runtime))),
         images: Arc::new(Mutex::new(Some(Arc::from([])))),
-        windows: Arc::new(AtomicUsize::new(0)),
         fonts: Default::default(),
         video: Default::default(),
         catalog_preparation: Default::default(),
@@ -548,11 +541,10 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
     status(&session, &["changed"]);
     let closing = Instant::now();
     session.close();
-    while service.windows.load(Ordering::Acquire) != 0 && closing.elapsed() < Duration::from_secs(5)
-    {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(service.windows.load(Ordering::Acquire), 0);
+    await_output(&session, Duration::from_secs(5), |output| {
+        matches!(output, ViewerOutput::Closed).then_some(())
+    })
+    .expect("the closed worker publishes Closed");
     eprintln!("Close worker: {:?}", closing.elapsed());
 
     std::fs::write(files.path().join("binary.bin"), [0, 1, 2, 0xff, b'A']).unwrap();

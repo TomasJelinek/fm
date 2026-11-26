@@ -14,7 +14,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CHILD_LIMIT: usize = 4;
+/// The speculative spare is prepared only while fewer image helpers than this are live, so
+/// idle warm-up never adds to a busy machine. Foreground opening never waits for a count:
+/// every open image or PDF window has its own helper process.
+const SPARE_CEILING: usize = 4;
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(30);
 const READY_LIFETIME: Duration = Duration::from_secs(60);
 const CANCEL_POLL: Duration = Duration::from_millis(10);
@@ -154,7 +157,8 @@ impl Startup {
         self.manager.configure(policy, catalog);
     }
 
-    /// Backend-only admission. A speculative child can delay capacity, never reject a fourth viewer.
+    /// Backend-only admission. It never waits for a helper count; it waits only for a matching
+    /// speculative startup already in flight.
     /// A stale/failed spare returns `None` under the same reservation for ordinary validated open.
     pub fn acquire(&self, provider: &Provider, cancel: &AtomicBool) -> io::Result<Acquired> {
         let acquired = self.manager.acquire(provider, cancel)?;
@@ -675,24 +679,17 @@ impl<B: Backend> Manager<B> {
                 drop(state);
                 continue;
             }
-            // A miss is ordinary cold opening. Any speculative native call keeps its reservation
-            // until it returns and cleanup ends; demand may wait cancellably for that real capacity.
+            // A miss is ordinary cold opening at once. Any speculative native call keeps its
+            // reservation until it returns and cleanup ends; it no longer delays this window.
             state.invalidate();
             shared.changed.notify_all();
-            if state.children < CHILD_LIMIT {
-                let permit = shared.reserve(&mut state);
-                demand.finish(&mut state);
-                drop(state);
-                return Ok(Acquisition {
-                    prepared: None,
-                    permit,
-                });
-            }
-            let (state, _) = shared
-                .changed
-                .wait_timeout(state, CANCEL_POLL)
-                .unwrap_or_else(|error| error.into_inner());
+            let permit = shared.reserve(&mut state);
+            demand.finish(&mut state);
             drop(state);
+            return Ok(Acquisition {
+                prepared: None,
+                permit,
+            });
         }
     }
 }
@@ -844,7 +841,7 @@ impl<B: Backend> Shared<B> {
             }
             if matches!(state.spare, Spare::Empty)
                 && state.demands == 0
-                && state.children < CHILD_LIMIT
+                && state.children < SPARE_CEILING
                 && let Some(provider) = state.refill.take()
                 && state.eligible(&provider).is_some()
             {

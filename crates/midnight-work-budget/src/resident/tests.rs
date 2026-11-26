@@ -1079,3 +1079,24 @@ fn elastic_shutdown_joins_a_running_extra_worker() {
     assert_eq!(wait(&runtime, second), Ok(()));
     assert!(wait(&runtime, shutdown).is_ok());
 }
+
+/// Twenty long jobs, as twenty open viewer windows hold, each run on their own worker of a
+/// pool started with two; after shutdown the pool refuses work as sealed, not as full.
+#[test]
+fn elastic_pool_runs_twenty_long_jobs_at_once_and_refuses_only_when_sealed() {
+    let (owner, spawner) = Owner::start_elastic("elastic-twenty", 2).unwrap();
+    let runtime = runtime();
+    let jobs: Vec<_> = (0..20).map(|_| start_blocked(&spawner, &runtime)).collect();
+    let threads: std::collections::HashSet<_> = jobs.iter().map(|(_, thread, _)| *thread).collect();
+    assert_eq!(threads.len(), 20, "each long job has its own worker");
+    for (ticket, _, release) in jobs {
+        drop(release);
+        assert_eq!(wait(&runtime, ticket), Ok(()));
+    }
+    assert!(wait(&runtime, owner.shutdown(runtime.handle())).is_ok());
+    let refused = spawner
+        .spawn(runtime.handle(), Box::new(|| {}))
+        .err()
+        .expect("a shut down pool refuses work");
+    assert_eq!(refused.reason(), Rejection::Sealed);
+}

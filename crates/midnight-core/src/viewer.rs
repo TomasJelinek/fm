@@ -165,7 +165,9 @@ pub const VIEWER_RETAINED_RASTER_PIXELS: usize = 6 * 1024 * 1024;
 /// the screens around the camera that scroll without new pixels. The window keeps a copy
 /// of the same strips for presentation.
 pub const VIEWER_PREPARED_TEXT_BYTES: usize = 64 * 1024 * 1024;
-/// Bytes of prepared text strips all viewers of one application keep together.
+/// Bytes of prepared text strips all viewers of one application keep together before
+/// any more are painted ahead of a window. Strips under a viewer's window are bounded only
+/// by that viewer's own budget, so every open viewer can show its text.
 pub const VIEWER_PREPARED_TEXT_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 /// Bytes of image and PDF tiles that the backend tile cache and the UI texture
 /// cache each keep for reuse.

@@ -20,7 +20,7 @@ impl GeneratedTextSource for Source {
 
 fn rejected(invalid_preferences: bool) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let (_resident_owner, resident) =
+    let (resident_owner, resident) =
         midnight_work_budget::resident::Owner::start("viewer-test", crate::RESIDENT_WORKERS)
             .unwrap();
     let service = Service::new(runtime.handle().clone(), resident);
@@ -31,7 +31,8 @@ fn rejected(invalid_preferences: bool) {
     if invalid_preferences {
         preferences.text_font.size = 0;
     } else {
-        service.windows.store(4, Ordering::Release);
+        // A sealed pool (shutting down) is the remaining refusal; no count refuses a window.
+        resident_owner.seal();
     }
     let result = service.open(
         ViewerLaunch {
@@ -76,6 +77,6 @@ fn invalid_preferences_retire_generated_source_off_caller() {
 }
 
 #[test]
-fn window_limit_retires_generated_source_off_caller() {
+fn refused_worker_retires_generated_source_off_caller() {
     rejected(false);
 }

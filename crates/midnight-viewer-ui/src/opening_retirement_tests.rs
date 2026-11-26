@@ -24,10 +24,13 @@ impl GeneratedTextSource for Source {
         panic!("rejected source read")
     }
 }
-fn failed_open(manager: &ViewerWindows, generated: Option<Arc<dyn GeneratedTextSource>>) -> String {
+fn open_diagnostic(
+    manager: &ViewerWindows,
+    generated: Option<Arc<dyn GeneratedTextSource>>,
+) -> Result<slint::Weak<ViewerWindow>, String> {
     let path = std::env::temp_dir().join("diagnostic.txt");
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
-    let result = manager.open(
+    manager.open(
         ViewerLaunch {
             find: None,
             associations: Default::default(),
@@ -53,8 +56,13 @@ fn failed_open(manager: &ViewerWindows, generated: Option<Arc<dyn GeneratedTextS
         slint::LogicalSize::new(320.0, 200.0),
         Rc::new(|_, _| None),
         Rc::new(|_| {}),
-    );
-    result.err().expect("window unexpectedly opened")
+    )
+}
+
+fn failed_open(manager: &ViewerWindows, generated: Option<Arc<dyn GeneratedTextSource>>) -> String {
+    open_diagnostic(manager, generated)
+        .err()
+        .expect("window unexpectedly opened")
 }
 
 fn reject(manager: &ViewerWindows, expected: &str) {
@@ -68,14 +76,19 @@ fn reject(manager: &ViewerWindows, expected: &str) {
     );
 }
 
+/// The number of viewer windows is the user's choice: eight open at once, twice the
+/// former maximum of four.
 #[test]
-fn manager_window_limit_retires_source_on_backend() {
+fn eight_viewer_windows_open_at_once() {
     let (_runtime, manager, open, _service) = super::opening_tests::opening(Box::new(|_| {}));
-    manager
-        .windows
-        .borrow_mut()
-        .extend([open.clone(), open.clone(), open]);
-    reject(&manager, "maximum four windows");
+    drop(open);
+    for _ in 1..8 {
+        open_diagnostic(&manager, None).expect("no count refuses a viewer window");
+    }
+    let windows = manager.windows.borrow().clone();
+    assert_eq!(windows.len(), 8);
+    assert!(windows.iter().all(|window| !window.closed.get()));
+    drop(windows);
     manager.close_all();
 }
 
@@ -93,8 +106,7 @@ fn native_window_failure_retires_source_on_backend() {
     let service = Service::new(runtime.handle().clone(), runtime.spawner());
     runtime.track_spare(&service);
     let manager = ViewerWindows::new(service);
-    // More than the engine's four session permits: every failed window releases
-    // its source on a worker and returns its admission slot.
+    // Repeated failures: every failed window releases its source on a worker.
     for _ in 0..6 {
         reject(&manager, "Window creation failed");
     }

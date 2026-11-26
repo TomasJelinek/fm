@@ -813,9 +813,12 @@ the window holds more of them than one read (120 KiB), the context is a quarter 
 A page whose context holds fewer than two rows (very long rows) keeps its cut row, and
 correction reads keep their pages whole; see [Viewer scrolling](VIEWER_SCROLLING.md).
 
-Strips of one viewer hold at most 64 MiB (`VIEWER_PREPARED_TEXT_BYTES`) and those of
-all viewers 256 MiB (`VIEWER_PREPARED_TEXT_TOTAL_BYTES`), body and gutter together,
-counted until the last owner of their pixels drops them (`raster_budget.rs`). The
+Strips of one viewer hold at most 64 MiB (`VIEWER_PREPARED_TEXT_BYTES`), body and gutter
+together, counted until the last owner of their pixels drops them (`raster_budget.rs`).
+Strips under the window (and its one-strip margin) are bounded only by that, so any number
+of open viewers can each show its text; strips painted ahead of the window are added only
+while all viewers' strips stay within 256 MiB (`VIEWER_PREPARED_TEXT_TOTAL_BYTES`,
+`StripUse::Ahead`). The
 budget tracks a strip by a `Weak`, which keeps the strip's allocation until a reap or the
 next reservation forgets it, so the worker reaps when it drops its strips and after it
 publishes Closed, which drops the frames the window never took

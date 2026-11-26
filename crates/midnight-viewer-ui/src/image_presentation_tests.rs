@@ -17,7 +17,7 @@ pub(super) struct TestRuntime {
 
 impl TestRuntime {
     pub fn new() -> Self {
-        let (owner, spawner) = midnight_work_budget::resident::Owner::start(
+        let (owner, spawner) = midnight_work_budget::resident::Owner::start_elastic(
             "viewer-ui-test",
             midnight_viewer_engine::RESIDENT_WORKERS,
         )

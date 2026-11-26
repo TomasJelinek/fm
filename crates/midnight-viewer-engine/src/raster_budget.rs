@@ -5,9 +5,21 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-/// Prepared text strips: bytes per viewer and for all viewers together.
+/// Prepared text strips: bytes per viewer, and the shared total that strips painted ahead of
+/// the window may fill for all viewers together.
 pub(crate) const MAX_STRIP_BYTES: usize = midnight_core::VIEWER_PREPARED_TEXT_BYTES;
 pub(crate) const MAX_TOTAL_STRIP_BYTES: usize = midnight_core::VIEWER_PREPARED_TEXT_TOTAL_BYTES;
+
+/// What a strip is for. Every open viewer may show its window (within its own budget), so
+/// no number of open viewers leaves one blank; only strips painted ahead of the window
+/// compete for the shared total.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StripUse {
+    /// Under the window or its one-strip margin: needed to publish a frame.
+    Shown,
+    /// Beyond the window, in the direction of travel or against it.
+    Ahead,
+}
 
 /// Shared by every worker opened through a Service, including replaced/closed windows.
 /// A strip's bytes stay charged until its last pixel owner (a worker's cache, a frame, a
@@ -90,13 +102,15 @@ impl Budget {
         self.lock().retain(|strip| !strip.released());
     }
 
-    /// Reserve `bytes` of prepared text strips for `owner`, unless that viewer's or all
-    /// viewers' strips would exceed their budget. Strips whose pixels every owner dropped
-    /// no longer count. Rejects saturated capacity without waiting for an owner.
+    /// Reserve `bytes` of prepared text strips for `owner`, unless that viewer's strips would
+    /// exceed its budget or, for a strip ahead of the window, all viewers' strips would
+    /// exceed the shared total. Strips whose pixels every owner dropped no longer count.
+    /// Rejects saturated capacity without waiting for an owner.
     pub(crate) fn reserve_strip(
         self: &Arc<Self>,
         owner: u64,
         bytes: usize,
+        strip_use: StripUse,
     ) -> Option<StripReservation> {
         let mut strips = self.lock();
         strips.retain(|strip| !strip.released());
@@ -104,7 +118,11 @@ impl Budget {
             let (charged, size) = strip.charge();
             (mine + if charged == owner { size } else { 0 }, all + size)
         });
-        if owner == 0 || mine + bytes > MAX_STRIP_BYTES || all + bytes > MAX_TOTAL_STRIP_BYTES {
+        let shared_full = all + bytes > MAX_TOTAL_STRIP_BYTES;
+        if owner == 0
+            || mine + bytes > MAX_STRIP_BYTES
+            || strip_use == StripUse::Ahead && shared_full
+        {
             return None;
         }
         let ticket = self.next_ticket.fetch_add(1, Ordering::Relaxed);

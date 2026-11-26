@@ -243,9 +243,17 @@ impl Worker {
 
     /// Paint strip `index` of `column` from the shown page; `None` when the strip budget
     /// cannot take it now.
-    fn paint_strip(&mut self, index: i64, column: Column) -> Result<Option<Strip>, String> {
+    fn paint_strip(
+        &mut self,
+        index: i64,
+        column: Column,
+        strip_use: crate::raster_budget::StripUse,
+    ) -> Result<Option<Strip>, String> {
         let bytes = (column.width as usize + column.gutter as usize) * BAND as usize * 4;
-        let Some(reservation) = self.raster_budget.reserve_strip(self.raster_owner, bytes) else {
+        let Some(reservation) =
+            self.raster_budget
+                .reserve_strip(self.raster_owner, bytes, strip_use)
+        else {
             return Ok(None);
         };
         let hash = self.strip_hash(index, column);
@@ -538,14 +546,14 @@ impl Worker {
             if self.raster.bands.strips.contains_key(&index) {
                 continue;
             }
-            match self.paint_strip(index, column)? {
+            match self.paint_strip(index, column, crate::raster_budget::StripUse::Shown)? {
                 Some(strip) => {
                     self.raster.bands.strips.insert(index, strip);
                 }
                 None => {
                     // Give the budget back from strips far from the window, then once more.
                     self.evict_strips(origin[1], false);
-                    match self.paint_strip(index, column)? {
+                    match self.paint_strip(index, column, crate::raster_budget::StripUse::Shown)? {
                         Some(strip) => {
                             self.raster.bands.strips.insert(index, strip);
                         }
@@ -688,12 +696,13 @@ impl Worker {
                 }
                 return true;
             }
-            let mut strip = self.paint_strip(index, key.column);
+            let ahead = crate::raster_budget::StripUse::Ahead;
+            let mut strip = self.paint_strip(index, key.column, ahead);
             if matches!(strip, Ok(None)) && !evicted {
                 // The budget is full: give back the strips beyond the window first.
                 evicted = true;
                 self.evict_strips(origin, false);
-                strip = self.paint_strip(index, key.column);
+                strip = self.paint_strip(index, key.column, ahead);
             }
             match strip {
                 Ok(Some(strip)) => {

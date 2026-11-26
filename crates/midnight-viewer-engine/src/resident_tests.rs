@@ -57,8 +57,7 @@ fn hold_all(
 
 #[derive(Debug)]
 struct TrackedSource {
-    dropped: mpsc::Sender<(ThreadId, usize)>,
-    windows: Arc<AtomicUsize>,
+    dropped: mpsc::Sender<ThreadId>,
 }
 
 impl GeneratedTextSource for TrackedSource {
@@ -72,14 +71,11 @@ impl GeneratedTextSource for TrackedSource {
 
 impl Drop for TrackedSource {
     fn drop(&mut self) {
-        let _ = self.dropped.send((
-            std::thread::current().id(),
-            self.windows.load(Ordering::Acquire),
-        ));
+        let _ = self.dropped.send(std::thread::current().id());
     }
 }
 
-fn launch(service: &Service, dropped: mpsc::Sender<(ThreadId, usize)>) -> ViewerLaunch {
+fn launch(dropped: mpsc::Sender<ThreadId>) -> ViewerLaunch {
     let path = PathBuf::from("resident-owned.txt");
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
     ViewerLaunch {
@@ -87,10 +83,7 @@ fn launch(service: &Service, dropped: mpsc::Sender<(ThreadId, usize)>) -> Viewer
         associations: Default::default(),
         tree: None,
         archive: None,
-        generated: Some(Arc::new(TrackedSource {
-            dropped,
-            windows: service.windows.clone(),
-        })),
+        generated: Some(Arc::new(TrackedSource { dropped })),
         focused: path,
         view: Arc::new(DirectoryIndex::from_entries(&entries)),
         entries,
@@ -113,7 +106,7 @@ fn appearance() -> ViewerAppearance {
 }
 
 #[test]
-fn skipped_queued_window_drops_source_on_resident_before_returning_window_credit() {
+fn skipped_queued_window_drops_source_on_resident() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(2)
@@ -127,7 +120,7 @@ fn skipped_queued_window_drops_source_on_resident_before_returning_window_credit
     let (dropped, drops) = mpsc::channel();
     let session = service
         .open(
-            launch(&service, dropped),
+            launch(dropped),
             appearance(),
             ViewerGeometry {
                 width: 320,
@@ -136,13 +129,11 @@ fn skipped_queued_window_drops_source_on_resident_before_returning_window_credit
             },
         )
         .unwrap();
-    assert_eq!(service.windows.load(Ordering::Acquire), 1);
     session.close();
     owner.seal();
     drop(gate);
-    let (thread, windows_at_source_drop) = drops.recv_timeout(WAIT).unwrap();
+    let thread = drops.recv_timeout(WAIT).unwrap();
     assert!(threads.contains(&thread));
-    assert_eq!(windows_at_source_drop, 1);
     runtime.block_on(async {
         tokio::time::timeout(WAIT, owner.shutdown(runtime.handle()))
             .await
@@ -155,14 +146,13 @@ fn skipped_queued_window_drops_source_on_resident_before_returning_window_credit
                 .is_ok()
         );
     });
-    assert_eq!(service.windows.load(Ordering::Acquire), 0);
 }
 
 /// A window job that the resident pool drops without running (sealed while it waited
-/// behind busy workers) returns its admitted slot and fails the opening. Opening after
-/// the transient runtime is gone is outside the Service contract (see below).
+/// behind busy workers) fails the opening. Opening after the transient runtime is gone
+/// is outside the Service contract (see below).
 #[test]
-fn window_slot_and_opening_fail_cleanly_when_the_resident_pool_drops_the_worker() {
+fn opening_fails_cleanly_when_the_resident_pool_drops_the_worker() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .max_blocking_threads(2)
@@ -179,7 +169,7 @@ fn window_slot_and_opening_fail_cleanly_when_the_resident_pool_drops_the_worker(
     let (dropped, _drops) = mpsc::channel();
     let session = service
         .open(
-            launch(&service, dropped),
+            launch(dropped),
             appearance(),
             ViewerGeometry {
                 width: 200,
@@ -188,19 +178,21 @@ fn window_slot_and_opening_fail_cleanly_when_the_resident_pool_drops_the_worker(
             },
         )
         .unwrap();
-    assert_eq!(service.windows.load(Ordering::Acquire), 1);
     owner.seal();
     drop(gate);
     let deadline = std::time::Instant::now() + WAIT;
-    while service.windows.load(Ordering::Acquire) != 0 {
+    let opened = loop {
+        if let Some(opened) = session.mailbox.take_open_result() {
+            break opened;
+        }
         assert!(
             std::time::Instant::now() < deadline,
-            "the admitted window slot is returned"
+            "the dropped worker fails the opening"
         );
         std::thread::yield_now();
-    }
+    };
     assert_eq!(
-        session.mailbox.take_open_result(),
+        Some(opened),
         Some(Err("Viewer backend is unavailable.".into()))
     );
     runtime.block_on(async {
@@ -212,7 +204,7 @@ fn window_slot_and_opening_fail_cleanly_when_the_resident_pool_drops_the_worker(
 }
 
 #[test]
-fn refused_window_retires_its_owned_envelope_off_caller_before_returning_credit() {
+fn refused_window_retires_its_owned_envelope_off_caller() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(2)
@@ -224,7 +216,7 @@ fn refused_window_retires_its_owned_envelope_off_caller_before_returning_credit(
     let service = Service::new(runtime.handle().clone(), spawner);
     let (dropped, drops) = mpsc::channel();
     let result = service.open(
-        launch(&service, dropped),
+        launch(dropped),
         appearance(),
         ViewerGeometry {
             width: 320,
@@ -233,14 +225,8 @@ fn refused_window_retires_its_owned_envelope_off_caller_before_returning_credit(
         },
     );
     assert!(result.is_err());
-    let (thread, windows_at_source_drop) = drops.recv_timeout(WAIT).unwrap();
+    let thread = drops.recv_timeout(WAIT).unwrap();
     assert_ne!(thread, std::thread::current().id());
-    assert_eq!(windows_at_source_drop, 1);
-    let deadline = std::time::Instant::now() + WAIT;
-    while service.windows.load(Ordering::Acquire) != 0 {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::yield_now();
-    }
     runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
 }
 
@@ -287,7 +273,7 @@ fn runtime_exit_does_not_move_queued_window_destruction_to_the_runtime_caller() 
     let (dropped, drops) = mpsc::channel();
     let session = service
         .open(
-            launch(&service, dropped),
+            launch(dropped),
             appearance(),
             ViewerGeometry {
                 width: 320,
@@ -300,16 +286,10 @@ fn runtime_exit_does_not_move_queued_window_destruction_to_the_runtime_caller() 
     owner.seal();
     drop(runtime);
     drop(gate);
-    let (thread, windows_at_source_drop) = drops.recv_timeout(WAIT).unwrap();
+    let thread = drops.recv_timeout(WAIT).unwrap();
     assert!(threads.contains(&thread));
     assert_ne!(thread, std::thread::current().id());
-    assert_eq!(windows_at_source_drop, 1);
-    let deadline = std::time::Instant::now() + WAIT;
-    while service.windows.load(Ordering::Acquire) != 0 {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::yield_now();
-    }
-    // This observes queued capture/credit disposal after original runtime exit.
+    // This observes queued capture disposal after original runtime exit.
     // Common executor tests separately qualify worker-exit/join completion.
     // Submitting NEW UI work after transient teardown is outside Service's contract.
     drop(owner);
@@ -330,7 +310,7 @@ fn queued_window_accepts_latest_palette_through_full_wakes_before_opening_or_clo
     let a = appearance();
     let session = service
         .open(
-            launch(&service, dropped),
+            launch(dropped),
             a.clone(),
             ViewerGeometry {
                 width: 320,
@@ -362,11 +342,9 @@ fn queued_window_accepts_latest_palette_through_full_wakes_before_opening_or_clo
     assert_eq!(session.palette_revision(), accepted);
     owner.seal();
     drop(gate);
-    let (thread, windows_at_source_drop) = drops.recv_timeout(WAIT).unwrap();
+    let thread = drops.recv_timeout(WAIT).unwrap();
     assert!(threads.contains(&thread));
-    assert_eq!(windows_at_source_drop, 1);
     runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
-    assert_eq!(service.windows.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -385,7 +363,7 @@ fn disconnected_window_keeps_accepted_palette_revision_when_later_setter_rejects
     let a = appearance();
     let session = service
         .open(
-            launch(&service, dropped),
+            launch(dropped),
             a.clone(),
             ViewerGeometry {
                 width: 320,
@@ -410,10 +388,8 @@ fn disconnected_window_keeps_accepted_palette_revision_when_later_setter_rejects
             .unwrap()
             .unwrap();
     });
-    let (thread, windows_at_source_drop) = drops.recv_timeout(WAIT).unwrap();
+    let thread = drops.recv_timeout(WAIT).unwrap();
     assert!(threads.contains(&thread));
-    assert_eq!(windows_at_source_drop, 1);
-    assert_eq!(service.windows.load(Ordering::Acquire), 0);
     assert!(!session.closed.load(Ordering::Acquire));
     assert!(!session.send(ViewerInput::RetainedRaster(false)));
     assert_eq!(session.palette_revision(), accepted);

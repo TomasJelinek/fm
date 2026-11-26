@@ -19,7 +19,7 @@ use std::{
     num::NonZeroU64,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     thread::{self, JoinHandle},
@@ -30,45 +30,6 @@ const STARTUP: Duration = Duration::from_secs(12);
 const READ: Duration = Duration::from_secs(8);
 const RETIRE: Duration = Duration::from_secs(4);
 const TICK: Duration = Duration::from_millis(12);
-const MAX_DECODERS: usize = 4;
-static DECODERS: AtomicUsize = AtomicUsize::new(0);
-
-struct DecoderPermit;
-
-impl DecoderPermit {
-    fn acquire(cancel: &AtomicBool, deadline: Instant) -> io::Result<Self> {
-        loop {
-            if cancel.load(Ordering::Acquire) {
-                return Err(io::ErrorKind::Interrupted.into());
-            }
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|remaining| !remaining.is_zero())
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "Video decoder capacity did not become available",
-                    )
-                })?;
-            if DECODERS
-                .try_update(Ordering::AcqRel, Ordering::Acquire, |running| {
-                    (running < MAX_DECODERS).then_some(running + 1)
-                })
-                .is_ok()
-            {
-                return Ok(Self);
-            }
-            thread::sleep(remaining.min(Duration::from_millis(10)));
-        }
-    }
-}
-
-impl Drop for DecoderPermit {
-    fn drop(&mut self) {
-        DECODERS.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 enum Reply {
     Opened(VideoIdentity, VideoMetadata),
     Finished(DecoderReply),
@@ -558,8 +519,9 @@ fn run(
         // The owners and the transports share one consuming capture wrapper.
         let source = CapturedVideoSource::new(file, false);
         let launch = |which, retirement: &mut Option<VideoRetirement>| {
+            // Every playing video has its own helper process, bounded by its own memory limit
+            // below; the number of video windows is the user's choice.
             let deadline = Instant::now() + STARTUP;
-            let permit = DecoderPermit::acquire(cancel, deadline)?;
             // The platform helper also maps the system's media frameworks.
             let memory_bytes = match which {
                 VideoWorker::Bundled => 512 * 1024 * 1024,
@@ -574,7 +536,7 @@ fn run(
                 },
                 cancel.clone(),
                 deadline,
-                (source.clone(), permit),
+                source.clone(),
             )?;
             *retirement = Some(process.retirement());
             Ok::<_, io::Error>(process)
@@ -604,7 +566,7 @@ fn run(
                 let Some(second) = fallback_worker(first, &error, platform) else {
                     return Err(error);
                 };
-                // The first helper retires and returns its decoder slot before the second.
+                // The first helper retires before the second launches.
                 if let Some(finished) = retirement.take() {
                     finished.wait(Instant::now() + STARTUP)?;
                 }

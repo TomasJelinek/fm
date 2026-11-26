@@ -401,7 +401,7 @@ fn pin_failure_seals_admission_before_last_capacity_release_at_both_boundaries()
     for during_preparation in [true, false] {
         let mut harness = Harness::new();
         let image = provider("image");
-        let mut occupied: Vec<_> = (0..CHILD_LIMIT).map(|_| harness.cold(&image)).collect();
+        let mut occupied: Vec<_> = (0..SPARE_CEILING).map(|_| harness.cold(&image)).collect();
         let Acquisition { prepared, permit } = occupied.pop().unwrap();
         assert!(prepared.is_none());
         let shared = harness.manager().control.shared.clone();
@@ -420,15 +420,7 @@ fn pin_failure_seals_admission_before_last_capacity_release_at_both_boundaries()
             }),
         };
 
-        let manager = harness.manager().clone();
         let demand_image = image.clone();
-        let (demand_tx, demand_rx) = mpsc::sync_channel(1);
-        let demand = std::thread::spawn(move || {
-            let result = manager.acquire(&demand_image, &AtomicBool::new(false));
-            let _ = demand_tx.send(result.is_err());
-        });
-        harness.wait(|state| state.demands == 1);
-
         let counters = harness.counters.clone();
         let failure = std::thread::spawn(move || {
             if during_preparation {
@@ -460,20 +452,20 @@ fn pin_failure_seals_admission_before_last_capacity_release_at_both_boundaries()
         });
 
         let sealed_at_release = released_rx.recv_timeout(WAIT);
-        let rejected_demand = demand_rx.recv_timeout(WAIT);
         // Unblock the releasing callback before any assertion, even when testing a regression.
         let _ = resume_tx.send(());
         let failed = failure.join().unwrap();
-        demand.join().unwrap();
         assert_eq!(
             sealed_at_release,
             Ok(true),
             "admission must be sealed off-lock before release"
         );
-        assert_eq!(
-            rejected_demand,
-            Ok(true),
-            "a woken waiter must never receive a cold reservation"
+        assert!(
+            harness
+                .manager()
+                .acquire(&demand_image, &AtomicBool::new(false))
+                .is_err(),
+            "a later opening must never receive a cold reservation"
         );
         assert!(failed);
         assert_spare_fence_failed(&harness);
@@ -493,7 +485,7 @@ fn actor_panic_seals_admission_before_external_reservation_can_be_released() {
 
     let mut harness = Harness::new();
     let image = provider("image");
-    let mut occupied: Vec<_> = (0..CHILD_LIMIT).map(|_| harness.cold(&image)).collect();
+    let mut occupied: Vec<_> = (0..SPARE_CEILING).map(|_| harness.cold(&image)).collect();
     let Acquisition { prepared, permit } = occupied.pop().unwrap();
     assert!(prepared.is_none());
     let shared = harness.manager().control.shared.clone();
@@ -513,15 +505,6 @@ fn actor_panic_seals_admission_before_external_reservation_can_be_released() {
     };
 
     let manager = harness.manager().clone();
-    let demand_image = image.clone();
-    let (demand_tx, demand_rx) = mpsc::sync_channel(1);
-    let demand = std::thread::spawn(move || {
-        let result = manager.acquire(&demand_image, &AtomicBool::new(false));
-        let _ = demand_tx.send(result.is_err());
-    });
-    harness.wait(|state| state.demands == 1);
-
-    let manager = harness.manager().clone();
     let actor = std::thread::spawn(move || {
         crate::image_worker::run_actor(
             |external| {
@@ -538,21 +521,24 @@ fn actor_panic_seals_admission_before_external_reservation_can_be_released() {
     });
 
     let first_event = events_rx.recv_timeout(WAIT);
-    let rejected_demand = demand_rx.recv_timeout(WAIT);
     // Release both possible gates before asserting, including when reproducing old unwinding.
     let _ = release_tx.send(());
     let _ = fault_tx.send(());
     assert!(actor.join().unwrap().is_err());
-    demand.join().unwrap();
     assert_eq!(first_event, Ok(Event::Sealed));
-    assert_eq!(rejected_demand, Ok(true));
+    assert!(
+        harness
+            .manager()
+            .acquire(&image, &AtomicBool::new(false))
+            .is_err()
+    );
     assert!(
         events_rx.try_recv().is_err(),
         "unknown reservation must be retained"
     );
     assert_eq!(
         harness.manager().control.shared.lock().children,
-        CHILD_LIMIT
+        SPARE_CEILING
     );
     assert_spare_fence_failed(&harness);
     assert_eq!(harness.counters.launches.load(Ordering::Acquire), 0);
@@ -894,7 +880,7 @@ fn failed_matching_inflight_startup_falls_back_before_source_open() {
 }
 
 #[test]
-fn fourth_demand_waits_for_a_wrong_ready_child_to_actually_exit() {
+fn opening_beyond_the_former_limit_does_not_wait_for_a_wrong_ready_child_to_exit() {
     let mut harness = Harness::new();
     let image = provider("image");
     let other = provider("other");
@@ -902,21 +888,15 @@ fn fourth_demand_waits_for_a_wrong_ready_child_to_actually_exit() {
     harness.configure(&[image, other.clone()]);
     let exit = harness.attempt().ready(true);
     harness.ready();
-    let manager = harness.manager().clone();
-    let (result, received) = mpsc::sync_channel(1);
-    let demand = std::thread::spawn(move || {
-        result
-            .send(manager.acquire(&other, &AtomicBool::new(false)))
-            .unwrap();
-    });
+    // The wrong spare is retiring (its slot still reserved) while the fourth and fifth
+    // image windows open cold at once.
+    let fourth = harness.cold(&other);
     exit.reaping.recv_timeout(WAIT).unwrap();
-    harness.wait(|state| state.demands == 1 && state.children == 4);
-    assert!(received.try_recv().is_err());
+    let fifth = harness.cold(&other);
+    assert_eq!(harness.manager().control.shared.lock().children, 6);
     exit.finish.send(()).unwrap();
-    let acquired = received.recv_timeout(WAIT).unwrap().unwrap();
-    assert!(acquired.prepared.is_none());
-    demand.join().unwrap();
-    drop(acquired);
+    harness.wait(|state| state.children == 5);
+    drop((fourth, fifth));
     drop(active);
     harness.shutdown();
 }
@@ -929,88 +909,73 @@ fn canceled_native_startup_keeps_its_slot_through_return_and_reaping() {
     let active: Vec<_> = (0..3).map(|_| harness.cold(&other)).collect();
     harness.configure(&[image, other.clone()]);
     let attempt = harness.attempt();
-    let manager = harness.manager().clone();
-    let (result, received) = mpsc::sync_channel(1);
-    let demand = std::thread::spawn(move || {
-        result
-            .send(manager.acquire(&other, &AtomicBool::new(false)))
-            .unwrap();
-    });
-    harness.wait(|state| {
-        state.demands == 1
-            && state.children == 4
-            && matches!(&state.spare, Spare::Starting { cancel, .. } if cancel.load(Ordering::Acquire))
-    });
-    assert!(received.try_recv().is_err());
+    // A mismatched demand cancels the in-flight startup and opens cold without waiting.
+    let acquired = harness.cold(&other);
+    {
+        let state = harness.manager().control.shared.lock();
+        assert_eq!(state.children, 5);
+        assert!(
+            matches!(&state.spare, Spare::Starting { cancel, .. } if cancel.load(Ordering::Acquire))
+        );
+    }
     let exit = attempt.ready(true);
     exit.reaping.recv_timeout(WAIT).unwrap();
-    harness.wait(|state| state.children == 4);
-    assert!(received.try_recv().is_err());
+    harness.wait(|state| state.children == 5);
     assert!(harness.attempts.try_recv().is_err());
     exit.finish.send(()).unwrap();
-    let acquired = received.recv_timeout(WAIT).unwrap().unwrap();
-    assert!(acquired.prepared.is_none());
-    demand.join().unwrap();
+    harness.wait(|state| state.children == 4);
     drop(acquired);
     drop(active);
     harness.shutdown();
 }
 
 #[test]
-fn queued_foreground_demand_wins_released_capacity_before_refill() {
+fn spare_ceiling_holds_back_the_refill_but_never_a_foreground_opening() {
     let mut harness = Harness::new();
     let image = provider("image");
-    let mut active: Vec<_> = (0..4).map(|_| harness.cold(&image)).collect();
+    let mut active: Vec<_> = (0..SPARE_CEILING).map(|_| harness.cold(&image)).collect();
     harness.configure(std::slice::from_ref(&image));
-    let manager = harness.manager().clone();
-    let requested = image.clone();
-    let (result, received) = mpsc::sync_channel(1);
-    let demand = std::thread::spawn(move || {
-        result
-            .send(manager.acquire(&requested, &AtomicBool::new(false)))
-            .unwrap();
-    });
-    harness.wait(|state| state.demands == 1);
-    drop(active.pop());
-    let acquired = received.recv_timeout(WAIT).unwrap().unwrap();
-    assert!(acquired.prepared.is_none());
-    demand.join().unwrap();
+    // Eight image windows: the ones beyond the ceiling open cold at once.
+    active.extend((0..4).map(|_| harness.cold(&image)));
+    assert_eq!(harness.manager().control.shared.lock().children, 8);
     assert_eq!(harness.counters.launches.load(Ordering::Acquire), 0);
-    drop(active.pop());
+    assert!(harness.attempts.try_recv().is_err());
+    // Below the ceiling again, the queued refill warms one spare.
+    active.truncate(SPARE_CEILING - 1);
     harness.attempt().fail();
-    harness.wait(|state| state.children == 3 && matches!(state.spare, Spare::Empty));
-    drop(acquired);
+    harness
+        .wait(|state| state.children == SPARE_CEILING - 1 && matches!(state.spare, Spare::Empty));
     drop(active);
     harness.shutdown();
 }
 
 #[test]
-fn canceling_waiting_demand_does_not_release_canceled_startup_capacity() {
+fn invalidated_startup_keeps_its_capacity_while_the_waiting_demand_opens_cold() {
     let mut harness = Harness::new();
     let image = provider("image");
     let active: Vec<_> = (0..3).map(|_| harness.cold(&image)).collect();
     harness.configure(std::slice::from_ref(&image));
     let attempt = harness.attempt();
     let manager = harness.manager().clone();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let stopped = cancel.clone();
     let (result, received) = mpsc::sync_channel(1);
     let demand = std::thread::spawn(move || {
-        result.send(manager.acquire(&image, &stopped)).unwrap();
+        result
+            .send(manager.acquire(&image, &AtomicBool::new(false)))
+            .unwrap();
     });
     harness.wait(|state| state.demands == 1);
     // Global policy invalidation cancels the source-free launch independently of this caller.
     harness.manager().configure(None, Arc::from([]));
-    cancel.store(true, Ordering::Release);
-    let error = received.recv_timeout(WAIT).unwrap().err().unwrap();
-    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    let acquired = received.recv_timeout(WAIT).unwrap().unwrap();
+    assert!(acquired.prepared.is_none());
     demand.join().unwrap();
-    harness.wait(|state| state.demands == 0 && state.children == 4);
+    harness.wait(|state| state.demands == 0 && state.children == 5);
     let exit = attempt.ready(true);
     exit.reaping.recv_timeout(WAIT).unwrap();
-    harness.wait(|state| state.children == 4);
+    harness.wait(|state| state.children == 5);
     exit.finish.send(()).unwrap();
-    harness.wait(|state| state.children == 3 && matches!(state.spare, Spare::Empty));
+    harness.wait(|state| state.children == 4 && matches!(state.spare, Spare::Empty));
+    drop(acquired);
     drop(active);
     harness.shutdown();
 }
@@ -1358,9 +1323,9 @@ fn spare_stop_retires_ready_without_waiting_for_live_manager_clones() {
 fn spare_stop_is_idempotent_and_seals_late_configuration_opened_and_queued_refill() {
     let harness = Harness::new();
     let image = provider("image");
-    let mut active: Vec<_> = (0..CHILD_LIMIT).map(|_| harness.cold(&image)).collect();
+    let mut active: Vec<_> = (0..SPARE_CEILING).map(|_| harness.cold(&image)).collect();
     harness.configure(std::slice::from_ref(&image));
-    harness.wait(|state| state.refill.is_some() && state.children == CHILD_LIMIT);
+    harness.wait(|state| state.refill.is_some() && state.children == SPARE_CEILING);
     let held = harness.manager().clone();
     let retirement = held.spare_retirement();
     let generation = held.control.shared.lock().generation;
@@ -1383,7 +1348,7 @@ fn spare_stop_is_idempotent_and_seals_late_configuration_opened_and_queued_refil
         assert_eq!(state.generation, generation);
         assert!(state.refill.is_none());
         assert!(matches!(state.spare, Spare::Empty));
-        assert_eq!(state.children, CHILD_LIMIT);
+        assert_eq!(state.children, SPARE_CEILING);
     }
     assert_eq!(harness.counters.launches.load(Ordering::Acquire), 0);
     assert!(harness.attempts.try_recv().is_err());

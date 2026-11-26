@@ -8,7 +8,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
     },
 };
@@ -149,30 +149,16 @@ pub struct Session {
     commands: SyncSender<Command>,
     ids: AtomicU64,
 }
-pub(crate) struct SessionPermit(pub Arc<AtomicUsize>);
-impl Drop for SessionPermit {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Release);
-    }
-}
-
 impl Session {
     pub(crate) fn open(
         info: &PluginInfo,
         file: CapturedFile,
         generation: u64,
         mode: u16,
-        sessions: Arc<AtomicUsize>,
     ) -> Result<Self, Error> {
         if !info.modes.contains(&mode) {
             return Err(Error("Viewer mode not declared by plugin".into()));
         }
-        sessions
-            .try_update(Ordering::Acquire, Ordering::Relaxed, |n| {
-                (n < 4).then_some(n + 1)
-            })
-            .map_err(|_| Error("Viewer session limit reached".into()))?;
-        let permit = SessionPermit(sessions);
         let reader = file.open()?;
         let loaded = Loaded::acquire(info)?;
         let (send, receive) = mpsc::sync_channel(MAX_REQUESTS);
@@ -208,13 +194,9 @@ impl Session {
         std::thread::Builder::new()
             .name("viewer-dispatch".into())
             .spawn(move || {
-                {
-                    let _permit = permit;
-                    crate::dispatch::run(loaded, reader, file, worker_shared.clone(), receive);
-                    // Quiescent native destruction completed before releasing background admission.
-                    lock(&worker_shared.state).requests.clear();
-                }
-                // Release the session quota before notifying consumers that it ended.
+                crate::dispatch::run(loaded, reader, file, worker_shared.clone(), receive);
+                // Quiescent native destruction completed before consumers learn it ended.
+                lock(&worker_shared.state).requests.clear();
                 worker_shared.ended();
             })?;
         Ok(Self {

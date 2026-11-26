@@ -639,7 +639,7 @@ pub fn all() -> &'static [Scenario] {
                 name: "viewers_combinations",
                 isolation: crate::Isolation::timed_plugin(),
                 area: "viewers",
-                summary: "F3 from Find results and a fed list (Space through the results, Compare files with the focused result), F3 in an inline tree branch (Space in visible order), four viewer windows (a fifth refused), a previewed theme recolouring an open viewer, a viewer at twice the scale.",
+                summary: "F3 from Find results and a fed list (Space through the results, Compare files with the focused result), F3 in an inline tree branch (Space in visible order), six viewer windows at once (closing one keeps the others), a previewed theme recolouring an open viewer, a viewer at twice the scale.",
                 run: viewers_combos::combinations,
                 timeout: viewers_combos::TIMEOUT,
             },

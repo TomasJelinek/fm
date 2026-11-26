@@ -1,6 +1,6 @@
 //! Integration regression for production Engine/Viewer/Compare scheduling.
-//! Resident Engine/Viewer/Compare with the production transient runtime (2/16),
-//! at most four windows.
+//! Resident Engine/Viewer/Compare with the production transient runtime (2/16) and
+//! four windows (this scenario's size; viewer and comparator windows are not limited).
 //! Watch and Drag are explicitly CONTROLLED native edges; settings is a persistence
 //! sink. Actual listing, prepared acceptance, report readers, captures and text
 //! workers remain real. No profile/OS clipboard writes and no pressure filler jobs.
@@ -427,7 +427,7 @@ impl Harness {
         )?;
         let engine_lifetime = Engine::lifetime().map_err(|e| e.to_string())?;
         let (viewer_owner, viewer_spawner) =
-            Owner::start("midnight-viewer", midnight_viewer_engine::RESIDENT_WORKERS)
+            Owner::start_elastic("midnight-viewer", midnight_viewer_engine::RESIDENT_WORKERS)
                 .map_err(|error| format!("Viewer resident startup failed: {error}"))?;
         let (compare_owner, compare_spawner) = Owner::start_elastic("midnight-compare", 2)
             .map_err(|error| format!("Compare resident startup failed: {error}"))?;
@@ -828,10 +828,6 @@ impl Harness {
         files: &Fixtures,
         snapshot: &FileComparatorSnapshot,
     ) -> TestResult<()> {
-        require(
-            self.viewers.len() + self.compares.len() < 4,
-            "combined window bound exceeded",
-        )?;
         self.start_compare(files, snapshot)
     }
 
@@ -957,7 +953,7 @@ impl Harness {
             },
             pressure_deadline,
         )?;
-        self.open_compare(files, &snapshot)?; // Fourth total window; second Compare is legal.
+        self.open_compare(files, &snapshot)?; // Fourth total window of this scenario.
         require(
             self.viewers.len() + self.compares.len() == 4,
             "four-window test setup failed",

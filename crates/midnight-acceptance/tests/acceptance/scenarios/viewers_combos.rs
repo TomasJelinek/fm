@@ -5,8 +5,8 @@
 //!   result as File A, and Backspace leaves the list.
 //! - F3 on a file shown in an expanded inline tree branch: Space follows the visible
 //!   file order through the branch and on to the folder's own files.
-//! - Four viewer windows at once, each keeping its own file; a fifth is refused with the
-//!   reason; closing one keeps the others and lets another open.
+//! - Six viewer windows at once (more than the former maximum of four), each keeping its
+//!   own file; closing one keeps the others, and a seventh opens beside them.
 //! - A theme previewed in Options recolours an open viewer at once (background and
 //!   syntax colours) and Cancel restores it.
 //! - A viewer moved to a display of twice the scale: the same lines, twice as tall.
@@ -46,11 +46,11 @@ fn prepare(context: &Context) -> Result<std::path::PathBuf, String> {
     ] {
         generated::write(&root, name, text)?;
     }
-    for index in 1..=5 {
+    for index in 1..=SEVERAL + 1 {
         generated::write(
             &root,
             &format!("multi/w{index}.txt"),
-            format!("Window {index} of five.\n"),
+            format!("Window {index} of several.\n"),
         )?;
     }
     generated::write(&root, "theme/sample.rs", generated::rust(200))?;
@@ -85,7 +85,7 @@ fn run(context: &mut Context) -> Result<(), String> {
     let sections: [(&str, Section, &str); 6] = [
         ("Find results and a fed list", find_results, "find"),
         ("an inline tree branch", tree_branch, "tree"),
-        ("four viewer windows", several_windows, "multi"),
+        ("six viewer windows", several_windows, "multi"),
         ("a theme previewed in Options", theme_preview, "theme"),
         ("a viewer at twice the scale", scale, "theme"),
         ("small viewer windows", compact, "compact"),
@@ -315,41 +315,31 @@ fn tree_branch(app: &mut App, context: &mut Context, _: &Failures) -> Result<(),
     Ok(())
 }
 
-/// Four viewers at once; a fifth refused; closing one keeps the others.
+/// Viewer windows the scenario keeps open at once: more than the former maximum of four.
+const SEVERAL: usize = 6;
+
+/// Six viewers at once; closing one keeps the others; a seventh opens beside them.
 fn several_windows(app: &mut App, context: &mut Context, _: &Failures) -> Result<(), String> {
     let mut open: Vec<(usize, Viewing)> = Vec::new();
     let result = (|| {
-        for index in 1..=4 {
+        for index in 1..=SEVERAL {
             panel::select_row(app, PaneId::Left, &format!("w{index}.txt"))?;
             let viewing = support::view(app, false, OPEN_LIMIT)?;
-            wait_text(app, &viewing, &format!("Window {index} of five."))?;
+            wait_text(app, &viewing, &format!("Window {index} of several."))?;
             app.slint()
                 .dispatch_event(WindowEvent::WindowActiveChanged(true));
             open.push((index, viewing));
         }
-        panel::select_row(app, PaneId::Left, "w5.txt")?;
-        let refused = support::view(app, false, OPEN_LIMIT);
-        let notice = app.notice();
-        if refused.is_ok() {
-            return Err("a fifth viewer opened".into());
-        }
-        if !notice
-            .as_ref()
-            .is_some_and(|(_, body)| body.contains("maximum four windows"))
-        {
-            return Err(format!(
-                "the fifth viewer was refused without the reason: notice {notice:?}"
-            ));
+        if let Some((_, body)) = app.notice() {
+            return Err(format!("opening six viewers showed a notice: {body}"));
         }
         app.screenshot(
             context,
-            "fifth-viewer",
-            "F3 with four viewers open: refused with the reason",
+            "six-viewers",
+            "F3 six times: six viewer windows open at once",
         );
-        input::key(app.slint(), Key::Escape);
-        app.settle();
         for (index, viewing) in &open {
-            wait_text(app, viewing, &format!("Window {index} of five."))?;
+            wait_text(app, viewing, &format!("Window {index} of several."))?;
         }
         // Close the second; the others keep their files.
         let (_, second) = open.remove(1);
@@ -358,12 +348,13 @@ fn several_windows(app: &mut App, context: &mut Context, _: &Failures) -> Result
             if !viewing.window.window().is_visible() {
                 return Err(format!("closing the second viewer closed viewer {index}"));
             }
-            wait_text(app, viewing, &format!("Window {index} of five."))?;
+            wait_text(app, viewing, &format!("Window {index} of several."))?;
         }
-        panel::select_row(app, PaneId::Left, "w5.txt")?;
-        let fifth = support::view(app, false, OPEN_LIMIT)?;
-        wait_text(app, &fifth, "Window 5 of five.")?;
-        open.push((5, fifth));
+        let last = SEVERAL + 1;
+        panel::select_row(app, PaneId::Left, &format!("w{last}.txt"))?;
+        let another = support::view(app, false, OPEN_LIMIT)?;
+        wait_text(app, &another, &format!("Window {last} of several."))?;
+        open.push((last, another));
         Ok(())
     })();
     for (_, viewing) in open {

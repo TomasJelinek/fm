@@ -218,13 +218,13 @@ inside each plugin as well. The semantic and per-message limits are listed in
 
 | Layer | Bound |
 | --- | --- |
-| Application sessions | 4 process-wide, including sessions still closing |
-| Host decoded output queue | 64 events and 16 MiB per session; 64 MiB across four sessions; admission reserves terminal capacity |
+| Application sessions | No count limit: one per open document (one per viewer window), each with its own dispatch thread, including sessions still closing |
+| Host decoded output queue | 64 events and 16 MiB per session; admission reserves terminal capacity |
 | Host work queues | 32 CPU and 32 I/O jobs per session; one CPU worker and one I/O callback worker |
 | Host command/service queues | 32 commands and 32 read-service requests per session; separate native read worker |
 | Host input leases | 32 buffers / 4 MiB per session |
 | Host read-reply channel | 32 chunks, at most 8 MiB, separate from leased input |
-| SDK instances/jobs | 16 instances and 4096 registered jobs per loaded SDK library |
+| SDK instances/jobs | 16 instances and 4096 registered jobs per loaded SDK library; the 16 instances are the remaining count limit on open viewers of one SDK plugin (below) |
 | SDK per instance | 64 admitted requests, 128 live contexts, 128 jobs, 64 pending reads |
 | SDK ordinary output | 32 queued events; 128 allocations; 8 MiB |
 | SDK deferred output | One per request; at most 64 and 8 MiB per instance |
@@ -234,8 +234,17 @@ inside each plugin as well. The semantic and per-message limits are listed in
 
 Host decoded-output accounting charges vector/string capacities, not just compact
 CBOR size. These budgets coexist; do not add them into a claimed universal memory
-ceiling, or mistake the SDK's 16-instance allowance for permission to open more
-than the application's four sessions.
+ceiling. The host no longer limits the number of sessions: it follows the number of
+documents the user opens, and the per-session bounds above apply to each.
+
+**Remaining count limit.** Every host session creates its own plugin instance in the
+shared loaded library, and the SDK (`api/midnight-plugin-sdk`, `plugin::create`, pinned
+=0.1.0 by the basic and Markdown viewers and =0.2.0 by the source viewer) admits at most
+16 instances per loaded library and returns `QUEUE_FULL` beyond that. So at most 16
+documents of one SDK plugin (the text, source or Markdown viewer) can be open at once; a
+17th viewer window of the same plugin opens but reports "Plugin create failed". Other
+plugins and the image, PDF, HTML and video viewers are not affected. Removing this limit
+needs a new SDK version and rebuilt plugins.
 
 ## Status and compatibility
 

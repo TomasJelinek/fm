@@ -3,7 +3,7 @@
 //! Deploy the executable beside a `viewers` directory. Set MIDNIGHT_VIEWER_OPEN_TRACE=1 in
 //! debug builds for the per-phase opening timestamps. Results and method:
 //! docs/verification/2026-11-20-viewer-speed.md.
-//! With `--together FILE FILE [FILE...]`, leave up to four viewer surfaces open,
+//! With `--together FILE FILE [FILE...]`, leave every viewer surface open,
 //! placing successive windows on successive monitors when more than one is available.
 //! Set `MIDNIGHT_PROBE_PARENT=1` to keep a native parent visible as in the file manager.
 #[cfg(target_os = "linux")]
@@ -129,8 +129,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1).peekable();
     let together = args.next_if(|arg| arg == "--together").is_some();
     let paths: Vec<PathBuf> = args.map(PathBuf::from).collect();
-    if paths.is_empty() || together && !(2..=4).contains(&paths.len()) {
-        return Err("usage: open_latency FILE... | --together FILE FILE [FILE [FILE]]".into());
+    if paths.is_empty() || together && paths.len() < 2 {
+        return Err("usage: open_latency FILE... | --together FILE FILE [FILE...]".into());
     }
     let repeat = if together { 1 } else { REPEAT };
     select_renderer()?;

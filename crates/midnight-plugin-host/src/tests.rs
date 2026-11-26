@@ -574,7 +574,7 @@ fn native_loader_refuses_wrong_abi_descriptor() {
 
 #[test]
 #[ignore = "requires HOST_TEST_PLUGIN pointing to separately built basic DLL/SO"]
-fn session_quota_is_process_wide_and_closed_sessions_release_retained_output() {
+fn sixteen_sessions_of_one_plugin_open_at_once_and_closed_sessions_release_retained_output() {
     let _guard = NATIVE_SESSIONS.lock().unwrap();
     let library = std::env::var_os("HOST_TEST_PLUGIN").expect("HOST_TEST_PLUGIN");
     let root = fixture_root();
@@ -585,9 +585,17 @@ fn session_quota_is_process_wide_and_closed_sessions_release_retained_output() {
     let captured = CapturedFile::capture(&path).unwrap();
     let runtime = Runtime::discover(root.path()).unwrap();
     let other = Runtime::discover(root.path()).unwrap();
-    let sessions: Vec<_> = (0..4)
+    // Sixteen text viewers of one plugin, through two runtimes: the host refuses none (it
+    // refused the fifth). Sixteen is the published SDK's own instance limit per loaded
+    // library (`api/midnight-plugin-sdk` `plugin::create`), which a 17th session still meets.
+    let sessions: Vec<_> = (0..16)
         .map(|generation| {
-            runtime
+            let owner = if generation % 2 == 0 {
+                &runtime
+            } else {
+                &other
+            };
+            owner
                 .open(
                     "midnight.viewer.basic",
                     captured.clone(),
@@ -597,20 +605,26 @@ fn session_quota_is_process_wide_and_closed_sessions_release_retained_output() {
                 .unwrap()
         })
         .collect();
-    let extra = other.open("midnight.viewer.basic", captured, 5, api::viewer::MODE_TEXT);
-    let rejected = extra.is_err();
-    drop(extra);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    for session in &sessions {
+        assert!(
+            drain_until(session, deadline, |e| matches!(
+                e.kind,
+                EventKind::Opened(_)
+            )),
+            "every session opens"
+        );
+    }
     for session in &sessions {
         session.close();
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     assert!(closed_by(&sessions, deadline), "sessions did not quiesce");
-    assert!(rejected, "another Runtime bypassed aggregate quota");
     for session in sessions {
         assert!(session.is_closed());
         assert!(
             session.drain(64).is_empty(),
-            "closed session retains output after its quota was released"
+            "closed session retains output after it ended"
         );
     }
 }

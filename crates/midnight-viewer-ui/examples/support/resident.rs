@@ -18,7 +18,7 @@ pub(crate) struct ResidentRuntime {
 
 impl ResidentRuntime {
     pub(crate) fn new(runtime: tokio::runtime::Runtime) -> io::Result<Self> {
-        let (owner, spawner) = Owner::start(
+        let (owner, spawner) = Owner::start_elastic(
             "viewer-ui-fixture",
             midnight_viewer_engine::RESIDENT_WORKERS,
         )?;
