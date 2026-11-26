@@ -448,6 +448,73 @@ fn profile_missing(error: &io::Error, executable: &Path) -> bool {
     ) && executable.is_file()
 }
 
+/// Whether a failed worker creation is retried, after ensuring the profile again: only for
+/// a missing profile, and only within `PROFILE_PATIENCE` of the first attempt.
+fn retry_creation(error: &io::Error, executable: &Path, elapsed: std::time::Duration) -> bool {
+    elapsed < PROFILE_PATIENCE && profile_missing(error, executable)
+}
+
+/// One suspended `CreateProcessW` of a restricted worker, under the creation lock
+/// (`create_with_inherited`), whose only inherited handles are fresh duplicates of `ends`
+/// (the child's standard input, output and error). The duplicates are closed before the lock
+/// is released, also when the creation fails, so `ends` themselves never become inheritable
+/// and a retry starts from the same state.
+fn create_suspended(
+    executable: &[u16],
+    environment: &[u16],
+    capabilities: &SECURITY_CAPABILITIES,
+    jobs: &[HANDLE; 1],
+    ends: [&File; 3],
+) -> io::Result<PROCESS_INFORMATION> {
+    let ends = [
+        ends[0].try_clone()?,
+        ends[1].try_clone()?,
+        ends[2].try_clone()?,
+    ];
+    let inherited = [
+        ends[0].as_raw_handle(),
+        ends[1].as_raw_handle(),
+        ends[2].as_raw_handle(),
+    ];
+    let child_policy: u32 = 1; // PROCESS_CREATION_CHILD_PROCESS_RESTRICTED
+    let mut attributes = Attributes::new()?;
+    attributes.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, capabilities)?;
+    attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)?;
+    attributes.set(PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, &child_policy)?;
+    attributes.set(PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs)?;
+    let mut startup = STARTUPINFOEXW::default();
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = inherited[0];
+    startup.StartupInfo.hStdOutput = inherited[1];
+    startup.StartupInfo.hStdError = inherited[2];
+    startup.lpAttributeList = attributes.0.as_mut_ptr().cast();
+    let mut process = PROCESS_INFORMATION::default();
+    create_with_inherited(ends, || {
+        // SAFETY: explicit executable avoids command parsing/search; no arguments or secret
+        // environment. The attribute list assigns the resource-limited job before successful
+        // creation; suspended start prevents execution until the process guard is installed.
+        check(unsafe {
+            CreateProcessW(
+                executable.as_ptr(),
+                null_mut(),
+                null(),
+                null(),
+                1,
+                EXTENDED_STARTUPINFO_PRESENT
+                    | CREATE_UNICODE_ENVIRONMENT
+                    | CREATE_SUSPENDED
+                    | DETACHED_PROCESS,
+                environment.as_ptr().cast(),
+                null(),
+                &startup.StartupInfo,
+                &mut process,
+            )
+        })
+    })?;
+    Ok(process)
+}
+
 /// Call `create` (one `CreateAppContainerProfile`, returning its HRESULT) until the profile
 /// exists: created now or already there. Every failure is retried, with a growing pause of at
 /// most 160 ms, until `patience` has passed; then the last failure is reported.
@@ -625,30 +692,11 @@ fn spawn_impl(
         AppContainerSid: sid.0,
         ..Default::default()
     };
-    let inherited = [
-        child_input.as_raw_handle(),
-        child_output.as_raw_handle(),
-        error.as_raw_handle(),
-    ];
     // Keep the job-handle array alive until the attribute list is destroyed. This assigns the
     // configured inner job during creation without inheriting a job handle into the worker.
     let jobs = [job.as_raw_handle()];
-    let child_policy: u32 = 1; // PROCESS_CREATION_CHILD_PROCESS_RESTRICTED
-    let mut attributes = Attributes::new()?;
-    attributes.set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &capabilities)?;
-    attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)?;
-    attributes.set(PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, &child_policy)?;
-    attributes.set(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
-    let mut startup = STARTUPINFOEXW::default();
-    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = child_input.as_raw_handle();
-    startup.StartupInfo.hStdOutput = child_output.as_raw_handle();
-    startup.StartupInfo.hStdError = error.as_raw_handle();
-    startup.lpAttributeList = attributes.0.as_mut_ptr().cast();
     #[cfg(feature = "startup-diagnostics")]
     timing.mark("job");
-    let mut process = PROCESS_INFORMATION::default();
     // AppContainer startup needs SystemRoot. Query the OS instead of inheriting user secrets/PATH.
     let mut system_root = vec![0u16; 32768];
     let length =
@@ -677,59 +725,36 @@ fn spawn_impl(
     environment.extend_from_slice(&[0, 0]);
     #[cfg(feature = "startup-diagnostics")]
     timing.mark("environment");
-    create_with_inherited([child_input, child_output, error], || {
-        // A profile that another process removed for a moment is ensured again (the SID is
-        // derived from the name, so it stays the same), within the profile's patience.
-        let started = std::time::Instant::now();
-        let mut profile = None;
-        loop {
-            // SAFETY: explicit executable avoids command parsing/search; no arguments or
-            // secret environment. The attribute list assigns the resource-limited job before
-            // successful creation; suspended start prevents execution until the process guard
-            // is installed. A failed call created no process and left the inputs untouched.
-            let created = check(unsafe {
-                CreateProcessW(
-                    wide.as_ptr(),
-                    null_mut(),
-                    null(),
-                    null(),
-                    1,
-                    EXTENDED_STARTUPINFO_PRESENT
-                        | CREATE_UNICODE_ENVIRONMENT
-                        | CREATE_SUSPENDED
-                        | DETACHED_PROCESS,
-                    environment.as_ptr().cast(),
-                    null(),
-                    &startup.StartupInfo,
-                    &mut process,
-                )
-            });
-            match created {
-                Err(error)
-                    if started.elapsed() < PROFILE_PATIENCE
-                        && profile_missing(&error, executable) =>
-                {
-                    profile = ensure_worker_profile_again().err();
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(error) => {
-                    return Err(match profile {
-                        Some(profile) => {
-                            io::Error::new(error.kind(), format!("{error}; {profile}"))
-                        }
-                        None => error,
-                    });
-                }
-                created => return created,
+    // A profile that another process removed for a moment is ensured again (the SID is
+    // derived from the name, so it stays the same) and the creation retried. Ensuring and
+    // waiting happen outside the creation lock, while no handle of this process is
+    // inheritable; each attempt marks its own duplicates of the child's ends inheritable.
+    let started = std::time::Instant::now();
+    let mut profile = None;
+    let process = loop {
+        match create_suspended(
+            &wide,
+            &environment,
+            &capabilities,
+            &jobs,
+            [&child_input, &child_output, &error],
+        ) {
+            Ok(process) => break process,
+            Err(failure) if retry_creation(&failure, executable, started.elapsed()) => {
+                profile = ensure_worker_profile_again().err();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(failure) => {
+                let profile = profile.map_or_else(String::new, |profile| format!("; {profile}"));
+                return Err(io::Error::new(
+                    failure.kind(),
+                    format!("CreateProcessW for restricted worker: {failure}{profile}"),
+                ));
             }
         }
-    })
-    .map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("CreateProcessW for restricted worker: {error}"),
-        )
-    })?;
+    };
+    // The child holds its own copies of its ends.
+    drop((child_input, child_output, error));
     #[cfg(feature = "startup-diagnostics")]
     timing.mark("process_created");
     // SAFETY: CreateProcess succeeded and transferred both handles to this scope.
@@ -845,6 +870,61 @@ mod tests {
         assert!(profile_missing(&path_not_found, &existing));
         assert!(!profile_missing(&not_found, &missing));
         assert!(!profile_missing(&denied, &existing));
+    }
+
+    /// A creation that found the profile missing is retried only within the patience, and
+    /// any other failure is reported at once.
+    #[test]
+    fn only_a_missing_profile_is_retried_and_only_within_the_patience() {
+        let existing = std::env::current_exe().unwrap();
+        let not_found = io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32);
+        let denied = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+        assert!(retry_creation(&not_found, &existing, Duration::ZERO));
+        assert!(retry_creation(
+            &not_found,
+            &existing,
+            PROFILE_PATIENCE - Duration::from_millis(1)
+        ));
+        assert!(!retry_creation(&not_found, &existing, PROFILE_PATIENCE));
+        assert!(!retry_creation(&denied, &existing, Duration::ZERO));
+    }
+
+    /// A failed creation leaves the child's ends as they were: not inheritable, still open.
+    #[test]
+    fn a_failed_creation_leaves_the_ends_non_inheritable() {
+        let (child_input, _input) = pipe().unwrap();
+        let (_output, child_output) = pipe().unwrap();
+        let error = OpenOptions::new().write(true).open("NUL").unwrap();
+        let missing: Vec<u16> = std::env::temp_dir()
+            .join("no-such-midnight-worker.exe")
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect();
+        let sid = worker_profile_sid().unwrap();
+        let capabilities = SECURITY_CAPABILITIES {
+            AppContainerSid: sid.0,
+            ..Default::default()
+        };
+        // SAFETY: unnamed non-inheritable job owned by this test.
+        let job = unsafe { OwnedHandle::from_raw_handle(CreateJobObjectW(null(), null())) };
+        let environment = [0u16, 0];
+        let ends = [&child_input, &child_output, &error];
+        for _ in 0..2 {
+            let failure = create_suspended(
+                &missing,
+                &environment,
+                &capabilities,
+                &[job.as_raw_handle()],
+                ends,
+            )
+            .err()
+            .expect("no process starts from a missing executable");
+            assert_eq!(failure.raw_os_error(), Some(ERROR_FILE_NOT_FOUND as i32));
+            for end in ends {
+                assert!(!inheritable(end.as_raw_handle()));
+            }
+        }
     }
 
     /// After the first start, a worker start derives the SID without touching the profile
