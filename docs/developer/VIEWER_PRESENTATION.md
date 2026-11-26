@@ -149,7 +149,10 @@ exact display scale. `WindowPlacement` applies that scale before sizing the chil
 so the first logical layout and backend font metrics do not depend on when the
 native child is created by the event loop. Subsequent native DPI events remain
 authoritative. A placement supplied only as a logical size has no captured scale
-and does not guess one.
+and does not guess one. Where absolute origins exist (Windows, X11) the shown
+viewer's client origin is checked against the parent's and a decoration-sized error
+is corrected once; on Wayland the compositor positions it
+([window geometry](../verification/window-geometry.md#viewer-placement-over-the-main-window)).
 
 Each displayed raster retains the logical viewport against which its effective
 pixel dimensions were mapped. Showing the source or Markdown controls can shrink
