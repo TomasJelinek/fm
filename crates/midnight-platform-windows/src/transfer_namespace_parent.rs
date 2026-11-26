@@ -110,6 +110,10 @@ struct BatchChecks {
     /// Folders whose lookup rules were read, the volume they were read through and the
     /// rules found.
     modes: Vec<(Weak<Anchor>, Option<Weak<Volume>>, LookupMode)>,
+    /// Volumes whose persistent state disabled 8.3-name creation and whose root path still
+    /// opened their pinned root: the part of the lookup rules that every folder of the
+    /// volume shares (`lookup_mode`).
+    volumes: Vec<Weak<Volume>>,
     /// Folders that a binding's recorded path still opened, with that path.
     paths: Vec<(Weak<Anchor>, PathBuf)>,
 }
@@ -127,6 +131,9 @@ thread_local! {
     pub(super) static EDGE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Proofs of a held folder's path, identity and delete state made on this thread.
     pub(super) static FOLDER_PROOFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Reads of a volume's 8.3 state and root binding made on this thread
+    /// (`volume_disables_short_names`).
+    pub(super) static VOLUME_PROOFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Run `check` on this thread's record of its current refresh batch; None outside a batch.
@@ -263,7 +270,7 @@ pub(super) fn capture(
         .last()
         .ok_or_else(|| invalid(path, "native parent has no root"))?;
     let volume = open_volume(root).ok();
-    let mode = lookup_mode(&first.file, volume.as_deref());
+    let mode = lookup_mode(&first.file, volume.as_ref());
     let snapshot = Arc::new(TransferNamespaceParent {
         identity: expected,
         lookup_domain: mode.domain(),
@@ -491,7 +498,7 @@ impl Parent {
         let mode = match recorded {
             Some(mode) => mode,
             None => {
-                let mode = lookup_mode(self.file(), self.volume.as_deref());
+                let mode = lookup_mode(self.file(), self.volume.as_ref());
                 remember(
                     |checks| &mut checks.modes,
                     (
@@ -655,7 +662,10 @@ fn forced_lookup() -> Option<bool> {
     }
 }
 
-fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
+/// The lookup rules of `directory` on `volume`. The folder's filesystem and case rules are
+/// read each time; the volume's part (`volume_disables_short_names`) is read once per
+/// volume within a refresh batch (`BatchChecks`), as a folder's root binding is.
+fn lookup_mode(directory: &File, volume: Option<&Arc<Volume>>) -> LookupMode {
     let forced = forced_lookup();
     let Some(volume) = volume.filter(|_| forced != Some(false)) else {
         return LookupMode::Unqualified;
@@ -692,6 +702,31 @@ fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
     if case_result == 0 || case.Flags & !1 != 0 {
         return LookupMode::Unqualified;
     }
+    let mode = LookupMode::ShortNamesDisabled {
+        case_sensitive: case.Flags & 1 != 0,
+    };
+    // The volume's part holds for every folder of the batch on it once it held for one.
+    let known = batch_checks(|checks| {
+        checks
+            .volumes
+            .iter()
+            .any(|recorded| std::ptr::eq(recorded.as_ptr(), Arc::as_ptr(volume)))
+    });
+    if known == Some(true) {
+        return mode;
+    }
+    if !volume_disables_short_names(volume, forced) {
+        return LookupMode::Unqualified;
+    }
+    remember(|checks| &mut checks.volumes, Arc::downgrade(volume));
+    mode
+}
+
+/// The volume's part of the lookup rules: its persistent state disables 8.3-name creation,
+/// and its root path still opens the pinned root.
+fn volume_disables_short_names(volume: &Volume, forced: Option<bool>) -> bool {
+    #[cfg(test)]
+    VOLUME_PROOFS.with(|proofs| proofs.set(proofs.get() + 1));
     let request = FILE_FS_PERSISTENT_VOLUME_INFORMATION {
         FlagMask: PERSISTENT_VOLUME_STATE_SHORT_NAME_CREATION_DISABLED,
         Version: 1,
@@ -714,18 +749,13 @@ fn lookup_mode(directory: &File, volume: Option<&Volume>) -> LookupMode {
         )
     };
     if forced != Some(true) && !persistent_short_names_disabled(query_result, returned, &response) {
-        return LookupMode::Unqualified;
+        return false;
     }
     // The root still belongs to the originally pinned volume after the query. A path
     // rebound cannot silently supply a different volume's alias policy.
     let root_identity = metadata_directory(&volume.root.physical)
         .and_then(|file| identity(&file, &volume.root.physical));
-    if root_identity.ok() != Some(volume.root.identity) {
-        return LookupMode::Unqualified;
-    }
-    LookupMode::ShortNamesDisabled {
-        case_sensitive: case.Flags & 1 != 0,
-    }
+    root_identity.ok() == Some(volume.root.identity)
 }
 
 pub(super) fn physical_path(file: &File) -> io::Result<PathBuf> {

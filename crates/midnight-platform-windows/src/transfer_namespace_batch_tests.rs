@@ -22,6 +22,47 @@ fn folder(path: &Path) -> Arc<parent::Parent> {
     .unwrap()
 }
 
+/// Reads of a volume's 8.3 state and root binding that `run` made on this thread.
+fn volume_proofs(run: impl FnOnce()) -> usize {
+    let before = parent::VOLUME_PROOFS.with(std::cell::Cell::get);
+    run();
+    parent::VOLUME_PROOFS.with(std::cell::Cell::get) - before
+}
+
+/// The volume's part of the lookup rules (its 8.3 state and root binding) is read once per
+/// volume in a batch, whichever folders of it the batch checks; each folder's own rules
+/// are still read for it. Outside a batch each check reads it again.
+#[test]
+fn a_batch_reads_the_volume_rules_once_for_all_its_folders() {
+    let temp = crate::test_fixtures::build_temp("namespace-batch-");
+    let cancel = Cancellation::default();
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&second).unwrap();
+    let first = folder(&first);
+    let second = folder(&second);
+    let qualified = matches!(first.mode, parent::LookupMode::ShortNamesDisabled { .. });
+    let unbatched = volume_proofs(|| {
+        first.validate(&cancel).unwrap();
+        second.validate(&cancel).unwrap();
+    });
+    let batched = volume_proofs(|| {
+        let _batch = TransferNamespaceRefreshBatch::begin();
+        first.validate(&cancel).unwrap();
+        second.validate(&cancel).unwrap();
+        first.validate(&cancel).unwrap();
+    });
+    if qualified {
+        assert_eq!(unbatched, 2);
+        assert_eq!(batched, 1);
+    } else {
+        // An unqualified volume is never remembered: there is nothing to read again, or
+        // its 8.3 state refuses each time.
+        assert!(batched <= 2, "{batched}");
+    }
+}
+
 #[test]
 fn a_batch_checks_each_ancestor_binding_once_for_all_folders_that_share_it() {
     let temp = crate::test_fixtures::build_temp("namespace-batch-");

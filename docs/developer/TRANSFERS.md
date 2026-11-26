@@ -1165,7 +1165,10 @@ the Linux adapter walks an ancestry once per batch: the binding checks and the
 announcement of a change up to its native operation are one batch, and the host's refresh
 of the pins the change touched is another. A batch changes no names; an external rename
 during a batch is seen by the next batch, as by a check that ran just before the rename,
-and a check that fails is never kept. A copied file staged in turns of its own checks the
+and a check that fails is never kept. The volume's part of a folder's lookup rules (its
+persistent 8.3 state, and that its root path still opens the pinned root) is read once per
+volume in a batch, whichever of its folders the batch checks; each folder's filesystem and
+case rules are still read for that folder. A copied file staged in turns of its own checks the
 destination's ancestry four times (WIN-8 in the
 [Windows acceptance record](acceptance/windows.md)); a file staged in a job's staging
 folder takes only its publication's turn, whose two batches check it twice.
