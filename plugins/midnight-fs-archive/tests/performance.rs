@@ -418,3 +418,185 @@ fn measure(name: &str, format: Format, bytes: Vec<u8>, payloads: &[Vec<u8>]) {
         );
     }
 }
+
+/// Manual development measurement of opening and navigating archives of many small
+/// members; no wall-clock thresholds in ordinary CI. Run with
+/// `--release --ignored --nocapture` and `MIDNIGHT_ARCHIVE_PERF_DIR` naming a folder
+/// under `_build/` that holds `many.zip` and `many.tar.gz` (any shape: folders are
+/// found by name order). A missing `many.7z` is written there from `many.zip`'s files,
+/// one solid block per folder.
+#[test]
+#[ignore = "manual archive navigation measurement; run --release --ignored --nocapture"]
+fn measure_many_small_members() {
+    navigation::run();
+}
+
+mod navigation {
+    use midnight_filesystem_api::{Format, Kind, Node};
+    use midnight_fs_archive::{Archive, Limits};
+    use std::{
+        io::{Cursor, Read},
+        path::Path,
+        time::{Duration, Instant},
+    };
+
+    /// Every child of `directory`, page by page as the host requests them.
+    fn listed(archive: &Archive, directory: u64) -> (Vec<Node>, usize) {
+        let (mut nodes, mut pages, mut after) = (Vec::new(), 0, 0);
+        loop {
+            let (page, more) = archive.page(directory, after).unwrap();
+            pages += 1;
+            if let Some(last) = page.last() {
+                after = last.id;
+            }
+            nodes.extend(page);
+            if !more {
+                return (nodes, pages);
+            }
+        }
+    }
+
+    /// The last folder (in name order) of `nodes`.
+    fn last_folder(nodes: &[Node]) -> &Node {
+        nodes
+            .iter()
+            .filter(|node| node.kind == Kind::Directory)
+            .max_by(|a, b| a.name.cmp(&b.name))
+            .expect("a folder")
+    }
+
+    fn median(mut samples: Vec<Duration>) -> Duration {
+        samples.sort();
+        samples[samples.len() / 2]
+    }
+
+    fn write_sevenzip(zip_path: &Path, path: &Path) {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+        let mut folders: std::collections::BTreeMap<String, Vec<(String, Vec<u8>)>> =
+            Default::default();
+        for index in 0..zip.len() {
+            let mut file = zip.by_index(index).unwrap();
+            if file.is_dir() {
+                continue;
+            }
+            let name = file.name().to_owned();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            let folder = name.rsplit_once('/').map_or("", |(folder, _)| folder);
+            folders
+                .entry(folder.to_owned())
+                .or_default()
+                .push((name, bytes));
+        }
+        let mut writer =
+            sevenz_rust2::ArchiveWriter::new(std::fs::File::create(path).unwrap()).unwrap();
+        for files in folders.values() {
+            writer
+                .push_archive_entries(
+                    files
+                        .iter()
+                        .map(|(name, _)| sevenz_rust2::ArchiveEntry::new_file(name))
+                        .collect(),
+                    files
+                        .iter()
+                        .map(|(_, bytes)| {
+                            sevenz_rust2::SourceReader::new(Cursor::new(bytes.as_slice()))
+                        })
+                        .collect(),
+                )
+                .unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    pub(super) fn run() {
+        let Some(directory) = std::env::var_os("MIDNIGHT_ARCHIVE_PERF_DIR") else {
+            eprintln!("MIDNIGHT_ARCHIVE_PERF_DIR is not set");
+            return;
+        };
+        let directory = Path::new(&directory);
+        let sevenzip = directory.join("many.7z");
+        if !sevenzip.exists() {
+            write_sevenzip(&directory.join("many.zip"), &sevenzip);
+        }
+        let runs: usize = std::env::var("MIDNIGHT_ARCHIVE_PERF_RUNS")
+            .ok()
+            .and_then(|runs| runs.parse().ok())
+            .unwrap_or(5);
+        for (file, format) in [
+            ("many.zip", Format::Zip),
+            ("many.tar.gz", Format::TarGzip),
+            ("many.7z", Format::SevenZip),
+        ] {
+            let path = directory.join(file);
+            if !path.exists() {
+                continue;
+            }
+            let mut samples: [Vec<Duration>; 3] = Default::default();
+            let mut report = String::new();
+            for _ in 0..runs {
+                let source = std::fs::read(&path).unwrap();
+                let length = source.len();
+                let start = Instant::now();
+                let archive = Archive::open(format, source, Limits::default()).unwrap();
+                let open = start.elapsed();
+                let start = Instant::now();
+                let (root, root_pages) = listed(&archive, 1);
+                let first = start.elapsed();
+                // Down to the deepest last folder, then back up listing each folder again.
+                let start = Instant::now();
+                let mut trail = vec![1];
+                let mut nodes = root;
+                while nodes.iter().any(|node| node.kind == Kind::Directory) {
+                    let next = last_folder(&nodes).id;
+                    trail.push(next);
+                    nodes = listed(&archive, next).0;
+                }
+                let deep = nodes.len();
+                for folder in trail.iter().rev().skip(1) {
+                    listed(&archive, *folder);
+                }
+                let navigate = start.elapsed();
+                samples[0].push(open);
+                samples[1].push(first);
+                samples[2].push(navigate);
+                let members = archive_members(&archive);
+                report = format!(
+                    "source={length} members={} tree_digest={:016x} root_pages={root_pages} depth={} deep_files={deep}",
+                    members.0,
+                    members.1,
+                    trail.len() - 1,
+                );
+                drop(archive);
+            }
+            eprintln!(
+                "{file}: open={:?} first_listing={:?} navigate_down_and_back={:?} (medians of {runs}) {report}",
+                median(samples[0].clone()),
+                median(samples[1].clone()),
+                median(samples[2].clone()),
+            );
+            for (label, list) in ["open", "first", "navigate"].iter().zip(&samples) {
+                eprintln!("  {label}: {list:?}");
+            }
+        }
+    }
+
+    /// Members of the whole tree, counted through the listing, and a digest of every
+    /// listed node, which compares the trees that two builds index.
+    fn archive_members(archive: &Archive) -> (usize, u64) {
+        use std::hash::{Hash, Hasher};
+        let mut digest = std::hash::DefaultHasher::new();
+        let mut count = 0;
+        let mut pending = vec![1];
+        while let Some(directory) = pending.pop() {
+            for node in listed(archive, directory).0 {
+                count += 1;
+                format!("{node:?}").hash(&mut digest);
+                if node.kind == Kind::Directory {
+                    pending.push(node.id);
+                }
+            }
+        }
+        (count, digest.finish())
+    }
+}
