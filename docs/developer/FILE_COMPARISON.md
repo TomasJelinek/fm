@@ -115,7 +115,8 @@ is bounded as follows instead:
   `resident::Owner::start_elastic("midnight-compare", 2)`: two resident threads, and one
   more thread whenever a session finds none waiting; an extra thread ends when it finds
   no work, and shutdown joins every thread. Only a failure to start a thread refuses an
-  opening (*Comparison workers are busy. Try again.*).
+  opening (*A comparison worker thread could not be started. Try again.*;
+  `Rejection::ThreadUnavailable`).
 - **Heavy work.** Preparing the content (reading and aligning text, starting and
   decoding in the image workers) runs under the service's preparation gate
   (`computing.rs`): at most `COMPUTING` = 2 sessions prepare at once, first come first

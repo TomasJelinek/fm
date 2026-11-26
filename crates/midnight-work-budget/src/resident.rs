@@ -56,6 +56,8 @@ pub enum Rejection {
     Full,
     Sealed,
     WorkerFailed,
+    /// An elastic pool found no waiting worker and could not start a thread for the work.
+    ThreadUnavailable,
 }
 
 /// An envelope ended without completing its body normally.
@@ -68,6 +70,9 @@ pub enum TaskError {
     /// A worker failure prevented normal disposition of the envelope.
     WorkerFailed,
 }
+
+/// Starts a named worker thread; tests substitute a failing one.
+type SpawnThread = fn(Builder, Work) -> io::Result<JoinHandle<()>>;
 
 /// A refused submission carrying the original work intact.
 pub struct Rejected {
@@ -98,8 +103,9 @@ thread_local! {
 
 struct Shared {
     capacity: usize,
-    /// An elastic pool starts another worker instead of refusing work (`start_elastic`).
-    elastic: bool,
+    /// An elastic pool starts another worker with this instead of refusing work
+    /// (`start_elastic`).
+    elastic: Option<SpawnThread>,
     name: String,
     queue: Mutex<Queue>,
     changed: Condvar,
@@ -142,7 +148,7 @@ struct QueuedWork(Option<Work>);
 impl Owner {
     /// Starts the complete worker set with an equally sized queue, without needing Tokio.
     pub fn start(name: &str, threads: usize) -> io::Result<(Self, Spawner)> {
-        Self::start_with(name, threads, false, Builder::spawn)
+        Self::start_with(name, threads, None, Builder::spawn)
     }
 
     /// Starts `threads` resident workers that never refuse work for a count: when no
@@ -150,15 +156,15 @@ impl Owner {
     /// finds no pending work. For long jobs that mostly wait, such as one per open
     /// window; bound their CPU-heavy phases separately. Extra workers are joined by
     /// `shutdown` like the resident ones. Only a failure to start a thread refuses
-    /// (`Rejection::Full`).
+    /// (`Rejection::ThreadUnavailable`).
     pub fn start_elastic(name: &str, threads: usize) -> io::Result<(Self, Spawner)> {
-        Self::start_with(name, threads, true, Builder::spawn)
+        Self::start_with(name, threads, Some(Builder::spawn), Builder::spawn)
     }
 
     fn start_with(
         name: &str,
         threads: usize,
-        elastic: bool,
+        elastic: Option<SpawnThread>,
         mut spawn: impl FnMut(Builder, Work) -> io::Result<JoinHandle<()>>,
     ) -> io::Result<(Self, Spawner)> {
         if threads == 0 || name.contains('\0') {
@@ -272,7 +278,7 @@ impl Spawner {
         let refusal = match queue.state {
             PoolState::Failed => Some(Rejection::WorkerFailed),
             PoolState::Sealed => Some(Rejection::Sealed),
-            PoolState::Open if self.shared.elastic => None,
+            PoolState::Open if self.shared.elastic.is_some() => None,
             PoolState::Open if queue.pending.len() == self.shared.capacity => Some(Rejection::Full),
             PoolState::Open => None,
         };
@@ -280,12 +286,12 @@ impl Spawner {
             return Err(Rejected { reason, work });
         }
         // Each waiting worker takes one pending job; this job needs one more.
-        if self.shared.elastic
+        if let Some(spawn) = self.shared.elastic
             && queue.idle <= queue.pending.len()
-            && start_extra(&self.shared, &mut queue).is_err()
+            && start_extra(&self.shared, &mut queue, spawn).is_err()
         {
             return Err(Rejected {
-                reason: Rejection::Full,
+                reason: Rejection::ThreadUnavailable,
                 work,
             });
         }
@@ -365,6 +371,7 @@ impl fmt::Display for Rejected {
             Rejection::Full => "the resident worker queue is full",
             Rejection::Sealed => "the resident worker pool is sealed",
             Rejection::WorkerFailed => "a resident worker failed",
+            Rejection::ThreadUnavailable => "a resident worker thread could not be started",
         })
     }
 }
@@ -565,15 +572,17 @@ fn dispose_panic(payload: Box<dyn Any + Send>) -> bool {
 
 /// Start one more worker of an elastic pool, under its queue lock. Extra workers whose
 /// thread has returned are released first.
-fn start_extra(shared: &Arc<Shared>, queue: &mut Queue) -> io::Result<()> {
+fn start_extra(shared: &Arc<Shared>, queue: &mut Queue, spawn: SpawnThread) -> io::Result<()> {
     queue.extra.retain(|worker| !worker.thread.is_finished());
     queue.extra.try_reserve(1).map_err(io::Error::other)?;
     let index = queue.next_index;
     let (on_exit, exited) = oneshot::channel();
     let worker_shared = Arc::clone(shared);
-    let thread = Builder::new()
-        .name(format!("{}-{index}", shared.name))
-        .spawn(move || worker_main(worker_shared, None, on_exit, false))?;
+    let builder = Builder::new().name(format!("{}-{index}", shared.name));
+    let thread = spawn(
+        builder,
+        Box::new(move || worker_main(worker_shared, None, on_exit, false)),
+    )?;
     queue.next_index = index.wrapping_add(1);
     queue.live_workers += 1;
     queue.extra.push(Worker { thread, exited });

@@ -43,7 +43,7 @@ fn start_with_blocked_epilogue() -> (Owner, Receiver<()>, Sender<()>) {
     let (epilogue_started, observed_epilogue) = mpsc::channel();
     let (release, hold) = mpsc::channel();
     let mut hold = Some(hold);
-    let (owner, _) = Owner::start_with("exit-epilogue", 1, false, |builder, run| {
+    let (owner, _) = Owner::start_with("exit-epilogue", 1, None, |builder, run| {
         let epilogue_started = epilogue_started.clone();
         let hold = hold.take().unwrap();
         builder.spawn(move || {
@@ -85,7 +85,7 @@ fn first_and_partial_startup_failure_leave_no_initialization_worker() {
     for fail_at in [0, 2] {
         let mut attempt = 0;
         let (retired, observed) = mpsc::channel();
-        let result = Owner::start_with("startup", 3, false, |builder, run| {
+        let result = Owner::start_with("startup", 3, None, |builder, run| {
             let index = attempt;
             attempt += 1;
             if index == fail_at {
@@ -111,7 +111,7 @@ fn first_and_partial_startup_failure_leave_no_initialization_worker() {
 
 #[test]
 fn rejects_zero_threads_without_starting_a_worker() {
-    let result = Owner::start_with("zero", 0, false, |_, _| {
+    let result = Owner::start_with("zero", 0, None, |_, _| {
         panic!("must not try to start a worker")
     });
     assert_eq!(result.err().unwrap().kind(), io::ErrorKind::InvalidInput);
@@ -121,7 +121,7 @@ fn rejects_zero_threads_without_starting_a_worker() {
 fn a_launched_thread_that_exits_before_readiness_fails_startup_and_retires_peers() {
     let mut attempt = 0;
     let (retired, observed) = mpsc::channel();
-    let startup = Owner::start_with("missing-readiness", 3, false, |builder, run| {
+    let startup = Owner::start_with("missing-readiness", 3, None, |builder, run| {
         let index = attempt;
         attempt += 1;
         let retired = retired.clone();
@@ -445,7 +445,7 @@ fn affine_resource_is_created_and_destroyed_by_the_same_worker() {
 #[test]
 fn final_owner_drop_returns_while_blocked_and_neutral_spawners_preserve_no_stop_authority() {
     let (exited, exit_observed) = mpsc::channel();
-    let (owner, spawner) = Owner::start_with("owner-drop", 1, false, |builder, run| {
+    let (owner, spawner) = Owner::start_with("owner-drop", 1, None, |builder, run| {
         let exited = exited.clone();
         builder.spawn(move || {
             run();
@@ -1099,4 +1099,39 @@ fn elastic_pool_runs_twenty_long_jobs_at_once_and_refuses_only_when_sealed() {
         .err()
         .expect("a shut down pool refuses work");
     assert_eq!(refused.reason(), Rejection::Sealed);
+}
+
+fn no_thread(_: Builder, _: Work) -> io::Result<JoinHandle<()>> {
+    Err(io::Error::other("no more threads"))
+}
+
+/// An elastic pool that finds no waiting worker and cannot start a thread refuses the
+/// submission as `ThreadUnavailable`, not as a full queue, and returns the work intact.
+#[test]
+fn elastic_pool_refuses_as_thread_unavailable_when_a_thread_cannot_start() {
+    let (owner, spawner) =
+        Owner::start_with("elastic-no-thread", 1, Some(no_thread), Builder::spawn).unwrap();
+    let runtime = runtime();
+    // The resident worker is busy, so the next submission needs another thread.
+    let (busy, _, release) = start_blocked(&spawner, &runtime);
+    let (ran, observed) = mpsc::channel();
+    let refused = spawner
+        .spawn(runtime.handle(), Box::new(move || ran.send(()).unwrap()))
+        .err()
+        .expect("no thread for the work");
+    assert_eq!(refused.reason(), Rejection::ThreadUnavailable);
+    assert_eq!(
+        refused.to_string(),
+        "a resident worker thread could not be started"
+    );
+    refused.into_work()();
+    assert_eq!(observed.try_recv(), Ok(()), "the work comes back intact");
+    {
+        let queue = spawner.shared.lock();
+        assert_eq!(queue.live_workers, 1);
+        assert!(queue.pending.is_empty() && queue.extra.is_empty());
+    }
+    drop(release);
+    assert_eq!(wait(&runtime, busy), Ok(()));
+    assert!(wait(&runtime, owner.shutdown(runtime.handle())).is_ok());
 }

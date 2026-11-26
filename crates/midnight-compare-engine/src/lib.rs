@@ -1145,6 +1145,9 @@ impl Service {
                     resident::Rejection::Full => "Comparison workers are busy. Try again.",
                     resident::Rejection::Sealed => "Comparison workers are shutting down.",
                     resident::Rejection::WorkerFailed => "Comparison workers are unavailable.",
+                    resident::Rejection::ThreadUnavailable => {
+                        "A comparison worker thread could not be started. Try again."
+                    }
                 };
                 let rejected = RejectedComparison(Some(refused.into_work()));
                 self.handle.spawn_blocking(move || rejected.retire());

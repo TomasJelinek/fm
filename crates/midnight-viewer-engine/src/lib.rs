@@ -495,10 +495,7 @@ impl Service {
             .resident
             .spawn(&self.handle, Box::new(move || job.run()))
         {
-            let message = format!(
-                "Viewer resident worker is unavailable: {:?}.",
-                rejected.reason()
-            );
+            let message = format!("Viewer resident worker is unavailable: {rejected}.");
             self.retire(rejected.into_work());
             return Err(message);
         }
