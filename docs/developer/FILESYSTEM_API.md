@@ -357,6 +357,8 @@ provider's capture (a million 16-byte names: `archive_folder_memory_per_member` 
 of a million members holds about 610 MiB. That test uses stand-in collation keys; a
 real Linux en_US key of a 16-character name takes 108 bytes
 ([transfer and listing performance](../verification/2026-11-21-transfer-and-listing-performance.md)).
+Opening and navigating archives of 100,000 small members in 1,000 folders is measured in
+[archive navigation speed](../verification/2026-11-26-archive-navigation-speed.md).
 The idle supervisor waits without polling; only while an exchange with a cancellation
 token is active does it observe that token: a startup's every 10 ms (`STARTUP_POLL`), a
 listing's or unlock's every 50 ms (`REQUEST_POLL`). A failed `release_on_worker` retains its
