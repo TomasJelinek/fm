@@ -316,8 +316,8 @@ ratio preserved and unused space around the centered frame. App palette changes
 style the chrome and canvas background; they neither recolor video pixels nor
 make their delivery wait for a text-palette acknowledgement.
 
-Playback has dedicated, session-bound Play/Pause controls, a seek timeline and
-position/duration text in a one-row media bar. Pending feedback ("Starting playback…",
+Playback has dedicated, session-bound Play/Pause controls, a seek timeline,
+position/duration text, a mute toggle and a volume slider in a one-row media bar. Pending feedback ("Starting playback…",
 "Pausing…", "Seeking…", "Buffering…") and errors lead the viewer's status line below
 it (errors in the error colour), so a press never adds or removes a row and the video
 above keeps its size. The viewer reports a failed video both as the media error and as
@@ -385,6 +385,57 @@ as played at once. The end of the audio is such an underrun too, so a
 movie whose audio has drained finishes its last frames on the monotonic clock. A failure
 that remains, such as a device that cannot be prepared again, ends playback with
 ALSA's sentence.
+
+### Volume and mute
+
+The media bar ends with a mute toggle (a glyph-only button named "Mute" or "Unmute",
+with a tooltip naming M) and a volume slider ("Volume", accessible value 0–100), after
+Play/Pause, the timeline and the time, in that Tab order. Both are disabled until the
+current video's `MediaSnapshot::audio` says it plays sound: a qualified audio track
+whose output device opened (`VideoSession::plays_audio`). A video without a track, with
+an unqualified codec or without a device keeps them disabled; the latter two already
+show their audio notice in the status line. A failed video disables them too.
+
+The level is window state, not a viewer preference: `MediaControls` keeps it
+(`percent`, `muted`) across media sessions of one window, and a new window starts at
+100%, unmuted. Persisting it needs a settings schema change and is the backlog's
+MEDIA-04. The slider commits while it is dragged (a seek commits on release); moving it
+unmutes; mute keeps the level and unmute restores it. `viewer.mute` (default M,
+viewer content only) toggles it from the keyboard.
+
+Where the sound goes: the restricted helper (`midnight-video-playback*`, MMV2) only
+decodes. It sends interleaved stereo i16 PCM at 48 kHz in `Pcm` replies to the window
+worker's `VideoView`, whose `VideoSession` queues it in `Playback` (at most
+`MAX_HOST_FRAMES`). Each 12 ms tick, `Playback::pump` submits one block of at most
+`MAX_PCM_BLOCK_FRAMES` from that queue to the native `AudioSink`
+(`midnight-media-output`: WASAPI on Windows, ALSA on Linux), which keeps at most
+`MAX_DEVICE_FRAMES` (200 ms) queued. The level is applied there, in the host, just before
+`AudioSink::write`, not in the helper: the helper has no device and its pipe carries
+decoder requests one at a time, so a control message would wait behind a pull, and a
+level applied at decode time would also reach the up to 250 ms of PCM already decoded and
+queued. No MMV2 message or native backend changed.
+
+`WindowSession::set_media_volume(percent, muted)` stores the level in the window's
+`midnight_media_host::AudioVolume`, one `AtomicU32` (percent in the low byte, the mute
+flag in bit 8), shared by the worker with every `VideoView`, `VideoSession` and
+`Playback` the window opens. A percent above 100 is refused with the current level kept.
+The UI thread stores with `Relaxed` ordering and `pump` loads it once per block with
+`Relaxed`, without a lock or a message through the bounded input queue: the word
+publishes no other memory, and percent and mute change together in one word. At 100%
+the block is written unchanged; otherwise it is copied into a buffer reserved once and
+scaled by a Q15 gain of `(percent / 100)³` (the cubic curve of PulseAudio's and
+PipeWire's volume controls: 50% is −18 dB), rounded to nearest and saturated to the i16
+range. Muted output writes silence of the same length, so the device clock that paces
+the video keeps running. Frames already on the device keep their level, so a change is
+heard within one device buffer, with no seek or restart.
+
+Tests: `volume_tests` (curve, 0/50/100%, saturation, mute, refusal), `playback_tests`
+(a change applies to the next block, mute writes silence and keeps the clock, unmute
+restores the level), `video_session_tests` and `video_actor` tests (the window's level
+reaches the samples written for its video; a video without sound reports none),
+`media_controls_tests` (disabled without sound, slider and mute state, the level kept
+across videos, M through `dispatch_key` into `WindowSession`) and `viewer_shortcuts`
+(M resolves to `viewer.mute` in viewer content only). No test hears the output.
 
 Evidence: [media record](../verification/2026-11-19-media-follow-up.md) (a silent
 synthetic AVI: Play/Pause, paused resize, seek, end of file and replay) and

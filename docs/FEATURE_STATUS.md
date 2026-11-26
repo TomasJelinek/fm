@@ -251,8 +251,8 @@ How to read it:
   running and contained without network, local stylesheets, fonts and images also of
   saved pages and of generated documentation's parent folders; Online on request), the
   Office preview of DOCX, XLSX, PPTX, ODT, ODS and ODP
-  contents (shown through the HTML viewer), video playback, and the basic text and hex
-  viewer. Alt+F3 forces text. Viewers search (Ctrl+F), wrap, select and copy text (Ctrl+A
+  contents (shown through the HTML viewer), video playback (with volume and mute, M),
+  and the basic text and hex viewer. Alt+F3 forces text. Viewers search (Ctrl+F), wrap, select and copy text (Ctrl+A
   selects the whole file in text, source and Markdown views, and Ctrl+C copies up to
   64 MiB of its text, read in the background with progress; the hex view selects the
   rows shown), zoom images and PDFs, and step through the panel's files with Space and
@@ -282,7 +282,8 @@ How to read it:
   offline page's scripts cannot use local storage, cookies, workers or `fetch` of its
   own files (the sandbox that keeps them from reading files); text
   scrolling pacing is not measured on Linux or with a physical wheel, and rows longer
-  than one layout show in pieces (VIEW-PERF-01, SCROLL-02).
+  than one layout show in pieces (VIEW-PERF-01, SCROLL-02); a video's volume lasts for
+  one viewer window and is not saved, and no check has listened to its level (MEDIA-04).
 - **Documents:** [viewer presentation](developer/VIEWER_PRESENTATION.md),
   [viewer preferences](developer/VIEWER_PREFERENCES.md),
   [viewer scrolling](developer/VIEWER_SCROLLING.md),

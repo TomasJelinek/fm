@@ -500,6 +500,7 @@ Viewer windows have their own configurable shortcut context:
 | Ctrl+1 | Actual image pixels (1:1) |
 | Ctrl+Y | Type a zoom percentage for an image, PDF or HTML page (`viewer.zoom-to`, as Acrobat's Zoom To); also a click on the shown percentage. Enter applies, Escape keeps the zoom |
 | Ctrl+PageUp / Ctrl+PageDown | Previous / next PDF document page; also available as page buttons |
+| M in a video | Mute or unmute its sound, keeping the level (`viewer.mute`); also the speaker button beside the volume slider. Nothing happens for a video without sound or in other content. Keys go to the video's controls while one of them has the focus: Space or Enter presses a focused Play/Pause or speaker button, and on the timeline or the volume slider the arrow keys step it (Left/Down back, Right/Up forward; the volume by 5%) and Home/End go to its ends. Up and Down stay scrolling keys elsewhere, so the volume has no shortcut of its own |
 | F7, Alt+Down, Alt+Right or N in file comparison | Next difference: changed lines, or the next region of differing bytes in the hex view; configurable as `compare.next-difference` |
 | Shift+F7, Alt+Up, Alt+Left or P in file comparison | Previous difference (lines or byte regions); configurable as `compare.previous-difference` |
 | Alt+Home / Alt+End in file comparison | First / last difference (lines or byte regions); configurable as `compare.first-difference` / `compare.last-difference`. Difference navigation stops at either end and aligns the changed rows in both panes. Editing controls retain their own keys. |

@@ -1883,6 +1883,18 @@ including for binary input. The mode selector changes between modes supported by
 the current plugin. Unknown or budget-limited syntax stays readable as plain text.
 [Viewer file types](VIEWER_ASSOCIATIONS.md) can be changed in Options → Plugins.
 
+A video plays with a bar of controls below it: Play/Pause, the timeline (click or drag
+to seek; Left/Right and Home/End when it has the focus), the position and duration, a
+speaker button and a volume slider. The speaker button (or M in the video) mutes the
+sound and unmutes it at the level it had. The slider sets the level from 0 to 100% and
+is heard at once, without a pause or a seek; with the focus on it, the arrow keys
+change it in steps of 5% and Home/End go to silence or full volume, and moving it
+unmutes. Like most desktop volume controls, the slider follows loudness rather than
+amplitude: half way is about −18 dB. The level and the mute stay for the
+next video shown in the same window; a new viewer window starts at full volume. For a
+video without sound (no audio track, an audio codec the viewer cannot play or no output
+device, which the status line names) the speaker and slider are disabled.
+
 Each viewer starts at the main window's size. Escape closes it, including from its
 search field. Space or Alt+Right in the content area advances through the captured
 panel order, wrapping after the last regular file; Backspace or Alt+Left goes back.
