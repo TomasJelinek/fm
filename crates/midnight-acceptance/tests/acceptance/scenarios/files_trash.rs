@@ -6,8 +6,10 @@
 //! (owner write is added for it); an entry of a write-protected folder outside the
 //! deleted tree is refused with a Retry/Skip/Skip all/Cancel question, and Retry works
 //! once the folder is writable. Last, F8 of a file on another filesystem than the Trash
-//! (tmpfs `$XDG_RUNTIME_DIR`) is refused in words and the file stays: a failed Trash is
-//! never a permanent delete.
+//! (tmpfs `$XDG_RUNTIME_DIR`) is refused in words in the shared question window and the
+//! file stays: a failed Trash is never a permanent delete. Decide later (Escape) keeps
+//! the job waiting, Resolve asks again, Cancel job keeps the file, and only Permanently
+//! delete removes it.
 use crate::{
     Context,
     app::{App, Config},
@@ -16,10 +18,11 @@ use crate::{
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::{OperationProgress, OperationState, PaneId};
-use slint::platform::{Key, WindowAdapter};
+use slint::platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow};
 use std::{
     fs,
     path::{Path, PathBuf},
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -685,8 +688,9 @@ fn run(context: &mut Context) -> Result<(), String> {
     support::report(&failures)
 }
 
-/// A second confirmation on another filesystem. Escape preserves the original file,
-/// while explicit permanent deletion can remove it without changing the private Trash.
+/// F8 on another filesystem: the Trash refuses and the question window asks whether to
+/// delete permanently instead. Decide later, Resolve and Cancel job preserve the original
+/// file, while Permanently delete removes it without changing the private Trash.
 fn trash_elsewhere(context: &mut Context, trash_root: &Path) -> Result<(), String> {
     #[cfg(unix)]
     let parent = {
@@ -727,31 +731,43 @@ fn trash_elsewhere(context: &mut Context, trash_root: &Path) -> Result<(), Strin
                 return Err("F8 initially asked for a permanent delete".into());
             }
             input::key(app.slint(), Key::Return);
-            app.until("the separate permanent-delete confirmation", |app| {
-                app.window.get_operation_dangerous() && !app.window.get_operation_token().is_empty()
-            });
-            if !app.window.get_operation_body().contains("elsewhere.txt")
-                || !app.window.get_operation_warning().contains("unavailable")
-                || facts(&file)? != before
-            {
-                return Err("the fallback did not identify and preserve elsewhere.txt".into());
+            // The refusal asks in the shared question window (Permanently delete, Cancel
+            // job, Decide later), not in the main window's form, which the Delete's
+            // progress window covers.
+            let question = match support::wait_delete(&mut app, start) {
+                DeleteEnd::Asked(window) => window,
+                DeleteEnd::Done(progress) => {
+                    return Err(format!(
+                        "the refused Trash ended {:?} without asking: {} {:?}",
+                        progress.state, progress.message, progress.errors
+                    ));
+                }
+            };
+            if !app.window.get_operation_token().is_empty() {
+                return Err("the main window's form asks about the refusal too".into());
             }
-            if !accept {
-                app.screenshot(
-                    context,
-                    "trash-unavailable",
-                    "Trash unavailable on another filesystem",
-                );
+            trash_refusal_question(&question)?;
+            if facts(&file)? != before {
+                return Err("the refused Trash changed elsewhere.txt".into());
             }
-            input::key(app.slint(), if accept { Key::Return } else { Key::Escape });
-            let ended = support::wait_operation(&mut app, start);
             if accept {
+                support::answer_delete(&mut app, &question, &["Permanently delete"])?;
+                let ended = support::wait_operation(&mut app, start);
                 support::operation_ok(&ended, "confirmed permanent deletion")?;
                 if file.exists() {
                     return Err("the confirmed file remains".into());
                 }
-            } else if ended.state != OperationState::Cancelled || facts(&file)? != before {
-                return Err("cancelling the fallback changed the selected file".into());
+            } else {
+                app.screenshot_window(
+                    context,
+                    &question,
+                    "trash-unavailable",
+                    "Trash unavailable on another filesystem",
+                );
+                decide_later_then_cancel(&mut app, &question, start)?;
+                if facts(&file)? != before {
+                    return Err("cancelling the fallback changed the selected file".into());
+                }
             }
             support::dismiss_all(&mut app);
         }
@@ -763,4 +779,92 @@ fn trash_elsewhere(context: &mut Context, trash_root: &Path) -> Result<(), Strin
     })();
     let _ = crate::fixtures::remove_tree(&folder);
     result
+}
+
+/// The question a Trash refusal asks: why the Trash refused elsewhere.txt, then the
+/// permanent-deletion question, with Permanently delete, Cancel job and Decide later
+/// only (no Retry or Skip).
+fn trash_refusal_question(window: &MinimalSoftwareWindow) -> Result<(), String> {
+    let text = inspect::visible_texts(window.window()).join("\n");
+    let buttons = inspect::labels(window.window(), AccessibleRole::Button);
+    let offers = |label: &str| buttons.iter().any(|button| button == label);
+    if !text.contains("cannot take the items below")
+        || !text.contains("cross-filesystem trash is unsupported")
+        || !text.contains("elsewhere.txt")
+        || !text.contains("Permanent deletion cannot be undone")
+        || !["Permanently delete", "Cancel job", "Decide later"]
+            .into_iter()
+            .all(offers)
+        || ["Retry", "Skip"].into_iter().any(offers)
+    {
+        return Err(format!(
+            "the Trash refusal's question: {}",
+            support::describe_window(window)
+        ));
+    }
+    Ok(())
+}
+
+/// Escape in the refusal's question is Decide later: the job keeps waiting. Resolve in
+/// the Delete's progress window brings the question back; Cancel job then ends the job
+/// Cancelled.
+fn decide_later_then_cancel(
+    app: &mut App,
+    question: &Rc<MinimalSoftwareWindow>,
+    start: usize,
+) -> Result<(), String> {
+    input::key(question.window(), Key::Escape);
+    let deferred = question.clone();
+    app.until("Escape to put the Trash refusal off", move |_| {
+        !deferred.window().is_visible()
+    });
+    app.idle(Duration::from_millis(300));
+    if let Some(ended) = app.operations[start..]
+        .iter()
+        .find(|progress| progress.state.is_terminal())
+    {
+        return Err(format!(
+            "Decide later ended the job {:?}: {}",
+            ended.state, ended.message
+        ));
+    }
+    // The Delete's progress window, sized like a desktop window so its footer shows.
+    app.until("the Delete's progress window", |app| {
+        !app.tool_windows().is_empty()
+    });
+    for window in app.tool_windows() {
+        crate::app::layout_tool(&window, 760, 560);
+    }
+    app.settle();
+    app.until("a progress window offering Resolve", |app| {
+        resolve_window(app).is_some()
+    });
+    let progress = resolve_window(app).expect("a window offering Resolve");
+    tools::click_last(progress.window(), "Resolve")
+        .map_err(|error| format!("the waiting Delete's Resolve: {error}"))?;
+    app.until("Resolve to bring the Trash refusal back", |app| {
+        support::delete_question(app).is_some()
+    });
+    let question = support::delete_question(app).expect("the question");
+    crate::app::layout_tool(&question, 820, 560);
+    app.settle();
+    trash_refusal_question(&question).map_err(|error| format!("after Resolve, {error}"))?;
+    support::answer_delete(app, &question, &["Cancel job"])?;
+    let ended = support::wait_operation(app, start);
+    if ended.state != OperationState::Cancelled {
+        return Err(format!(
+            "Cancel job in the Trash refusal ended {:?}: {}",
+            ended.state, ended.message
+        ));
+    }
+    Ok(())
+}
+
+/// A tool window other than a question that offers Resolve: the waiting Delete's
+/// progress window.
+fn resolve_window(app: &App) -> Option<Rc<MinimalSoftwareWindow>> {
+    app.tool_windows().into_iter().find(|window| {
+        inspect::find(window.window(), AccessibleRole::Button, "Resolve").is_some()
+            && inspect::find(window.window(), AccessibleRole::Button, "Decide later").is_none()
+    })
 }
