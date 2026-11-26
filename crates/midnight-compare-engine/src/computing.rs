@@ -1,10 +1,12 @@
 //! How many comparisons prepare their content at once.
 //!
 //! Any number of comparisons may be open; each keeps a resident worker that mostly waits
-//! for input. Preparing a comparison (opening both files, reading and aligning text,
-//! starting and decoding in the image workers) is the CPU- and memory-heavy phase, so
-//! the service admits at most `COMPUTING` preparations at once, first come first served.
-//! The others wait, cancellable, with the status `WAITING`.
+//! for input. Preparing a comparison (reading and aligning text, starting and decoding in
+//! the image workers) is the CPU- and memory-heavy phase, so the service admits at most
+//! `COMPUTING` preparations at once, first come first served. The others wait,
+//! cancellable, with the status `WAITING`. Opening the files and resolving the text font
+//! come before the wait: an open that blocks on an unresponsive share holds no permit. A
+//! replacement queued while a comparison waits ends its wait.
 use crate::check_cancel;
 use std::{
     collections::VecDeque,
@@ -45,17 +47,20 @@ impl Gate {
     }
 
     /// Wait for a permit. `waiting` runs once, before waiting, when none is free at once.
-    /// Fails once `cancel` is set; `interrupt` wakes waiters to observe it.
+    /// Fails once `cancel` is set, and gives up with `None` once `superseded` is true (a
+    /// replacement comparison was queued); `interrupt` wakes waiters to observe either.
+    /// `superseded` runs with the gate locked.
     pub fn acquire(
         self: &Arc<Self>,
         cancel: &AtomicBool,
+        superseded: impl Fn() -> bool,
         waiting: impl FnOnce(),
-    ) -> Result<Permit, String> {
+    ) -> Result<Option<Permit>, String> {
         let mut state = self.lock();
         check_cancel(cancel)?;
         if state.free > 0 && state.queue.is_empty() {
             state.free -= 1;
-            return Ok(Permit(self.clone()));
+            return Ok(Some(Permit(self.clone())));
         }
         let ticket = Ticket {
             gate: self,
@@ -70,11 +75,14 @@ impl Gate {
         let mut state = self.lock();
         loop {
             check_cancel(cancel)?;
+            if superseded() {
+                return Ok(None);
+            }
             if state.free > 0 && state.queue.front() == Some(&ticket.id) {
                 state.free -= 1;
                 // `ticket` leaves the queue once `state` is released, and wakes the next
                 // ticket: another permit may be free for it.
-                return Ok(Permit(self.clone()));
+                return Ok(Some(Permit(self.clone())));
             }
             state = self
                 .changed
@@ -83,7 +91,7 @@ impl Gate {
         }
     }
 
-    /// Wake waiters to observe a cancellation set before this call.
+    /// Wake waiters to observe a cancellation or replacement made before this call.
     pub fn interrupt(&self) {
         let _state = self.lock();
         self.changed.notify_all();

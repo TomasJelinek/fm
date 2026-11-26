@@ -482,11 +482,8 @@ fn compare(
     let output = context.output;
     let capture = &context.capture;
     let cancel = capture.cancel;
-    // Opening and preparing the content is the heavy phase: wait for a permit. It is
-    // released before the comparison is presented and stays open for input.
-    let preparing = context.computing.acquire(cancel, || {
-        output.put(generation, Output::Status(crate::computing::WAITING.into()));
-    })?;
+    // Opening the files may block on a slow or unresponsive share, so it takes no
+    // preparation permit; neither does resolving the text font.
     let left = capture.open(&paths[0]).map_err(|error| {
         format!(
             "File A could not be opened: {error}\n{}",
@@ -502,6 +499,37 @@ fn compare(
     let mut sources = [left, right];
     let ssd = paths.each_ref().map(|path| capture.confirmed_ssd(path));
     check_cancel(cancel)?;
+    let fonts = match plan {
+        BuiltInPlan::Images { .. } => None,
+        BuiltInPlan::Text | BuiltInPlan::Bytes(_) => {
+            // The scan overlaps the wait, reads and diff, and is shared by the service.
+            let request = capture.inbox.font_request();
+            let catalog = capture
+                .fonts
+                .request(cancel, capture.font_delivery(request));
+            let family = match &catalog {
+                Some(_) => None,
+                None => Some(capture.fonts.resolve(&appearance.family, cancel)),
+            };
+            Some((request, catalog, family))
+        }
+    };
+    check_cancel(cancel)?;
+    // Reading, aligning and decoding the content is the heavy phase: wait for a permit.
+    // It is released before the comparison is presented and stays open for input. The
+    // image workers start within it: each may use up to its job memory limit, which is
+    // what the permit bounds.
+    let preparing = context.computing.acquire(
+        cancel,
+        || !output.is_current(generation),
+        || {
+            output.put(generation, Output::Status(crate::computing::WAITING.into()));
+        },
+    )?;
+    let Some(preparing) = preparing else {
+        // A replacement was queued while this comparison waited: take it up instead.
+        return wait_replacement(context, viewport);
+    };
     let mut awaiting_fonts = None;
     let mut content = match plan {
         BuiltInPlan::Images {
@@ -520,11 +548,9 @@ fn compare(
             )?))
         }
         plan @ (BuiltInPlan::Text | BuiltInPlan::Bytes(_)) => {
-            // The scan overlaps the reads and diff, and is shared by the service.
-            let request = capture.inbox.font_request();
-            let catalog = capture
-                .fonts
-                .request(cancel, capture.font_delivery(request));
+            let Some((request, catalog, family)) = fonts else {
+                unreachable!("text and byte comparisons resolve their font before the permit");
+            };
             let refused = match plan {
                 BuiltInPlan::Bytes(reason) => Err(reason),
                 _ => {
@@ -559,13 +585,9 @@ fn compare(
                     Content::Bytes(Box::new(BinaryComparison::new(&sources, ssd, Some(reason))))
                 }
             };
-            let family = match &catalog {
-                Some(_) => None,
-                None => {
-                    awaiting_fonts = Some(request);
-                    Some(capture.fonts.resolve(&appearance.family, cancel))
-                }
-            };
+            if catalog.is_none() {
+                awaiting_fonts = Some(request);
+            }
             for typeface in content.typefaces() {
                 match (&catalog, &family) {
                     (Some(families), _) => {

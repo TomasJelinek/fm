@@ -116,12 +116,15 @@ is bounded as follows instead:
   more thread whenever a session finds none waiting; an extra thread ends when it finds
   no work, and shutdown joins every thread. Only a failure to start a thread refuses an
   opening (*Comparison workers are busy. Try again.*).
-- **Heavy work.** Opening both files and preparing the content (reading and aligning
-  text, starting and decoding in the image workers) runs under the service's preparation
-  gate (`computing.rs`): at most `COMPUTING` = 2 sessions prepare at once, first come
-  first served, as many as the two sessions could before. A session that waits shows
-  *Waiting for other comparisons to finish…* and stops waiting when it is closed. The
-  presented comparison (scrolling, find, identity and byte scans, image renders) runs
+- **Heavy work.** Preparing the content (reading and aligning text, starting and
+  decoding in the image workers) runs under the service's preparation gate
+  (`computing.rs`): at most `COMPUTING` = 2 sessions prepare at once, first come first
+  served, as many as the two sessions could before. Opening both files and resolving the
+  text font come first, outside the gate, so an open that blocks on an unresponsive share
+  holds back no other comparison. The image workers start inside the gate: each may grow
+  to its 1 GiB job limit, which is the memory the gate bounds. A session that waits shows
+  *Waiting for other comparisons to finish…*; it stops waiting when it is closed, and when a replacement pair is chosen
+  (it then opens the new files and waits in its own turn). The presented comparison (scrolling, find, identity and byte scans, image renders) runs
   outside the gate; byte scans and reads still pass the process-wide I/O gate.
 - **Memory.** Each open comparison keeps what its files need: up to about 2.5 times its
   two texts (at most 64 MiB each), the byte-view and scan buffers, or two image workers

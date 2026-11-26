@@ -2,6 +2,7 @@
 //! the others wait, shown as waiting, until one finishes or they are closed.
 use super::*;
 use midnight_core::FileCompareSource;
+use midnight_plugin_host::{CapturedFile, ContentSource, Error};
 use std::{
     path::Path,
     sync::mpsc::Receiver,
@@ -9,6 +10,9 @@ use std::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// Longer than any wait for output, so a wait that a hold blocks fails first; dropping
+/// the release ends a hold at once.
+const HOLD: Duration = Duration::from_secs(60);
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
@@ -50,19 +54,90 @@ fn open(service: &Service) -> Session {
         .expect("sessions are not limited")
 }
 
-/// A capture that reports its entry and holds its comparison in preparation until a
-/// release (or the end of the test) lets it fail.
+/// Empty content whose validation after its read (the first after its capture) reports
+/// its entry and holds its comparison in preparation until a release (or the end of the
+/// test) lets it fail. Empty content takes no shared I/O admission, so a held comparison
+/// holds back no other test's reads.
+#[derive(Debug)]
+struct Held {
+    validations: AtomicUsize,
+    entered: mpsc::Sender<()>,
+    release: Arc<Mutex<Receiver<()>>>,
+}
+
+impl ContentSource for Held {
+    fn length(&self) -> u64 {
+        0
+    }
+    fn display_name(&self) -> String {
+        "held.txt".into()
+    }
+    fn version(&self) -> Vec<u8> {
+        vec![1]
+    }
+    fn validate(&self) -> Result<(), Error> {
+        match self.validations.fetch_add(1, Ordering::AcqRel) {
+            0 => Ok(()),
+            1 => {
+                let _ = self.entered.send(());
+                let _ = self.release.lock().unwrap().recv_timeout(HOLD);
+                Err(Error("held read".into()))
+            }
+            _ => Err(Error("held read".into())),
+        }
+    }
+    fn read_at(&self, _: u64, _: u32) -> Result<Vec<u8>, Error> {
+        Ok(Vec::new())
+    }
+}
+
+/// Text that reads at once.
+#[derive(Debug)]
+struct Text;
+
+impl ContentSource for Text {
+    fn length(&self) -> u64 {
+        5
+    }
+    fn display_name(&self) -> String {
+        "text.txt".into()
+    }
+    fn version(&self) -> Vec<u8> {
+        vec![1]
+    }
+    fn validate(&self) -> Result<(), Error> {
+        Ok(())
+    }
+    fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {
+        let bytes = b"text\n";
+        let start = (offset as usize).min(bytes.len());
+        let end = start.saturating_add(length as usize).min(bytes.len());
+        Ok(bytes[start..end].to_vec())
+    }
+}
+
+/// A capture whose files open at once and whose read holds its comparison in preparation:
+/// an admitted comparison reports one entry.
 fn held_capture() -> (NativeCapture, Receiver<()>, mpsc::Sender<()>) {
     let (entered, arrived) = mpsc::channel();
     let (release, wait) = mpsc::channel::<()>();
-    let wait = Mutex::new(wait);
+    let release_reads = Arc::new(Mutex::new(wait));
     let entered = Mutex::new(entered);
     let capture: NativeCapture = Arc::new(move |_: &Path, _| {
-        entered.lock().unwrap().send(()).unwrap();
-        let _ = wait.lock().unwrap().recv_timeout(TIMEOUT);
-        Err("held capture".into())
+        let held = Held {
+            validations: AtomicUsize::new(0),
+            entered: entered.lock().unwrap().clone(),
+            release: release_reads.clone(),
+        };
+        CapturedFile::from_source(Arc::new(held)).map_err(|error| error.to_string())
     });
     (capture, arrived, release)
+}
+
+fn quiet(service: Service) -> Service {
+    service
+        .with_image_viewer_discovery(|| Ok(Vec::new()))
+        .with_font_scan(|_| Some(Arc::from([])))
 }
 
 fn waiting(session: &Session) -> bool {
@@ -84,8 +159,12 @@ fn one_more_waits_and_starts_when_one_finishes(permits: usize) {
     let runtime = runtime();
     let (owner, spawner) = crate::resident_test_support::workers();
     let (capture, entered, release) = held_capture();
-    let service = Service::with_native_capture(runtime.handle().clone(), spawner, capture)
-        .with_computing(permits);
+    let service = quiet(Service::with_native_capture(
+        runtime.handle().clone(),
+        spawner,
+        capture,
+    ))
+    .with_computing(permits);
     let sessions: Vec<_> = (0..permits).map(|_| open(&service)).collect();
     for _ in 0..permits {
         entered
@@ -96,9 +175,9 @@ fn one_more_waits_and_starts_when_one_finishes(permits: usize) {
     assert!(waiting(&last), "comparison {} waits", permits + 1);
     assert!(
         entered.recv_timeout(Duration::from_millis(200)).is_err(),
-        "the waiting comparison opens no file"
+        "the waiting comparison reads no file"
     );
-    // One preparation ends (its capture fails): the waiting one starts.
+    // One preparation ends (its read fails): the waiting one starts.
     release.send(()).unwrap();
     entered
         .recv_timeout(TIMEOUT)
@@ -122,14 +201,18 @@ fn with_six_admitted_the_seventh_waits_and_runs_when_one_finishes() {
     one_more_waits_and_starts_when_one_finishes(6);
 }
 
-/// Closing a comparison that waits ends its worker without opening a file.
+/// Closing a comparison that waits ends its worker without reading a file.
 #[test]
 fn closing_a_waiting_comparison_ends_it_without_preparing() {
     let runtime = runtime();
     let (owner, spawner) = crate::resident_test_support::workers();
     let (capture, entered, release) = held_capture();
-    let service =
-        Service::with_native_capture(runtime.handle().clone(), spawner, capture).with_computing(1);
+    let service = quiet(Service::with_native_capture(
+        runtime.handle().clone(),
+        spawner,
+        capture,
+    ))
+    .with_computing(1);
     let first = open(&service);
     entered.recv_timeout(TIMEOUT).unwrap();
     let mut waiting_session = open(&service);
@@ -144,10 +227,96 @@ fn closing_a_waiting_comparison_ends_it_without_preparing() {
     drop(release);
     assert!(
         entered.recv_timeout(Duration::from_millis(200)).is_err(),
-        "the closed comparison never opened a file"
+        "the closed comparison never read a file"
     );
     first.close();
     drop((first, waiting_session, service));
+    runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
+}
+
+/// An open that blocks (an unresponsive share) holds no permit: with one permit, another
+/// comparison is prepared and presented meanwhile.
+#[test]
+fn an_open_that_blocks_holds_no_permit() {
+    let runtime = runtime();
+    let (owner, spawner) = crate::resident_test_support::workers();
+    let (entered, arrived) = mpsc::channel();
+    let (release, wait) = mpsc::channel::<()>();
+    let wait = Mutex::new(wait);
+    let entered = Mutex::new(entered);
+    let opens = AtomicUsize::new(0);
+    let capture: NativeCapture = Arc::new(move |_: &Path, _| {
+        if opens.fetch_add(1, Ordering::AcqRel) == 0 {
+            entered.lock().unwrap().send(()).unwrap();
+            let _ = wait.lock().unwrap().recv_timeout(HOLD);
+            return Err("unresponsive share".into());
+        }
+        CapturedFile::from_source(Arc::new(Text)).map_err(|error| error.to_string())
+    });
+    let service = quiet(Service::with_native_capture(
+        runtime.handle().clone(),
+        spawner,
+        capture,
+    ))
+    .with_computing(1);
+    let stuck = open(&service);
+    arrived.recv_timeout(TIMEOUT).expect("the stuck open");
+    let other = open(&service);
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match other.mailbox.take() {
+            Some(Output::Frame { .. }) => break,
+            Some(Output::ChooseFiles(choice)) => panic!("{}", choice.message),
+            _ => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the other comparison waits for the stuck open"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    drop(release);
+    for session in [&stuck, &other] {
+        session.close();
+    }
+    drop((stuck, other, service));
+    runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
+}
+
+/// A replacement sent to a waiting comparison ends that wait: the replacement opens its
+/// files and waits in its own turn, while the admitted comparison still holds the permit.
+#[test]
+fn a_replacement_ends_the_wait_of_the_comparison_it_replaces() {
+    let runtime = runtime();
+    let (owner, spawner) = crate::resident_test_support::workers();
+    let (capture, entered, release) = held_capture();
+    let service = quiet(Service::with_native_capture(
+        runtime.handle().clone(),
+        spawner,
+        capture,
+    ))
+    .with_computing(1);
+    let first = open(&service);
+    entered.recv_timeout(TIMEOUT).unwrap();
+    let second = open(&service);
+    assert!(waiting(&second));
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    second
+        .send(Input::Compare([
+            root.join("third.txt"),
+            root.join("fourth.txt"),
+        ]))
+        .unwrap();
+    assert!(waiting(&second), "the replacement waits in its own turn");
+    assert!(
+        entered.recv_timeout(Duration::from_millis(200)).is_err(),
+        "the replacement reads no file before a permit"
+    );
+    drop(release);
+    for session in [&first, &second] {
+        session.close();
+    }
+    drop((first, second, service));
     runtime.block_on(owner.shutdown(runtime.handle())).unwrap();
 }
 
@@ -157,9 +326,9 @@ fn closing_a_waiting_comparison_ends_it_without_preparing() {
 fn a_waiter_whose_status_panics_leaves_the_queue() {
     let gate = Arc::new(computing::Gate::new(1));
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    let admitted = gate.acquire(&cancel, || {}).unwrap();
+    let admitted = gate.acquire(&cancel, || false, || {}).unwrap();
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        gate.acquire(&cancel, || panic!("the waiting status failed"))
+        gate.acquire(&cancel, || false, || panic!("the waiting status failed"))
     }));
     assert!(unwound.is_err());
     drop(admitted);
@@ -167,7 +336,8 @@ fn a_waiter_whose_status_panics_leaves_the_queue() {
     let next = gate.clone();
     std::thread::spawn(move || {
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let _ = sender.send(next.acquire(&cancel, || {}).is_ok());
+        let admitted = next.acquire(&cancel, || false, || {});
+        let _ = sender.send(admitted.is_ok_and(|permit| permit.is_some()));
     });
     assert_eq!(
         receiver.recv_timeout(TIMEOUT),

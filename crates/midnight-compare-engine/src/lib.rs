@@ -787,6 +787,10 @@ impl Session {
                 state.retired = state.output.take();
             }
             state.output = Some(Output::Status("Preparing file identities…".into()));
+            // Unlocked first: a waiting worker reads the generation with the gate locked.
+            drop(state);
+            // A comparison waiting for a preparation permit gives way to its replacement.
+            self.computing.interrupt();
         }
         Ok(())
     }
