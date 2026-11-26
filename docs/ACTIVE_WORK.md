@@ -8,12 +8,15 @@ remain in the Git history (`git log -p -- docs/ACTIVE_WORK.md`).
 
 ## Current checkpoint
 
-Main of 26 November 2026, after the [0.6.0 preview](releases/0.6.0.md), published that day
-from `2c3fd113` (tag `v0.6.0`, with a signed `SHA256SUMS`;
+Main of 26 November 2026, after the [0.6.1 preview](releases/0.6.1.md), published that day
+from `3a83b533` (tag `v0.6.1`, with a signed `SHA256SUMS`;
+[release record](verification/2026-11-26-release-0.6.1.md)): any number of viewer and
+comparator windows, larger comparisons and images, faster viewer and archive opening
+and the first Windows installer (MSI). The [0.6.0 preview](releases/0.6.0.md) was
+published that day from `2c3fd113` (tag `v0.6.0`, with a signed `SHA256SUMS`;
 [release record](verification/2026-11-26-release-0.6.0.md)): themes that follow the system's
 appearance, Harvest Navigator as the default icon, the Linux GVfs drive list and release
-builds without debug symbols. Since that tag main has the video viewer's volume and mute,
-faster small-file copies and command icon cleanup. The [0.5.4 preview](releases/0.5.4.md) was published on 25 November from
+builds without debug symbols. The [0.5.4 preview](releases/0.5.4.md) was published on 25 November from
 `510d9abc` (tag `v0.5.4`, with a signed `SHA256SUMS`;
 [release record](verification/2026-11-25-release-0.5.4.md)): the installation-securing fix
 for junctions and symbolic links, the ordering fixes and the faster Find sorting below.
@@ -47,9 +50,10 @@ The documents describe this source.
   Windows acceptance run `20261125-092639` passed selection, Cancel, save, restart
   and Reset. A native Windows test checked the selected artwork for both title-bar
   and taskbar icons on first display and after switching. All 103 settings tests passed.
-- **Acceptance.** The last whole-suite runs are the 0.6.0 release runs at `2c3fd113`:
-  Windows 114 and Linux 116 of 119 passed with no failure
-  ([release record](verification/2026-11-26-release-0.6.0.md)). The area records list every run,
+- **Acceptance.** The last whole-suite runs are the 0.6.1 release runs at `3a83b533`:
+  Linux 115 of 119 passed with no failure; Windows 113 passed, and its one failure,
+  `find_archives`' search of 301 archives ending Incomplete, passed when run alone and is
+  being investigated ([release record](verification/2026-11-26-release-0.6.1.md)). The area records list every run,
   each check's latest status, the open findings and the reruns still pending:
   [panels](developer/acceptance/panels.md), [transfers](developer/acceptance/transfers.md),
   [Find](developer/acceptance/find.md), [viewers](developer/acceptance/viewers.md),
@@ -57,8 +61,8 @@ The documents describe this source.
   [tools](developer/acceptance/tools.md), [journeys](developer/acceptance/journeys.md),
   [UI polish](developer/acceptance/ui-polish.md) and the
   [Windows run](developer/acceptance/windows.md).
-- **CI.** Hosted runs pass every job on Windows and Linux at `2c3fd113` (the 0.6.0 tag)
-  ([release record](verification/2026-11-26-release-0.6.0.md#ci));
+- **CI.** Hosted runs pass every job on Windows and Linux at `3a83b533` (the 0.6.1 tag)
+  ([release record](verification/2026-11-26-release-0.6.1.md#ci));
   the CI time record is at `2b901122` ([CI time record](verification/2026-11-21-ci-time.md)).
 - **Not qualified.** Native and manual qualifications that automated runs cannot
   provide are listed under PLAT-02; macOS is PLAT-01.
