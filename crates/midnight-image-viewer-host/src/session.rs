@@ -50,7 +50,7 @@ const MAX_OPEN_READ_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_OPEN_READS: usize = 32_768;
 
 /// One persistent restricted decoder. Creation, rendering, close and Drop are backend-only.
-/// Memory is capped at 1 GiB, retained RGBA at 128 MiB (the published API's
+/// Memory is capped at 1 GiB, retained RGBA at 256 MiB (the published API's
 /// `MAX_DECODED_BYTES`); cumulative process CPU is 60 seconds. Open reads at most 1 GiB of
 /// source in at most 32,768 requests.
 /// Each operation additionally has the supplied wall-clock deadline and cancellation flag.
@@ -677,7 +677,8 @@ mod limit_tests {
         assert_eq!(MAX_OPEN_READ_BYTES, 1 << 30);
         // As before, the requests reach the byte budget at an average of 32 KiB each.
         assert_eq!(MAX_OPEN_READ_BYTES / MAX_OPEN_READS as u64, 32 * 1024);
-        // The decoded RGBA bound stays the published API's.
-        assert_eq!(api::MAX_DECODED_BYTES, 128 << 20);
+        // The decoded RGBA bound is the published API's: 256 MiB since API 0.4.0
+        // (owner decision of 26 November 2026).
+        assert_eq!(api::MAX_DECODED_BYTES, 256 << 20);
     }
 }

@@ -158,7 +158,7 @@ One Git repository contains **separate Cargo workspaces**:
 | `filesystem-api/Cargo.toml` | Archive worker protocol and native filesystem API/SDK | Separate public wire and C ABI contracts; no application crates |
 | `worker-api/Cargo.toml` | Restricted executable startup SDK | Public platform containment contract |
 | `thumbnail-api/Cargo.toml` | Brokered media reads and bounded RGBA frame protocol | Independent public API/SDK; no application crates |
-| `image-viewer-api/Cargo.toml` | Raster image/document API 0.3.0 and SDK 0.4.0 | Versioned public page metadata, bounded viewport messages and sanitized failure reasons |
+| `image-viewer-api/Cargo.toml` | Raster image/document API 0.4.0 and SDK 0.5.0 | Versioned public page metadata, bounded viewport messages and sanitized failure reasons |
 | `web-viewer-api/Cargo.toml` | Interactive web viewer API and SDK 0.4.0 | Bounded frame/input process protocol; no third-party dependencies |
 | `plugins/midnight-thumbnail-image/`, `plugins/midnight-thumbnail-video/` | Image and video frame decoding | Released thumbnail/worker SDK, the shared image decoder (images) and plugin-owned codecs/tests |
 | `plugins/midnight-fs-archive/` | ZIP, 7z, TAR and GZIP/XZ/BZIP2/Zstandard streams and TAR wrappers | Released filesystem API and worker SDK plus plugin-owned parsers |

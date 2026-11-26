@@ -66,7 +66,7 @@ pub(super) fn decode(reader: impl Read, target: Option<(u32, u32)>) -> io::Resul
     let bounds = target.unwrap_or(original);
     let width = ((size.width() * scale).ceil().max(1.0) as u32).min(bounds.0);
     let height = ((size.height() * scale).ceil().max(1.0) as u32).min(bounds.1);
-    super::validate_dimensions(width, height)?;
+    super::validate_dimensions(width, height, super::MAX_DECODED_BYTES)?;
     let transform = tiny_skia::Transform::from_scale(scale, scale);
     let retained = census.tree_bytes().saturating_add(images.retained());
     render_cost::check(&tree, transform, (width, height), retained)?;
@@ -122,7 +122,7 @@ fn conversion(error: usvg::Error) -> io::Error {
 
 /// The original size must fit the decoder's raster limits, even for a small thumbnail.
 fn dimensions((width, height): (u32, u32)) -> io::Result<()> {
-    if super::validate_dimensions(width, height).is_ok() {
+    if super::validate_dimensions(width, height, super::MAX_DECODED_BYTES).is_ok() {
         return Ok(());
     }
     let edge = super::MAX_DECODED_EDGE;

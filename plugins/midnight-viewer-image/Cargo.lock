@@ -399,15 +399,15 @@ dependencies = [
 
 [[package]]
 name = "midnight-image-viewer-api"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "130fc9ed5a36d3e06840d5ed41d7130585a24dc33fe6e9ed4c9e6c9231e14cad"
+checksum = "07db8a23324a8081b45713e30637f35e31a647938e70e225d2e028b5fa584be6"
 
 [[package]]
 name = "midnight-image-viewer-sdk"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "baf0111ac5832369979b611066d5b201168d921489875a3ea7d5b6298c11274c"
+checksum = "396b9eab14526a0f2d1a1f17f13ea7cd39a1af6a909be5e99a293025491f9081"
 dependencies = [
  "midnight-image-viewer-api",
  "midnight-worker-sdk",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-viewer-image"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "image",
  "midnight-image-decoder",

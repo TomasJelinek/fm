@@ -6,22 +6,34 @@ use image::{
     DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage, metadata::Orientation,
 };
 use moxcms::{ColorProfile, DataColorSpace, Layout};
-use std::io::{self, BufRead, Cursor, Read, Seek};
+use std::io::{self, BufRead, Cursor, Read, Seek, SeekFrom};
 mod avif;
 mod svg;
 mod window;
 
 /// Original dimensions and RGBA storage are bounded independently of requested thumbnails.
 pub(crate) const MAX_DECODED_EDGE: u32 = 32768;
-/// Maximum retained original RGBA bytes.
-pub(crate) const MAX_DECODED_BYTES: u64 = 128 * 1024 * 1024;
+/// Maximum retained original RGBA bytes of a full decode, also the decoder's native
+/// allocation budget: the image viewer API's `MAX_DECODED_BYTES` (256 MiB since API 0.4.0).
+pub(crate) const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
+/// The same budget for the original of a thumbnail. Thumbnail workers have 512 MiB of
+/// memory, half of an image viewer's, so they keep the former 128 MiB: a decode needs a
+/// multiple of its output (a progressive JPEG keeps two bytes of coefficients per sample).
+pub(crate) const MAX_THUMBNAIL_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
+/// Largest JPEG file for a full decode. image-rs reads a JPEG to its end into a growing
+/// buffer (128 MiB for this file size) before decoding, and a progressive CMYK JPEG then
+/// keeps two bytes of coefficients per sample besides its output: about 710 MiB at
+/// 256 MiB of RGBA. Measured peak with this bound: 835 MiB of the image workers' 1 GiB
+/// (a 128 MiB file grew its buffer to 256 MiB and peaked at 963 MiB). Thumbnails are
+/// unchanged.
+pub(crate) const MAX_JPEG_FILE_BYTES: u64 = 96 * 1024 * 1024;
 
-fn validate_dimensions(width: u32, height: u32) -> io::Result<()> {
+fn validate_dimensions(width: u32, height: u32, max_bytes: u64) -> io::Result<()> {
     if width == 0
         || height == 0
         || width > MAX_DECODED_EDGE
         || height > MAX_DECODED_EDGE
-        || u64::from(width) * u64::from(height) * 4 > MAX_DECODED_BYTES
+        || u64::from(width) * u64::from(height) * 4 > max_bytes
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -46,6 +58,7 @@ pub struct Decoded {
 /// Decode a first still frame to oriented straight-alpha sRGB RGBA8.
 /// A thumbnail bound preserves aspect ratio and never enlarges the original.
 /// SVG rasterizes directly at that size instead of allocating its full original raster.
+/// A raster original has at most 256 MiB of RGBA, or 128 MiB for a thumbnail.
 pub fn decode<R: Read + Seek + ?Sized>(
     stream: &mut R,
     thumbnail: Option<(u32, u32)>,
@@ -63,7 +76,7 @@ pub fn decode_with_note<R: Read + Seek + ?Sized>(
     thumbnail: Option<(u32, u32)>,
 ) -> io::Result<Decoded> {
     if let Some((width, height)) = thumbnail {
-        validate_dimensions(width, height)?;
+        validate_dimensions(width, height, MAX_DECODED_BYTES)?;
     }
     // Each broker read crosses a process boundary and validates the captured
     // source. Batch decoder reads without preloading the complete file, and keep
@@ -73,19 +86,43 @@ pub fn decode_with_note<R: Read + Seek + ?Sized>(
     if reader.format().is_none() {
         return svg::decode(reader.into_inner(), thumbnail);
     }
+    let reader = if thumbnail.is_none() && reader.format() == Some(ImageFormat::Jpeg) {
+        let mut source = reader.into_inner();
+        let start = source.stream_position()?;
+        let end = source.seek(SeekFrom::End(0))?;
+        source.seek(SeekFrom::Start(start))?;
+        if end.saturating_sub(start) > MAX_JPEG_FILE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                format!(
+                    "This JPEG file is larger than {} MiB, the limit for JPEG images.",
+                    MAX_JPEG_FILE_BYTES >> 20
+                ),
+            ));
+        }
+        ImageReader::with_format(source, ImageFormat::Jpeg)
+    } else {
+        reader
+    };
+    let budget = if thumbnail.is_some() {
+        MAX_THUMBNAIL_SOURCE_BYTES
+    } else {
+        MAX_DECODED_BYTES
+    };
     Ok(Decoded {
-        pixels: raster(reader, thumbnail)?,
+        pixels: raster(reader, thumbnail, budget)?,
         note: None,
     })
 }
 
 /// Decode an image that an SVG embeds as a `data:` URI: PNG, JPEG, GIF or WebP, with
-/// every limit of a raster file. Never SVG, so embedding cannot recurse.
-pub(crate) fn embedded_raster(bytes: &[u8]) -> io::Result<RgbaImage> {
+/// every limit of a raster file, but at most `max_bytes` of pixels. Never SVG, so
+/// embedding cannot recurse.
+pub(crate) fn embedded_raster(bytes: &[u8], max_bytes: u64) -> io::Result<RgbaImage> {
     let reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     match reader.format() {
         Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP) => {
-            raster(reader, None)
+            raster(reader, None, max_bytes)
         }
         _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -94,14 +131,16 @@ pub(crate) fn embedded_raster(bytes: &[u8]) -> io::Result<RgbaImage> {
     }
 }
 
+/// Decode a raster whose native and RGBA8 pixels each fit `max_bytes`.
 fn raster<R: BufRead + Seek>(
     mut reader: ImageReader<R>,
     thumbnail: Option<(u32, u32)>,
+    max_bytes: u64,
 ) -> io::Result<RgbaImage> {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_DECODED_EDGE);
     limits.max_image_height = Some(MAX_DECODED_EDGE);
-    limits.max_alloc = Some(MAX_DECODED_BYTES);
+    limits.max_alloc = Some(max_bytes);
     let mut decoder: Box<dyn ImageDecoder + '_> =
         if reader.format() == Some(image::ImageFormat::Avif) {
             let mut decoder = avif::decoder(reader.into_inner())?;
@@ -112,8 +151,8 @@ fn raster<R: BufRead + Seek>(
             Box::new(reader.into_decoder().map_err(io::Error::other)?)
         };
     let (width, height) = decoder.dimensions();
-    validate_dimensions(width, height)?;
-    if decoder.total_bytes() > MAX_DECODED_BYTES {
+    validate_dimensions(width, height, max_bytes)?;
+    if decoder.total_bytes() > max_bytes {
         return Err(io::Error::other("Decoded image exceeds allocation budget"));
     }
     let orientation = decoder.orientation().map_err(io::Error::other)?;

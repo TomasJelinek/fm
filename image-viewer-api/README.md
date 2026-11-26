@@ -1,4 +1,4 @@
-# Restricted raster API 0.3.0 and SDK 0.4.0
+# Restricted raster API 0.4.0 and SDK 0.5.0
 
 This independent public workspace exposes a filename-free, bounded protocol and
 worker runtime. Providers use the released SDK registry package, never private
@@ -20,8 +20,14 @@ Open, document metadata or a render fails; its interface is otherwise unchanged.
 Hosts before 0.3.0 stop reading at `Failure`, so they never see the reason; newer
 hosts read on until the reason or the end of the stream (bounded) before stopping
 the worker, and keep their plain message when a worker before SDK 0.4.0 sends none.
+API 0.4.0 raises `MAX_DECODED_BYTES`, the original image's RGBA8 budget that both
+`Metadata::validate` and providers' decoders apply, from 128 MiB to 256 MiB; nothing
+else changes. SDK 0.5.0 only depends on API 0.4.0 instead of 0.3.0. The wire format is
+unchanged and not negotiated: a host before 0.4.0 refuses a newer worker's metadata
+above 128 MiB as an invalid message (its plain "damaged or incomplete" text), which
+is accepted because the viewer plugins ship with the application.
 The image and PDF viewer plugins pin
-SDK 0.4.0. Provider error texts therefore reach the viewer's status line: keep them
+SDK 0.5.0. Provider error texts therefore reach the viewer's status line: keep them
 short and free of paths.
 Released packages are immutable: a change ships as a new version, never as
 different contents for an existing one.

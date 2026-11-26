@@ -38,7 +38,7 @@ impl FrameCache {
             ));
         }
         // Validated viewport dimensions cap this cache at 16 MiB. Original
-        // pixels retain their independent 128 MiB limit; no scaled image of
+        // pixels retain their independent 256 MiB limit; no scaled image of
         // arbitrary source/zoom dimensions is allocated.
         *retained = Some((viewport, frame.clone()));
         Ok(frame)

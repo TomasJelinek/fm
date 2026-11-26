@@ -1,8 +1,8 @@
 //! Raster images that an SVG embeds as `data:` URIs.
 //!
 //! usvg decodes the base64 of each `data:` URI and asks this resolver for an image. PNG,
-//! JPEG, GIF and WebP go through the crate's raster path with every limit of a raster
-//! file (32768-pixel edges, 128 MiB of pixels, ICC to sRGB, orientation) and come back as
+//! JPEG, GIF and WebP go through the crate's raster path with the limits of a raster
+//! file (32768-pixel edges, ICC to sRGB, orientation; 128 MiB of pixels) and come back as
 //! a PNG of those pixels, so resvg only ever decodes images that this crate encoded.
 //! Identical data is decoded once, and the pixels of all distinct images share one budget.
 //! Linked images (file paths and URLs) reach the string resolver, which opens nothing.
@@ -18,8 +18,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Decoded pixels of all distinct embedded images together: one raster file's limit.
-pub(super) const MAX_EMBEDDED_BYTES: u64 = crate::MAX_DECODED_BYTES;
+/// Decoded pixels of all distinct embedded images together, and of each one. It stays at
+/// 128 MiB, half of a raster file's 256 MiB: an embedded image is decoded in thumbnail
+/// workers (512 MiB) too, and its PNG copy and resvg's decoded copy share the drawing
+/// memory with the canvas.
+pub(super) const MAX_EMBEDDED_BYTES: u64 = 128 * 1024 * 1024;
 
 /// The resolver's state, shared with the decoder that reads its results afterwards.
 #[derive(Clone, Default)]
@@ -89,7 +92,8 @@ impl Images {
 impl State {
     /// Decode a new image within the shared budget, or record that one was skipped.
     fn decode(&mut self, data: &[u8]) -> Option<Arc<Vec<u8>>> {
-        let png = crate::embedded_raster(data).ok().and_then(|pixels| {
+        let pixels = crate::embedded_raster(data, MAX_EMBEDDED_BYTES).ok();
+        let png = pixels.and_then(|pixels| {
             let bytes = u64::from(pixels.width()) * u64::from(pixels.height()) * 4;
             if self.pixel_bytes.saturating_add(bytes) > MAX_EMBEDDED_BYTES {
                 return None;

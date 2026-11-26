@@ -12,7 +12,7 @@ exact reason and bound: 4 MiB of source, 262,144 XML nodes, depth 64, an estimat
 pixel operations at the drawing size (the
 [decoder contract](../image-decoder/README.md#svg) lists them all). The decoder's
 note naming skipped content does not reach the status line until image viewer API
-0.4.0 (VIEW-06). Embedded Noto Sans supplies Latin, Arabic and Hebrew fallback;
+0.5.0 (VIEW-06). Embedded Noto Sans supplies Latin, Arabic and Hebrew fallback;
 system-font appearance and full Unicode coverage are not promised.
 Font provenance and OFL terms are retained in `notices/Noto-Sans/`.
 AVIF uses that same shared decoder with statically linked dav1d 1.5.4. Its encoded
@@ -32,15 +32,17 @@ Only the released `midnight-image-viewer-sdk`/API and worker SDK are host
 dependencies. The process enters its Windows AppContainer or Linux worker
 restriction before reading content. The protocol contains no path, URL, native
 handle, UI object or executable command. Decoding has a 32768-pixel edge and
-128 MiB decoded-data budget; viewports have 4096-pixel edges and at most 4 Mi pixels.
+256 MiB decoded-data budget (`MAX_DECODED_BYTES` of API 0.4.0); viewports have
+4096-pixel edges and at most 4 Mi pixels.
 Opaque source reads are at most 256 KiB. Decoder reads use a seek-preserving window
 of at most 256 KiB that batches small codec reads and keeps fetched bytes across
 codec seeks, so seeking codecs (TIFF strips and tiles) stay within the host's read
 budget. The host enforces read volume, read
-count, source revision, per-response deadlines and a 512 MiB/60 CPU-second process limit.
+count, source revision, per-response deadlines and a 1 GiB/60 CPU-second process limit.
 The CPU allowance is cumulative across a session; exhaustion ends that session.
 
-Version 0.3.0 pins SDK 0.4.0 (API 0.3.0). When decoding fails, the SDK sends the
+Version 0.4.0 pins SDK 0.5.0 (API 0.4.0), whose decoded-data budget is 256 MiB instead
+of 128 MiB; version 0.3.0 pinned SDK 0.4.0 (API 0.3.0). When decoding fails, the SDK sends the
 decoder's error text, sanitized to at most 160 printable ASCII characters without
 paths, after the failure, and the host shows it after its own sentence, for example
 "This image is damaged or incomplete: the file is empty". The shared decoder names

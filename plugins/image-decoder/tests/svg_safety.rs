@@ -237,7 +237,7 @@ fn excessive_dimensions_and_nodes_are_refused_even_for_tiny_thumbnails() {
         ),
         (
             r#"width="20000" height="20000""#,
-            "This SVG is 20000 x 20000 pixels, more than the limit of 128 MiB of pixels.",
+            "This SVG is 20000 x 20000 pixels, more than the limit of 256 MiB of pixels.",
         ),
         (
             r#"width="0" height="20""#,

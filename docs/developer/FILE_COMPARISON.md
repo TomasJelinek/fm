@@ -125,7 +125,7 @@ is bounded as follows instead:
   outside the gate; byte scans and reads still pass the process-wide I/O gate.
 - **Memory.** Each open comparison keeps what its files need: up to about 2.5 times its
   two texts (at most 64 MiB each), the byte-view and scan buffers, or two image workers
-  (each at most 1 GiB, with at most 128 MiB of decoded RGBA, `MAX_DECODED_BYTES` of the
+  (each at most 1 GiB, with at most 256 MiB of decoded RGBA, `MAX_DECODED_BYTES` of the
   published image-viewer API) that live as long as the comparison. Many large
   comparisons open together therefore add up; preparation peaks are bounded by the gate.
 - **Comparator policies.** Each session pins the settings generation it opened with; the

@@ -4,9 +4,12 @@ use image::codecs::avif::AvifDecoder;
 use std::io::{self, Cursor, Read};
 
 pub(crate) const MAX_ENCODED_BYTES: u64 = 32 * 1024 * 1024;
-// Worst case: 16-bit 4:4:4 color plus 16-bit alpha uses eight bytes per pixel.
+// Worst case: 16-bit 4:4:4 color plus 16-bit alpha uses eight bytes per pixel, so this
+// is 128 MiB of native frames. It stays at 16 Mi pixels (an eighth of the former 128 MiB
+// decoded budget) and does not grow with the 256 MiB budget: dav1d's frames, image-rs's
+// 16-bit copy and an orientation's second copy then still fit the worker's memory.
 // Native references, parser staging and conversion scratch remain process-contained.
-const MAX_FRAME_PIXELS: u32 = (super::MAX_DECODED_BYTES / 8) as u32;
+const MAX_FRAME_PIXELS: u32 = 16 * 1024 * 1024;
 
 pub(crate) fn decoder<R: Read>(reader: R) -> io::Result<AvifDecoder<Cursor<Vec<u8>>>> {
     with_budgets(reader, MAX_ENCODED_BYTES, MAX_FRAME_PIXELS)

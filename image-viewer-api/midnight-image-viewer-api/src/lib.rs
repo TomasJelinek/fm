@@ -10,7 +10,7 @@ pub const MAX_PIXELS: u64 = 4 * 1024 * 1024;
 /// Maximum decoded edge before or after orientation.
 pub const MAX_DECODED_EDGE: u32 = 32768;
 /// Maximum retained decoded RGBA8 allocation, also applied to decoder allocations.
-pub const MAX_DECODED_BYTES: u64 = 128 * 1024 * 1024;
+pub const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
 /// Maximum opaque source read or reply.
 pub const MAX_READ_BYTES: usize = 256 * 1024;
 /// Smallest supported physical-pixels-per-image-pixel scale.

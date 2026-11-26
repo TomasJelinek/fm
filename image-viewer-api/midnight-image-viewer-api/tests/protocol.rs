@@ -80,7 +80,7 @@ fn output_and_decode_budgets_are_independent() {
     assert!(
         Metadata {
             width: 32768,
-            height: 1024
+            height: 2048
         }
         .validate()
         .is_ok()
@@ -88,7 +88,7 @@ fn output_and_decode_budgets_are_independent() {
     assert!(
         Metadata {
             width: 32768,
-            height: 1025
+            height: 2049
         }
         .validate()
         .is_err()
@@ -100,6 +100,47 @@ fn output_and_decode_budgets_are_independent() {
         }
         .validate()
         .is_err()
+    );
+}
+
+#[test]
+fn decoded_images_up_to_256_mib_of_rgba_are_accepted() {
+    // API 0.4.0 raised the decoded-byte budget from 128 MiB to 256 MiB.
+    assert_eq!(api::MAX_DECODED_BYTES, 256 << 20);
+    // 244 MiB of RGBA, above the former 128 MiB, is accepted on the wire too.
+    let large = Metadata {
+        width: 8000,
+        height: 8000,
+    };
+    assert!(large.validate().is_ok());
+    let mut bytes = Vec::new();
+    api::write_message(&mut bytes, &Message::Metadata(large)).unwrap();
+    assert_eq!(
+        api::read_message(&mut bytes.as_slice()).unwrap(),
+        Message::Metadata(large)
+    );
+    // Exactly 256 MiB is the largest; one more row is refused.
+    let exact = Metadata {
+        width: 8192,
+        height: 8192,
+    };
+    assert!(exact.validate().is_ok());
+    let over = Metadata {
+        width: 8192,
+        height: 8193,
+    };
+    assert!(over.validate().is_err());
+    assert!(api::write_message(&mut Vec::new(), &Message::Metadata(over)).is_err());
+    let mut bytes = b"MIV1".to_vec();
+    bytes.extend_from_slice(&9u32.to_le_bytes());
+    bytes.push(2);
+    bytes.extend_from_slice(&8192u32.to_le_bytes());
+    bytes.extend_from_slice(&8193u32.to_le_bytes());
+    assert!(api::read_message(&mut bytes.as_slice()).is_err());
+    bytes[13..].copy_from_slice(&8192u32.to_le_bytes());
+    assert_eq!(
+        api::read_message(&mut bytes.as_slice()).unwrap(),
+        Message::Metadata(exact)
     );
 }
 

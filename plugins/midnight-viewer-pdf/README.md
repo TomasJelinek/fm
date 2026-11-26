@@ -1,7 +1,7 @@
 # PDF viewer
 
 Independent, removable PDF raster provider for Midnight Explorer. It depends only
-on the released public raster SDK 0.4.0 (API 0.3.0) and pinned `hayro` 0.9.0; no private host
+on the released public raster SDK 0.5.0 (API 0.4.0) and pinned `hayro` 0.9.0; no private host
 crate or UI toolkit is linked. Installing/removing its package requires restart.
 Windows x86-64 and Linux x86-64/aarch64 use the existing native worker sandbox.
 Hayro itself is portable Rust; a macOS host sandbox has not been implemented.

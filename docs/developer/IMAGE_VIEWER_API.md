@@ -1,18 +1,21 @@
 # Restricted image and document viewer API
 
 Image and paginated document viewers are independent executable packages. The public workspace is
-`image-viewer-api/`, containing `midnight-image-viewer-api` version 0.3.0 and
-`midnight-image-viewer-sdk` version 0.4.0. Plugins consume immutable released
+`image-viewer-api/`, containing `midnight-image-viewer-api` version 0.4.0 and
+`midnight-image-viewer-sdk` version 0.5.0. Plugins consume immutable released
 registry packages; they never depend on or patch application crates. The SDK
 uses the shared public `midnight-worker-sdk` (0.2.0) for sandbox startup. The
 separate host crate is `midnight-image-viewer-host`.
 
 API version 0.2.0 preserves every existing MIV1 image message and adds paginated
 document messages. API 0.3.0 adds the failure reason (tag 10, see
-[Failure reasons](#failure-reasons)); every earlier message is unchanged. SDK 0.3.0
-built on `midnight-worker-sdk` 0.2.0; SDK 0.4.0 also sends the reason. Existing
-0.1.0 release archives remain immutable; the image viewer (0.3.0) and PDF viewer
-(0.2.0) plugins explicitly pin SDK 0.4.0 and its lockfile checksums.
+[Failure reasons](#failure-reasons)); every earlier message is unchanged. API 0.4.0
+raises `MAX_DECODED_BYTES` from 128 MiB to 256 MiB and changes nothing else (see
+[Decoded-size compatibility](#decoded-size-compatibility)). SDK 0.3.0 built on
+`midnight-worker-sdk` 0.2.0; SDK 0.4.0 also sends the reason; SDK 0.5.0 only pins API
+0.4.0, so its worker accepts the larger images. Existing 0.1.0 release archives remain
+immutable; the image viewer (0.4.0) and PDF viewer (0.3.0) plugins explicitly pin SDK
+0.5.0 and its lockfile checksums.
 Both public member manifests declare their version explicitly. They must not
 inherit `version.workspace`: Cargo also adopts the API as a host path dependency,
 where the root application workspace has an independent version. Release archive
@@ -96,7 +99,7 @@ images embedded as `data:` URIs (PNG, JPEG, GIF, WebP, decoded by the raster pat
 with its limits). Scripts and event attributes are never run, `foreignObject` is
 skipped (a `switch` draws its SVG fallback), and links to files or URLs (images,
 `use`, paint and effect references) are never opened. The decoder names skipped
-content in a note (`decode_with_note`); API 0.3.0 cannot carry it to the status line
+content in a note (`decode_with_note`); API 0.4.0 cannot carry it to the status line
 yet (VIEW-06 in the [backlog](../IMPLEMENTATION_BACKLOG.md)). Entity declarations (a
 DOCTYPE internal subset), reference cycles and documents over a bound are refused
 with the exact reason and bound: 4 MiB of source, 262,144 XML nodes, depth 64, an
@@ -295,9 +298,12 @@ the encoded file; they do not guarantee that the decoder itself streams. In the
 pinned `image 0.25.10`, `JpegDecoder::new` calls `read_to_end` into its own `Vec<u8>`.
 This happens for both native and archive JPEGs, so the image worker holds the
 complete encoded JPEG during decoding, in addition to decoded pixels; that input is
-dropped after decode. A future format-specific decoder could read only an embedded
-preview. PSD is not supported. The raster plugin retains
-the complete decoded still image, within its pixel budget.
+dropped after decode. The image viewer therefore refuses a JPEG file over 96 MiB: a
+progressive CMYK JPEG of 256 MiB of RGBA keeps about 512 MiB of coefficients besides its
+output, and at that bound the decode peaked at a measured 835 MiB of the worker's 1 GiB.
+A future format-specific decoder could read only an embedded preview. PSD is not
+supported. The raster plugin retains the complete decoded still image, within its pixel
+budget.
 Broker source reads are available during Open only, not in later
 render calls; deferred layer/content loading would need a separately qualified
 protocol extension.
@@ -356,7 +362,7 @@ Windows AppContainer or Linux restriction succeeds. API 0.3.0 adds `FailureReaso
 | Resource | Bound |
 |---|---|
 | Physical viewport | `MAX_EDGE = 4096`, `MAX_PIXELS = 4 * 1024 * 1024` |
-| Decoded image | `MAX_DECODED_EDGE = 32768`, `MAX_DECODED_BYTES = 128 * 1024 * 1024` |
+| Decoded image | `MAX_DECODED_EDGE = 32768`, `MAX_DECODED_BYTES = 256 * 1024 * 1024` (128 MiB before API 0.4.0) |
 | Document pages | `MAX_DOCUMENT_PAGES = 4096`; nonempty, each logical page size validates as `Metadata` |
 | PDF encoded source | 128 MiB, checked before allocation or source reads |
 | Broker read/reply | `MAX_READ_BYTES = 256 * 1024` |
@@ -399,6 +405,21 @@ filesystem/network font lookup, JavaScript and link activation are absent.
 Password prompts and PDF editing are not implemented. Hayro is experimental;
 unsupported rendering warnings reject the page and full PDF fidelity is not
 claimed. See the plugin README and bundled license notices for exact limits.
+
+### Decoded-size compatibility
+
+API 0.4.0 raises `MAX_DECODED_BYTES` from 128 MiB to 256 MiB of RGBA8 (owner decision
+of 26 November 2026, with the image workers' 1 GiB memory). The wire format is
+unchanged and there is no negotiation. Hosts and workers both validate `Metadata`
+against their own constant:
+
+- A host with API 0.4.0 accepts every worker: an older worker never reports more than
+  128 MiB.
+- A host before API 0.4.0 with a worker built on SDK 0.5.0 refuses metadata between
+  128 and 256 MiB as an invalid message, stops the worker and shows its plain "damaged
+  or incomplete" sentence, not a limit. This is accepted as is: the image and PDF
+  viewer plugins ship with the application, so a release pairs them with a matching
+  host.
 
 ### Failure reasons
 

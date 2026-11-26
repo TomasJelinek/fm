@@ -13,8 +13,14 @@ files without one. An image whose embedded profile has another color model, or a
 gray profile on a color image, fails to decode with an `Unsupported` error rather
 than being claimed sRGB. CICP-only color signalling (AVIF nclx, PNG cICP) is not
 converted: those pixels are used as sRGB. The first still frame is used. Original
-dimensions are limited to 32768 pixels per edge and 128 MiB of RGBA storage;
-profiles to 4 MiB. Thumbnails reduce the frame first, averaging colors with alpha
+dimensions are limited to 32768 pixels per edge and 256 MiB of RGBA storage
+(`MAX_DECODED_BYTES` of image viewer API 0.4.0; the decoder's own allocation has the
+same budget), or 128 MiB for the original of a thumbnail, whose workers have 512 MiB.
+A full decode refuses a JPEG file over 96 MiB ("This JPEG file is larger than 96 MiB,
+the limit for JPEG images."): image-rs holds the whole file while a progressive CMYK
+JPEG of 256 MiB of RGBA also keeps about 512 MiB of coefficients, and the bound keeps
+that case at a measured 835 MiB of the image viewer's 1 GiB. Embedded color profiles
+are limited to 4 MiB. Thumbnails reduce the frame first, averaging colors with alpha
 weights so pixels next to transparency are not darkened or tinted, and orient the
 small result afterwards. A frame that already fits the requested bound is not
 resampled.
@@ -34,7 +40,7 @@ Everything resvg draws is drawn: paths and shapes, text, gradients, patterns, ma
 (including `orient="auto-start-reverse"`), clip paths, masks, filters, local `use`,
 `switch`, style sheets and raster images embedded as `data:` URIs. Embedded PNG, JPEG,
 GIF and WebP go through this library's raster path with every raster limit (32768
-pixels per edge, 128 MiB per image, ICC to sRGB, orientation), then reach resvg as a
+pixels per edge, ICC to sRGB, orientation, but 128 MiB per image), then reach resvg as a
 PNG that this library encoded, so resvg's own decoders never see document bytes.
 Identical data is decoded once; all distinct embedded images share 128 MiB of pixels.
 
@@ -49,7 +55,7 @@ Content that is not drawn is skipped, never refused, and named in the note that
 - Embedded images that are not PNG, JPEG, GIF or WebP (BMP, nested SVG, …), are
   damaged, or exceed a raster limit or the shared budget.
 
-The note is computed and tested, but image viewer API 0.3.0 cannot carry it to the
+The note is computed and tested, but image viewer API 0.4.0 cannot carry it to the
 status line yet (VIEW-06 in the [backlog](../../docs/IMPLEMENTATION_BACKLOG.md)).
 
 A document that is malformed or over a bound is refused with the exact reason and
@@ -66,7 +72,7 @@ The bounds are protection against hostile input, generous for real files:
 | Nesting of elements and references | 64 levels | before conversion |
 | Converted tree after expanding references, estimated as 1 KiB per element plus 4 bytes per byte of attributes and text (so at most 262,144 elements or 64 MiB of data) | 256 MiB | before conversion |
 | Style-rule checks (rules × elements) | 2^27 | before conversion |
-| Original size | 32768 px per edge, 128 MiB | after conversion |
+| Original size | 32768 px per edge, 256 MiB | after conversion |
 | Memory while drawing (tree, embedded images, canvas, buffers) | 448 MiB | before rendering |
 | Weighted pixel operations at the drawing size | 2^33 | before rendering |
 
@@ -114,7 +120,9 @@ linked dav1d 1.5.4. The narrowly patched image-rs constructor receives the same
 settings before decoding either color or alpha: one thread, frame delay one,
 strict AV1 compliance, one selected layer and at most 16,777,216 pixels per frame.
 That pixel cap accounts for 16-bit 4:4:4 color plus 16-bit alpha storage; it is
-separate from the existing 32768-edge and 128 MiB decoded-output limits. Native
+separate from the existing 32768-edge and 256 MiB decoded-output limits, and stays
+at 16 Mi pixels when that limit rose from 128 MiB, keeping room for dav1d's frames,
+image-rs's copy and an orientation. Native
 references, stride padding, conversion scratch and parser metadata are additionally
 contained by the worker process budget; files near a limit can still be refused.
 The patch also ends construction with an error when the color or alpha item yields
