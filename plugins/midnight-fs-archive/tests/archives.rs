@@ -406,6 +406,77 @@ fn dot_prefixed_tar_members_form_an_ordinary_readable_tree() {
     assert_eq!(archive.read(tool.id, 0, 16).unwrap().0, b"data");
 }
 
+/// Every node below `directory`, depth first, as (ID, parent, raw name, label, kind).
+fn tree(archive: &Archive, directory: u64) -> Vec<(u64, u64, Vec<u8>, String, Kind)> {
+    let mut nodes = Vec::new();
+    for node in archive.list(directory, 0).unwrap() {
+        nodes.push((
+            node.id,
+            node.parent,
+            node.name.clone(),
+            node.display.clone(),
+            node.kind,
+        ));
+        if node.kind == Kind::Directory {
+            nodes.extend(tree(archive, node.id));
+        }
+    }
+    nodes
+}
+
+/// Names in the folder of the name before them, spelled the same way or not, with
+/// `.` components, folder records, unsafe names and names without a folder between.
+#[test]
+fn members_of_consecutive_names_find_their_folders_however_spelled() {
+    use tar::EntryType::{Directory, Regular};
+    let mut builder = tar::Builder::new(Vec::new());
+    for (name, kind) in [
+        (b"a/x".as_slice(), Regular),
+        (b"a/y", Regular),
+        (b"./a/z", Regular),
+        (b"./a/sub/", Directory),
+        (b"./a/sub/f", Regular),
+        (b"a/./sub/g", Regular),
+        (b"a/./sub/.", Directory),
+        (b"a/./sub/h", Regular),
+        (b"b/c/d", Regular),
+        (b"../e", Regular),
+        (b"b/c/e", Regular),
+        (b"top", Regular),
+    ] {
+        raw_tar_entry(&mut builder, name, kind, b"");
+    }
+    let archive = Archive::open(
+        Format::Tar,
+        builder.into_inner().unwrap(),
+        Limits::default(),
+    )
+    .unwrap();
+    let node = |id: u64, parent: u64, name: &str, kind: Kind| {
+        (id, parent, name.as_bytes().to_vec(), name.to_owned(), kind)
+    };
+    let (file, folder) = (Kind::File, Kind::Directory);
+    assert_eq!(
+        tree(&archive, 1),
+        [
+            node(2, 1, "a", folder),
+            node(3, 2, "x", file),
+            node(4, 2, "y", file),
+            node(5, 2, "z", file),
+            node(6, 2, "sub", folder),
+            node(7, 6, "f", file),
+            node(8, 6, "g", file),
+            node(9, 6, "h", file),
+            node(10, 1, "b", folder),
+            node(11, 10, "c", folder),
+            node(12, 11, "d", file),
+            node(14, 11, "e", file),
+            node(13, 1, "../e", file),
+            node(15, 1, "top", file),
+        ]
+    );
+}
+
 #[test]
 fn unsafe_directory_records_are_visible_but_not_navigable() {
     let mut builder = tar::Builder::new(Vec::new());
@@ -526,6 +597,44 @@ fn cp437_implicit_directory_preserves_decoded_display_and_raw_identity() {
     assert_eq!(
         archive.list(directory.id, 0).unwrap()[0].display,
         "file.txt"
+    );
+}
+
+/// The second member of a folder takes its label from its own decoded name too.
+#[test]
+fn cp437_members_of_one_folder_keep_their_decoded_labels() {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for name in ["cafe/fe1", "cafe/fe2"] {
+        writer.start_file(name, options).unwrap();
+        writer.write_all(b"hello").unwrap();
+    }
+    let mut source = writer.finish().unwrap().into_inner();
+    let offsets: Vec<_> = source
+        .windows(8)
+        .enumerate()
+        .filter_map(|(index, name)| name.starts_with(b"cafe/fe").then_some(index))
+        .collect();
+    for offset in offsets {
+        source[offset + 3] = 0x82;
+        source[offset + 6] = 0x82;
+    }
+    let archive = Archive::open(Format::Zip, source, Limits::default()).unwrap();
+    let directory = archive.list(1, 0).unwrap().remove(0);
+    assert_eq!(directory.display, "café");
+    let files: Vec<_> = archive
+        .list(directory.id, 0)
+        .unwrap()
+        .into_iter()
+        .map(|node| (node.name, node.display))
+        .collect();
+    assert_eq!(
+        files,
+        [
+            (b"f\x821".to_vec(), "fé1".to_owned()),
+            (b"f\x822".to_vec(), "fé2".to_owned()),
+        ]
     );
 }
 

@@ -158,6 +158,9 @@ pub struct Archive {
     storage: Rc<dyn Storage>,
     /// Folders by parent and raw name, while members are indexed.
     directories: HashMap<(u64, Vec<u8>), u64>,
+    /// The raw folder part of the last indexed name and the folder it resolved to, while
+    /// members are indexed: archives list a folder's members together.
+    last_folder: (Vec<u8>, u64),
     /// Member positions of each folder, in increasing ID order.
     children: HashMap<u64, Vec<usize>>,
     zip: Option<zip::ZipArchive<formats::Shared>>,
@@ -198,6 +201,7 @@ impl Archive {
             contents: HashMap::new(),
             storage,
             directories: HashMap::new(),
+            last_folder: (Vec::new(), 0),
             children: HashMap::new(),
             zip: None,
             zip_members: Vec::new(),

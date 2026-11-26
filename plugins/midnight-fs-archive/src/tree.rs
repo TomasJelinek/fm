@@ -90,6 +90,12 @@ fn safe_path(name: &[u8]) -> bool {
             .all(|part| !part.is_empty() && part != b"..")
 }
 
+/// The raw folder part and final component of a name that has a folder part.
+fn split_folder(raw: &[u8]) -> Option<(&[u8], &[u8])> {
+    let at = raw.iter().rposition(|b| *b == b'/')?;
+    Some((&raw[..at], &raw[at + 1..]))
+}
+
 impl Archive {
     pub(crate) fn member(&self, id: u64) -> Option<&Member> {
         self.members.get(usize::try_from(id.checked_sub(2)?).ok()?)
@@ -178,6 +184,7 @@ impl Archive {
     /// Release what only indexing needed and the spare capacity of the index.
     pub(crate) fn finish_index(&mut self) {
         self.directories = HashMap::new();
+        self.last_folder = (Vec::new(), 0);
         self.members.shrink_to_fit();
         self.names.shrink_to_fit();
         self.zip_members.shrink_to_fit();
@@ -245,6 +252,23 @@ impl Archive {
             };
             return self.push(1, raw, display, kind, data, access);
         }
+        // A name in the folder the last name resolved to: the same raw folder part
+        // resolves to the same folder, which indexing never removes. The final
+        // component is not `.`, so it is the member's name and its label is the
+        // display's last component, as in the general walk below.
+        if let Some((folder, name)) = split_folder(raw)
+            && name != b"."
+            && self.last_folder.1 != 0
+            && self.last_folder.0 == folder
+        {
+            let parent = self.last_folder.1;
+            let label = display
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or_default();
+            return self.index_member(parent, name, label, kind, data, access);
+        }
         let parts: Vec<&[u8]> = raw.split(|b| *b == b'/').collect();
         let labels: Vec<&str> = display.trim_end_matches('/').split('/').collect();
         let matching = parts.len() == labels.len();
@@ -271,6 +295,26 @@ impl Archive {
         for (part, label) in parents {
             parent = self.directory(parent, part, label)?;
         }
+        if let Some((folder, last)) = split_folder(raw)
+            && last != b"."
+        {
+            self.last_folder.0.clear();
+            self.last_folder.0.extend_from_slice(folder);
+            self.last_folder.1 = parent;
+        }
+        self.index_member(parent, name, label, kind, data, access)
+    }
+
+    /// Index the member `name` with its `label` below the folder `parent`.
+    fn index_member(
+        &mut self,
+        parent: u64,
+        name: &[u8],
+        label: &str,
+        kind: Kind,
+        data: Option<Content>,
+        access: Access,
+    ) -> Result<u64, Error> {
         if kind == Kind::Directory {
             return self.directory(parent, name, label);
         }
