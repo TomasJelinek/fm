@@ -270,8 +270,8 @@ const PANEL_MENUS: [(&str, &[(&str, &str)]); 2] = [
     (
         "Left panel view mode",
         &[
-            ("Detailed", "view.detailed"),
             ("Brief", "view.brief"),
+            ("Detailed", "view.detailed"),
             ("Thumbnails", "view.thumbnails"),
             ("Hide hidden files", "panel.hidden-files"),
         ],

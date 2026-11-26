@@ -1,6 +1,7 @@
 import { HScrollView, VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
+import { FieldButton, HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
+import { FallbackIcons } from "action-icons.slint";
 import { ThemedLineEdit } from "content-controls.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
@@ -466,10 +467,12 @@ export component OperationDialog inherits Rectangle {
                             changed has-focus => { if self.has-focus { root.reveal-middle(name-row.y, self.height); } }
                             accepted => { if root.confirm-enabled && self.text != "" { root.confirm(self.text); } }
                         }
-                        browse := HintedActionButton {
+                        // A field's Browse button: the drawn folder-with-ellipsis icon, centred,
+                        // as in Checksums and Find (a font's "…" sits off the button's centre).
+                        browse := FieldButton {
                             visible: root.transfer; enabled: root.transfer && !root.picking-destination;
-                            text: "…"; hint: "Browse for the destination folder.";
-                            compact: true; vertical-padding: 0px;
+                            text: "Browse…"; fallback-icon: FallbackIcons.browse;
+                            hint: "Browse for the destination folder.";
                             width: root.name-height; height: root.name-height;
                             accessible-label: "Browse for destination folder";
                             clicked => { root.browse-destination(name.text); }

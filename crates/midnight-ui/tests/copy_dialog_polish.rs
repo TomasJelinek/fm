@@ -912,7 +912,8 @@ fn embedded_move_destination_browse_keeps_the_draft_and_ignores_late_results() {
     assert!(button.0 >= field.2 && button.0 - field.2 <= 10.0);
     assert!((button.1 - field.1).abs() <= 1.0 && (button.3 - field.3).abs() <= 1.0);
     assert_eq!(button, visible);
-    assert!(h.drawn().iter().any(|text| text == "…"));
+    // The drawn folder-with-ellipsis icon, not a font's "…" (which sat off centre).
+    assert!(!h.drawn().iter().any(|text| text == "…"));
     h.commands.borrow_mut().clear();
     h.tab(false);
     h.key(Key::Return);
