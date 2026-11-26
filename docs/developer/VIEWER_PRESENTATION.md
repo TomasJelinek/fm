@@ -179,6 +179,10 @@ and does not guess one. Where absolute origins exist (Windows, X11) the shown
 viewer's client origin is checked against the parent's and a decoration-sized error
 is corrected once; on Wayland the compositor positions it
 ([window geometry](../verification/window-geometry.md#viewer-placement-over-the-main-window)).
+The check ends without moving or resizing the viewer once it keeps moving after the
+window manager placed it (a drag) or gets a size other than the mapped or requested
+one (a resize), so a user's drag is not snapped back or learned as an offset
+(`Track::step` in `crates/midnight-ui-input/src/placement.rs`).
 
 Each displayed raster retains the logical viewport against which its effective
 pixel dimensions were mapped. Showing the source or Markdown controls can shrink

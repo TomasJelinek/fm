@@ -1,4 +1,4 @@
-use super::{Correction, correction, learned_offset};
+use super::{Correction, Sample, Step, Track, correction, learned_offset};
 
 /// A window manager's placement model in physical pixels: where a requested outer
 /// origin puts the client, and the outer origin it then reports back.
@@ -217,4 +217,91 @@ fn only_normal_frames_with_native_origins_are_verified_after_showing() {
     // Headless platforms: Slint's origin is requested, nothing is verified.
     let headless = placement(Some((10, 20)), None, false, false);
     assert_eq!(headless.alignment(headless.requested((0, 0))), None);
+}
+
+const SIZE: (u32, u32) = (2250, 1575);
+
+fn at(client: (i32, i32)) -> Sample {
+    Sample { client, size: SIZE }
+}
+
+/// Steps of one alignment check over `samples`, stopping where the check would.
+fn steps(samples: &[Sample]) -> Vec<Step> {
+    let mut track = Track::default();
+    let mut steps = Vec::new();
+    for sample in samples {
+        let step = track.step(*sample, SIZE);
+        let done = step == Step::Stop;
+        steps.push(step);
+        if done {
+            break;
+        }
+    }
+    steps
+}
+
+#[test]
+fn a_placement_is_checked_once_two_samples_agree() {
+    assert_eq!(
+        steps(&[at((154, 145)), at((154, 145))]),
+        [Step::Wait, Step::Settled((154, 145))]
+    );
+    // The origin XWayland reports before placement, then the manager's spot.
+    assert_eq!(
+        steps(&[
+            at((-32730, -32709)),
+            at((-32730, -32709)),
+            at((154, 145)),
+            at((154, 145)),
+        ]),
+        [
+            Step::Wait,
+            Step::Settled((-32730, -32709)),
+            Step::Wait,
+            Step::Settled((154, 145)),
+        ]
+    );
+}
+
+#[test]
+fn a_child_the_user_drags_is_left_where_it_is_dropped() {
+    // The manager chose its own spot (left alone); the user then drags the child next
+    // to the parent: the check ends before the drop could be corrected or learned.
+    assert_eq!(
+        steps(&[
+            at((900, 700)),
+            at((900, 700)),
+            at((700, 500)),
+            at((400, 300)),
+            at((190, 180)),
+            at((190, 180)),
+        ]),
+        [
+            Step::Wait,
+            Step::Settled((900, 700)),
+            Step::Wait,
+            Step::Stop,
+        ]
+    );
+}
+
+#[test]
+fn a_child_the_user_resizes_keeps_its_size() {
+    let resized = Sample {
+        client: (154, 145),
+        size: (1800, 1200),
+    };
+    assert_eq!(
+        steps(&[at((900, 700)), at((900, 700)), resized, resized]),
+        [Step::Wait, Step::Settled((900, 700)), Step::Stop]
+    );
+    // Reaching the requested size after mapping is the requested size applied.
+    let mapped = Sample {
+        client: (154, 145),
+        size: (1200, 800),
+    };
+    assert_eq!(
+        steps(&[mapped, at((154, 145)), at((154, 145))]),
+        [Step::Wait, Step::Wait, Step::Settled((154, 145))]
+    );
 }

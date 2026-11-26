@@ -98,7 +98,7 @@ impl WindowPlacement {
                 requested,
                 client,
                 size,
-                last: Cell::new(None),
+                track: Cell::new(Track::default()),
             });
             slint::Timer::single_shot(ALIGN_INTERVAL, move || alignment.poll(1));
         }
@@ -130,12 +130,16 @@ impl WindowPlacement {
 /// so the requested and the reported outer origin differ by a constant. Client
 /// origins are exact on every backend that reports them, and both windows carry the
 /// same decorations, so equal client origins and sizes mean equal frames.
+///
+/// The user may move or resize the child while it is sampled: that ends the check
+/// (`Track::step`), so a drag is never snapped back or learned as an offset, and a
+/// resized child keeps its size.
 struct Alignment {
     child: Weak<dyn WindowAdapter>,
     requested: PhysicalPosition,
     client: PhysicalPosition,
     size: PhysicalSize,
-    last: Cell<Option<(i32, i32)>>,
+    track: Cell<Track>,
 }
 
 impl Alignment {
@@ -161,13 +165,24 @@ impl Alignment {
             None | Some(Some((false, _, _))) => Correction::Elsewhere,
             // No absolute origins, or the user already maximized it.
             Some(None) | Some(Some((true, true, _))) => return,
-            // Two equal samples: the window manager has finished its placement.
-            Some(Some((true, false, client)))
-                if self.last.replace(Some(client)) == Some(client) =>
-            {
-                correction(requested, parent, client)
+            Some(Some((true, false, client))) => {
+                let size = window.size();
+                let mut track = self.track.get();
+                let step = track.step(
+                    Sample {
+                        client,
+                        size: (size.width, size.height),
+                    },
+                    (self.size.width, self.size.height),
+                );
+                self.track.set(track);
+                match step {
+                    Step::Wait => Correction::Elsewhere,
+                    // The user moves or resized it: leave it where it is.
+                    Step::Stop => return,
+                    Step::Settled(client) => correction(requested, parent, client),
+                }
             }
-            Some(Some(_)) => Correction::Elsewhere,
         };
         match outcome {
             Correction::Aligned => {}
@@ -188,6 +203,63 @@ impl Alignment {
         if window.size() != self.size {
             window.set_size(self.size);
         }
+    }
+}
+
+/// One mapped, unmaximized sample of the child: client origin and size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Sample {
+    client: (i32, i32),
+    size: (u32, u32),
+}
+
+/// What the samples so far say about the child.
+#[derive(Clone, Copy, Debug, Default)]
+struct Track {
+    /// The size the child had since it was mapped, or last resized to the requested one.
+    size: Option<(u32, u32)>,
+    last: Option<Sample>,
+    /// Two equal samples were seen: the window manager finished a placement.
+    settled: bool,
+    /// Consecutive changed samples since the last settled one.
+    moves: u32,
+}
+
+#[derive(Debug, PartialEq)]
+enum Step {
+    /// Keep sampling.
+    Wait,
+    /// The user moves or resized the child: end the check without touching it.
+    Stop,
+    /// Two equal samples: compare this client origin with the parent's.
+    Settled((i32, i32)),
+}
+
+impl Track {
+    /// A window manager's placement jumps once (from an origin it reports before
+    /// placement to its final spot) and then holds still. A child that keeps moving
+    /// after it settled is being dragged, and a size other than the mapped or the
+    /// requested one was chosen by the user (or the manager): either ends the check.
+    fn step(&mut self, sample: Sample, requested_size: (u32, u32)) -> Step {
+        let size = *self.size.get_or_insert(sample.size);
+        if sample.size != size {
+            if sample.size != requested_size {
+                return Step::Stop;
+            }
+            self.size = Some(sample.size);
+        }
+        if self.last.replace(sample) != Some(sample) {
+            if self.settled {
+                self.moves += 1;
+                if self.moves > 1 {
+                    return Step::Stop;
+                }
+            }
+            return Step::Wait;
+        }
+        self.settled = true;
+        self.moves = 0;
+        Step::Settled(sample.client)
     }
 }
 
