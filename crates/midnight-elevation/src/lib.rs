@@ -526,7 +526,14 @@ mod tests {
                         "{reason}"
                     );
                 } else {
-                    assert!(details.contains("is not owned by SYSTEM"), "{details}");
+                    // Refused for its owner where the test runs as a standard user, or,
+                    // where files of an administrator account are owned by Administrators
+                    // (CI), for the access that other accounts inherit on the drive.
+                    assert!(
+                        details.contains("is not owned by SYSTEM")
+                            || details.contains("non-administrative"),
+                        "{details}"
+                    );
                     assert!(reason.contains("C:\\Program Files"), "{reason}");
                     assert!(
                         reason.contains("(the installer's For all users choice does this)"),
