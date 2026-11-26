@@ -94,7 +94,7 @@ pub(crate) fn run(
         shared.dispatcher.reset();
         let closing = shared.closing.load(Ordering::Acquire);
         if closing && !shutting_down {
-            shared.discard_output(); // Large model cleanup remains on backend before quota release.
+            shared.discard_output(); // Backend frees large models before the session ends.
             // SAFETY: dispatcher serializes every instance entry and pins the loaded library.
             unsafe {
                 api.begin_shutdown.unwrap()(instance);

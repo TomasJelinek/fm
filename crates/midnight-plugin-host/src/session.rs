@@ -136,8 +136,8 @@ pub(crate) struct Shared {
     /// The consumer's wake: output became ready, or (`notify_final`) the dispatcher ended.
     pub ready: crate::wake::Wake,
     pub closing: AtomicBool,
-    /// Set by the dispatch thread after `dispatch::run` returned and the session quota
-    /// was released, immediately before the final `ready` signal.
+    /// Set by the dispatch thread after `dispatch::run` returned and the session's requests
+    /// were cleared, immediately before the final `ready` signal.
     pub closed: AtomicBool,
     pub generation: u64,
     pub revision: u64,
@@ -369,7 +369,7 @@ impl Session {
         self.shared.dispatcher.notify();
     }
     /// The dispatcher finished: the plugin instance was destroyed, its workers and output
-    /// were released and the session quota was returned. Only an undrained fatal failure
+    /// were released. Only an undrained fatal failure
     /// can still be drained. The `notify_on_ready` callback is signalled after this.
     pub fn is_closed(&self) -> bool {
         self.shared.closed.load(Ordering::Acquire)

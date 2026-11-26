@@ -1229,6 +1229,6 @@ fn production_pool_preserves_settings_and_fourth_window_progress_with_idle_windo
     let progress_failed = outcome.expect("repro setup/live proof/recovery failed");
     assert!(
         !progress_failed,
-        "PRODUCTION PROGRESS FAILURE: real prepared save or legal fourth window failed before rescue; see pre-rescue save phase and callback counters; two-Viewer recovery and bounded cleanup were verified"
+        "PRODUCTION PROGRESS FAILURE: real prepared save or the fourth window failed before rescue; see pre-rescue save phase and callback counters; two-Viewer recovery and bounded cleanup were verified"
     );
 }

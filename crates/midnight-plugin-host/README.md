@@ -86,21 +86,22 @@ jobs, services, buffers and SDK quiescence. ABI 1 SDK reports this with `destroy
 returning `NOT_QUIESCENT` until ready. No timeout forcibly unloads native code.
 
 Each session has a serial dispatcher, one CPU worker, one I/O callback worker, and
-one native read worker. The process permits at most four sessions, including those
-closing. CPU/I/O queues each hold 32 jobs; command and read-service queues hold 32
+one native read worker. No count limits a process's sessions: each open document has
+its own. CPU/I/O queues each hold 32 jobs; command and read-service queues hold 32
 requests. Nonzero affinity is explicitly unsupported. Accepted work is dropped
 exactly once even when cancelled before running. QueueFull keeps caller ownership.
 
 The output queue holds at most 64 events and 16 MiB of actual decoded vector/string
-allocations (64 MiB over four sessions), with admission stopped early to reserve
-terminal capacity. Native content leases have a separate 4 MiB/32-buffer budget,
-and the bounded read-reply channel holds at most 32 chunks (8 MiB). ABI payloads
-retain the public 1 MiB CBOR/item/depth limits. These are separate transport budgets,
+allocations per session, with admission stopped early to reserve terminal capacity.
+Native content leases have a separate 4 MiB/32-buffer budget, and the bounded
+read-reply channel holds at most 32 chunks (8 MiB). ABI payloads retain the public
+1 MiB CBOR/item/depth limits. These are separate transport budgets,
 not a claim to bound arbitrary trusted native allocations or total process RSS.
 
 `Session::close` and Drop only signal cancellation. Backend workers release content
-and retained output before returning the session quota. A QueueFull service reply
-keeps its immutable bytes and admission ticket until retry succeeds or is rejected.
+and retained output before the session reports that it closed. A QueueFull service
+reply keeps its immutable bytes and admission ticket until retry succeeds or is
+rejected.
 Cancellation discards queued nonterminal results; generation, revision, requested
 mode, source bounds, binary byte count, and model structure are checked before
 delivery. `Session::is_closed` reports completed backend instance cleanup.
@@ -112,9 +113,8 @@ closes the session at once. `drain` returns it first, as a `Failed` event with
 or `OPEN_REQUEST_ID` (the Open request, 1) for the session itself. Requests still
 outstanding when the session failed never complete. Output queued before the
 failure, including terminal events of requests that did complete, can still follow
-it until the dispatcher discards the queue. When the dispatcher finishes, it returns
-the session quota, sets `is_closed`, and then signals the `notify_on_ready` callback
-once more even if earlier output was never drained, so a consumer can wait for a
+it until the dispatcher discards the queue. When the dispatcher finishes, it sets
+`is_closed` and then signals the `notify_on_ready` callback once more even if earlier output was never drained, so a consumer can wait for a
 closing session's cleanup without polling. The callback can run on any thread: on
 backend threads, the dispatcher included, and on the thread that calls
 `notify_on_ready` (a signal is already pending) or `drain` (output remains). It
