@@ -3,7 +3,7 @@ use crate::{
     Cancellation, DirectoryIndex, Entry, EntryId, FindSortSpec, FsError, MaskSelection, PaneId,
     PanelFilter,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FindFeedOptions {
@@ -31,6 +31,9 @@ pub struct FindFeedProjectionRequest {
     /// At most 64 completed mutation batches (100,000 paths in total); a removed directory also removes
     /// descendants. The worker returns an original source with these paths pruned.
     pub removed: Arc<[Arc<[PathBuf]>]>,
+    /// Calculated totals that a Size sort orders folder rows by
+    /// (`FolderSize::sort_bytes`), by row identity; empty for other columns.
+    pub folder_sizes: Arc<HashMap<EntryId, u64>>,
     pub cancel: Cancellation,
 }
 

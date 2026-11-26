@@ -46,7 +46,7 @@ impl FeedProjectionState {
             request.cancel.cancel();
         }
     }
-    fn changed(&mut self) {
+    pub(crate) fn changed(&mut self) {
         self.cancel();
         self.dirty = true;
     }
@@ -197,6 +197,7 @@ impl Presenter {
                     options: feed.projection.desired.clone(),
                     mask: feed.projection.mask.clone(),
                     removed: feed.projection.removed.clone().into(),
+                    folder_sizes: feed.sizes.sort_sizes(feed.projection.desired.sort),
                     cancel: Cancellation::default(),
                 });
                 feed.projection.dirty = false;
@@ -512,6 +513,64 @@ mod tests {
             *next.borrow(),
             "completed scan can start again after sorting"
         );
+    }
+
+    /// Sorted by Size, the end of a folder calculation projects the list again with
+    /// the finished totals; running or cancelled totals are not sent.
+    #[test]
+    fn size_sorted_feed_projects_again_with_finished_folder_totals() {
+        let (mut p, _) = fed();
+        let feed = p.feed_mut(PaneId::Left).unwrap();
+        let mut folder = feed.entries[0].clone();
+        folder.kind = EntryKind::Directory;
+        feed.entries = vec![folder].into();
+        feed.index = Arc::new(DirectoryIndex::from_entries(&feed.entries));
+        let sort = FindSortSpec {
+            column: FindSortColumn::Size,
+            descending: true,
+        };
+        feed.projection = FeedProjectionState::new(feed.entries.clone(), sort);
+        let scan = RefCell::new(None);
+        p.request_find_feed_sizes(PaneId::Left, &|command| {
+            if let Command::ComputeFindFeedSizes(request) = command {
+                *scan.borrow_mut() = Some(request);
+            }
+            true
+        });
+        let scan = scan.into_inner().unwrap();
+        let commands = RefCell::new(vec![]);
+        let update = |p: &mut Presenter, update| {
+            p.apply_find_feed_size(FindFeedSizeEvent {
+                pane: scan.pane,
+                id: scan.id,
+                rows_serial: scan.rows_serial,
+                update,
+            });
+            p.flush_feed_projections(&|command| offer(&commands, command));
+        };
+        update(
+            &mut p,
+            FindFeedSizeUpdate::Updated {
+                entry: EntryId(1),
+                size: FolderSize {
+                    bytes: 123,
+                    finished: true,
+                    errors: 2,
+                    ..Default::default()
+                },
+            },
+        );
+        assert!(commands.borrow().is_empty(), "progress does not re-sort");
+        update(
+            &mut p,
+            FindFeedSizeUpdate::Finished {
+                cancelled: false,
+                error: None,
+            },
+        );
+        let request = commands.borrow_mut().pop().expect("a new projection");
+        assert_eq!(request.options.sort, sort);
+        assert_eq!(request.folder_sizes.get(&EntryId(1)), Some(&123));
     }
 
     #[test]

@@ -161,7 +161,10 @@ call. Without an engine locale, an unformatted time shows the labelled UTC fallb
 Name, Extension, Path, Size and Modified headers toggle ascending/descending
 sorting. Text keys use the same captured engine locale as panels; numeric sizes
 and native timestamps are compared directly, with unknown values last in both
-directions. Extension uses the panel Type semantics: directories first, missing
+directions. A list fed to a panel orders its folder rows under Size by their
+finished calculated totals (`FindFeedProjectionRequest::folder_sizes`, from
+`FolderSize::sort_bytes`; a native folder length is never used), without grouping
+folders, and projects again when its folder-size calculation ends. Extension uses the panel Type semantics: directories first, missing
 extensions last in either direction, native locale keys with raw fallback, then
 ascending locale filename and raw filename ties. Missing locale keys stay after
 keyed text in either direction. Dotfiles without an extension and explicit empty

@@ -157,7 +157,7 @@ use std::{
 use midnight_core::{
     Cancellation, Command, DesktopServices, Entry, EntryKind, Event, FileSystem, FolderSize,
     FolderSizeScanId, IconKey, NavigationId, PaneId, SettingsService, SortSpec, WatchService,
-    sort_entries,
+    sort_entries_with_sizes,
 };
 use midnight_work_budget::resident;
 use resident_tasks::ResidentTasks;
@@ -1838,6 +1838,9 @@ fn publish_listing(
     if cancel.is_cancelled() {
         return;
     }
+    // Folders sort by their finished calculated totals, partial ones included
+    // (`FolderSize::sort_bytes`); only exact totals become a folder's shown length.
+    let mut folder_sort_sizes = HashMap::new();
     {
         let sizes = snapshot
             .sizes
@@ -1848,11 +1851,16 @@ fn publish_listing(
                 return;
             }
             if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+                let size = sizes.get(&entry.path);
                 // Native directory-entry lengths are not recursive totals.
-                entry.metadata.size = sizes
-                    .get(&entry.path)
+                entry.metadata.size = size
                     .filter(|size| size.finished && size.errors == 0)
                     .map(|size| size.bytes);
+                if sort.column == midnight_core::SortColumn::Size
+                    && let Some(bytes) = size.and_then(FolderSize::sort_bytes)
+                {
+                    folder_sort_sizes.insert(entry.id, bytes);
+                }
             }
         }
     }
@@ -1873,7 +1881,13 @@ fn publish_listing(
         }
         return;
     }
-    sort_entries(Arc::make_mut(&mut snapshot.entries), sort);
+    sort_entries_with_sizes(Arc::make_mut(&mut snapshot.entries), sort, |entry| {
+        if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+            folder_sort_sizes.get(&entry.id).copied()
+        } else {
+            entry.metadata.size
+        }
+    });
     if cancel.is_cancelled() {
         return;
     }

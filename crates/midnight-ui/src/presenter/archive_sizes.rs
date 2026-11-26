@@ -38,6 +38,22 @@ impl State {
         false
     }
 
+    /// What a Size sort of the archive panel follows: the snapshot's mount and
+    /// version, and whether a calculation is still running.
+    pub(super) fn size_order_signal(&self) -> (u64, u64, bool) {
+        (
+            self.snapshot.mount,
+            self.snapshot.version,
+            self.full_scan.is_some() || !self.entries.is_empty(),
+        )
+    }
+
+    /// The total a Size sort orders this member folder by (`FolderSize::sort_bytes`).
+    pub(super) fn sort_size(&self, entry: &Entry) -> Option<u64> {
+        let node = entry.virtual_node.as_ref()?;
+        self.snapshot.get(node.id)?.sort_bytes()
+    }
+
     pub(super) fn summary(
         &self,
         navigation: NavigationId,

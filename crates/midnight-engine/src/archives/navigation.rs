@@ -100,7 +100,7 @@ pub(super) fn run(
         prepare_sort_keys(&mut entries, locale, &request.cancel)?;
     }
     sort_entries_with_sizes(&mut entries, request.sort, |entry| {
-        crate::archive_sizes::published::size(entry, sizes.as_deref())
+        crate::archive_sizes::published::sort_size(entry, sizes.as_deref())
     });
     mount.validate()?;
     let index = Arc::new(DirectoryIndex {

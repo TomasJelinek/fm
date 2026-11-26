@@ -208,19 +208,10 @@ struct SortRow<'a, P> {
     folder: bool,
 }
 
-/// Return `order` where `order[target]` is the current position of the entry that
-/// belongs at `target`. Folders lead; `compare` orders the column; ties fall back to
-/// ascending names and then stable IDs.
-fn sorted_order<'a, P>(
-    entries: &'a [Entry],
-    primary: impl Fn(&'a Entry) -> P,
-    compare: impl Fn(&SortRow<'a, P>, &SortRow<'a, P>) -> Ordering,
-) -> Vec<usize> {
-    let mut rows: Vec<_> = entries
-        .iter()
-        .enumerate()
-        .map(|(position, entry)| SortRow {
-            primary: primary(entry),
+impl<'a, P> SortRow<'a, P> {
+    fn new(entry: &'a Entry, position: usize, primary: P) -> Self {
+        Self {
+            primary,
             name_key: entry
                 .collation
                 .as_ref()
@@ -229,20 +220,75 @@ fn sorted_order<'a, P>(
             id: entry.id.0,
             position,
             folder: matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink),
+        }
+    }
+}
+
+/// Folders lead; `compare` orders the column; ties fall back to ascending names and
+/// then stable IDs.
+fn compare_rows<'a, P>(
+    left: &SortRow<'a, P>,
+    right: &SortRow<'a, P>,
+    compare: &impl Fn(&SortRow<'a, P>, &SortRow<'a, P>) -> Ordering,
+) -> Ordering {
+    right
+        .folder
+        .cmp(&left.folder)
+        .then_with(|| compare(left, right))
+        .then_with(|| {
+            compare_collated_text(left.name_key, left.name, right.name_key, right.name, false)
         })
+        .then_with(|| left.name.cmp(right.name))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+/// Return `order` where `order[target]` is the current position of the entry that
+/// belongs at `target` (see [`compare_rows`]).
+fn sorted_order<'a, P>(
+    entries: &'a [Entry],
+    primary: impl Fn(&'a Entry) -> P,
+    compare: impl Fn(&SortRow<'a, P>, &SortRow<'a, P>) -> Ordering,
+) -> Vec<usize> {
+    let mut rows: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .map(|(position, entry)| SortRow::new(entry, position, primary(entry)))
         .collect();
-    rows.sort_unstable_by(|left, right| {
-        right
-            .folder
-            .cmp(&left.folder)
-            .then_with(|| compare(left, right))
-            .then_with(|| {
-                compare_collated_text(left.name_key, left.name, right.name_key, right.name, false)
-            })
-            .then_with(|| left.name.cmp(right.name))
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    rows.sort_unstable_by(|left, right| compare_rows(left, right, &compare));
     rows.into_iter().map(|row| row.position).collect()
+}
+
+/// Whether `entries` already stand in the order that [`sort_entries_with_sizes`]
+/// gives a [`SortColumn::Size`] sort with the same `size` lookup. One pass over
+/// adjacent rows, without allocation, calling `size` once per entry: a panel uses it
+/// to re-sort only when sizes calculated since its last sort change the order. Any
+/// other column is reported as sorted (calculated sizes cannot change its order).
+pub fn is_sorted_with_sizes(
+    entries: &[Entry],
+    sort: SortSpec,
+    size: impl Fn(&Entry) -> Option<u64>,
+) -> bool {
+    if sort.column != SortColumn::Size {
+        return true;
+    }
+    let descending = sort.descending;
+    let compare = |left: &SortRow<'_, Option<u64>>, right: &SortRow<'_, Option<u64>>| {
+        optional(left.primary, right.primary, descending)
+    };
+    let mut rows = entries
+        .iter()
+        .enumerate()
+        .map(|(position, entry)| SortRow::new(entry, position, size(entry)));
+    let Some(mut previous) = rows.next() else {
+        return true;
+    };
+    for row in rows {
+        if compare_rows(&previous, &row, &compare) == Ordering::Greater {
+            return false;
+        }
+        previous = row;
+    }
+    true
 }
 
 /// Rearrange `entries` so that position `target` receives the entry at `order[target]`,
@@ -266,7 +312,7 @@ fn apply_order(entries: &mut [Entry], mut order: Vec<usize>) {
 mod tests {
     use super::*;
     use crate::EntryId;
-    use std::{cell::Cell, path::PathBuf};
+    use std::{cell::Cell, collections::HashMap, path::PathBuf};
 
     #[test]
     fn size_lookup_runs_once_per_entry_and_long_cycles_reach_their_ranks() {
@@ -298,6 +344,116 @@ mod tests {
                 .enumerate()
                 .all(|(rank, entry)| entry.metadata.size == Some(rank as u64))
         );
+    }
+
+    fn folder(id: u64, name: &str) -> Entry {
+        Entry::new(EntryId(id), PathBuf::from(name), EntryKind::Directory)
+    }
+
+    fn file(id: u64, name: &str, size: u64) -> Entry {
+        let mut entry = Entry::new(EntryId(id), PathBuf::from(name), EntryKind::File);
+        entry.metadata.size = Some(size);
+        entry
+    }
+
+    fn names(entries: &[Entry]) -> Vec<&str> {
+        entries
+            .iter()
+            .map(|entry| entry.name.to_str().unwrap())
+            .collect()
+    }
+
+    /// A Size sort keeps folders first. Folders with a calculated size are ordered by
+    /// it (ties by name); folders without one follow them in either direction, by
+    /// name; files follow the folders by their own lengths.
+    #[test]
+    fn size_sort_orders_measured_folders_first_then_unmeasured_ones_by_name() {
+        let sizes: HashMap<&str, u64> = [("b-big", 900), ("a-small", 10), ("c-tie", 10)]
+            .into_iter()
+            .collect();
+        let lookup = |entry: &Entry| {
+            if entry.kind == EntryKind::Directory {
+                sizes.get(entry.name.to_str().unwrap()).copied()
+            } else {
+                entry.metadata.size
+            }
+        };
+        let rows = || {
+            vec![
+                file(1, "f-large", 5000),
+                folder(2, "z-unknown"),
+                folder(3, "c-tie"),
+                folder(4, "b-big"),
+                file(5, "e-small", 1),
+                folder(6, "d-unknown"),
+                folder(7, "a-small"),
+            ]
+        };
+        for (descending, expected) in [
+            (
+                false,
+                [
+                    "a-small",
+                    "c-tie",
+                    "b-big",
+                    "d-unknown",
+                    "z-unknown",
+                    "e-small",
+                    "f-large",
+                ],
+            ),
+            (
+                true,
+                [
+                    "b-big",
+                    "a-small",
+                    "c-tie",
+                    "d-unknown",
+                    "z-unknown",
+                    "f-large",
+                    "e-small",
+                ],
+            ),
+        ] {
+            let sort = SortSpec {
+                column: SortColumn::Size,
+                descending,
+            };
+            let mut entries = rows();
+            assert!(!is_sorted_with_sizes(&entries, sort, lookup));
+            sort_entries_with_sizes(&mut entries, sort, lookup);
+            assert_eq!(names(&entries), expected, "descending {descending}");
+            assert!(is_sorted_with_sizes(&entries, sort, lookup));
+        }
+    }
+
+    #[test]
+    fn a_size_arriving_later_makes_the_order_stale_only_when_it_moves_a_row() {
+        let sort = SortSpec {
+            column: SortColumn::Size,
+            descending: true,
+        };
+        let mut sizes: HashMap<u64, u64> = HashMap::from([(1, 50)]);
+        let mut entries = vec![folder(1, "a"), folder(2, "b"), folder(3, "c")];
+        sort_entries_with_sizes(&mut entries, sort, |entry| sizes.get(&entry.id.0).copied());
+        assert_eq!(names(&entries), ["a", "b", "c"]);
+        // "b" measured smaller than "a": still in order.
+        sizes.insert(2, 20);
+        assert!(is_sorted_with_sizes(&entries, sort, |entry| {
+            sizes.get(&entry.id.0).copied()
+        }));
+        // "c" measured largest: it moves to the top.
+        sizes.insert(3, 70);
+        let lookup = |entry: &Entry| sizes.get(&entry.id.0).copied();
+        assert!(!is_sorted_with_sizes(&entries, sort, lookup));
+        sort_entries_with_sizes(&mut entries, sort, lookup);
+        assert_eq!(names(&entries), ["c", "a", "b"]);
+        // Other columns never depend on calculated sizes.
+        let by_name = SortSpec {
+            column: SortColumn::Name,
+            descending: false,
+        };
+        assert!(is_sorted_with_sizes(&entries, by_name, |_| unreachable!()));
     }
 
     #[test]

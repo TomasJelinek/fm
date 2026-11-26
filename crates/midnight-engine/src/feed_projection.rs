@@ -128,12 +128,17 @@ pub(crate) fn project(
             continue;
         }
         matched.push(entry);
+        let mut metadata = entry.metadata.clone();
+        // A folder orders by its calculated total; a native folder length is none.
+        if matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+            metadata.size = request.folder_sizes.get(&entry.id).copied();
+        }
         ordering.push(Arc::new(FindResult {
             id: FindResultId(ordering.len() as u64 + 1),
             entry: FindEntry {
                 path: entry.path.clone(),
                 kind: entry.kind,
-                metadata: entry.metadata.clone(),
+                metadata,
                 identity: TransferIdentity {
                     device: 0,
                     object: [0; 16],

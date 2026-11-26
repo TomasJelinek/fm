@@ -80,6 +80,7 @@ mod selection_preview;
 pub(crate) mod selection_rectangle;
 mod selection_sizes;
 pub(crate) mod settings_picker;
+mod size_order;
 
 /// File dialogs can be reopened before the user has committed their edited text.
 fn picker_field_path(text: &str, previous: &Path) -> PathBuf {
@@ -149,6 +150,9 @@ enum Reload {
     /// finished operation. It keeps computed folder sizes and never reports a
     /// busy queue; callers retain it until it can be sent.
     Background,
+    /// A re-sort that calculated folder sizes require (`size_order`): a `Resort`
+    /// that never reports a busy queue; the next event retries it.
+    SizeResort,
 }
 
 struct Request {
@@ -219,6 +223,8 @@ pub(crate) struct Pane {
     pub(crate) parent_cursor: bool,
     pub(crate) folder_sizes: HashMap<PathBuf, FolderSize>,
     pub(crate) folder_column_samples: SizeColumnSamples,
+    /// Whether calculated folder sizes changed a Size sort's order (`size_order`).
+    pub(crate) size_order: size_order::SizeOrder,
     pub(crate) size_scan: Option<FolderSizeScanId>,
     cancelled_size_scan: Option<FolderSizeScanId>,
     pub(crate) size_scan_scope: Option<SizeScanScope>,
@@ -717,7 +723,7 @@ impl Presenter {
             );
             return false;
         };
-        let command = if mode == Reload::Resort {
+        let command = if matches!(mode, Reload::Resort | Reload::SizeResort) {
             let source = p
                 .successful_generation
                 .filter(|_| p.path == path)
@@ -753,7 +759,7 @@ impl Presenter {
             }
         };
         if !send(command) {
-            if mode != Reload::Background {
+            if matches!(mode, Reload::Navigate | Reload::Resort) {
                 p.set_error("Navigation queue is busy. Try again.", &mut self.retired);
             }
             return false;
@@ -855,7 +861,7 @@ impl Presenter {
         let p = &mut self.panes[pane.index()];
         // A re-sort reuses the committed snapshot; a retained hint still needs
         // its re-read once the re-sort commits.
-        if mode != Reload::Resort {
+        if !matches!(mode, Reload::Resort | Reload::SizeResort) {
             p.refresh_hint = false;
         }
         if !same_location && let Some(scan) = p.size_scan.take() {
@@ -1092,6 +1098,7 @@ impl Presenter {
         self.flush_find_panels();
         self.flush_find_feed_builds(send);
         self.flush_feed_projections(send);
+        self.flush_size_order(send);
         // A manifest destination was just chosen: save to it now.
         self.begin_pending_checksum_saves(send);
         self.flush_settings_file(send);
@@ -2071,6 +2078,7 @@ impl Pane {
             cursor: None,
             folder_sizes: HashMap::new(),
             folder_column_samples: SizeColumnSamples::default(),
+            size_order: Default::default(),
             size_scan: None,
             cancelled_size_scan: None,
             size_scan_scope: None,

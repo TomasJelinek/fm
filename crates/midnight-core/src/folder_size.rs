@@ -18,3 +18,13 @@ pub struct FolderSize {
     /// Immutable diagnostic prefix for this publication; retained until backend reclamation.
     pub warnings: Option<crate::SizeWarningReport>,
 }
+
+impl FolderSize {
+    /// The total a Size sort orders this folder by: that of a finished calculation,
+    /// including one that skipped unreadable entries (a partial total shown with
+    /// `≈`). A running, cancelled or otherwise unfinished total gives none, so the
+    /// folder sorts with the folders whose size is unknown.
+    pub fn sort_bytes(&self) -> Option<u64> {
+        self.finished.then_some(self.bytes)
+    }
+}

@@ -325,7 +325,7 @@ impl Presenter {
             sort: p.sort,
             replaces,
         }) {
-            if mode != Reload::Background {
+            if !matches!(mode, Reload::Background | Reload::SizeResort) {
                 p.set_error("Archive navigation queue is busy", &mut self.retired);
             }
             return false;

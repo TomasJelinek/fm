@@ -383,7 +383,7 @@ impl ProjectionState {
                     options
                         .sizes
                         .get(&TreeRowId(entry.id.0))
-                        .map(|size| size.bytes)
+                        .and_then(midnight_core::FolderSize::sort_bytes)
                 } else {
                     entry.metadata.size
                 }

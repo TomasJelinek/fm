@@ -274,7 +274,10 @@ It does not extract archive content or fabricate native paths.
 Size values and running flags arrive in bounded immutable snapshots keyed by
 `TreeRowId`, separately from the row projection. Selection, sorting, filtering
 and collapse preserve accepted work; progress never automatically resorts rows.
-Explicit Size sorting freezes the available size lookup for that projection.
+Explicit Size sorting freezes the available size lookup for that projection; it
+orders folders by finished totals only (`FolderSize::sort_bytes`, partial totals of
+a calculation that skipped unreadable entries included), and running or cancelled
+totals sort with the unknown ones, after the sized folders, by name.
 Refreshing an occurrence invalidates old measurements and frozen sort values;
 navigation retires the whole scope. Native totals remain live path-based estimates,
 not a transactional filesystem snapshot.

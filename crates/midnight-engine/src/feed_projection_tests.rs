@@ -32,8 +32,35 @@ fn request() -> FindFeedProjectionRequest {
         },
         mask: None,
         removed: Arc::from([]),
+        folder_sizes: Default::default(),
         cancel: Cancellation::default(),
     }
+}
+
+/// A Size sort orders a folder row by its calculated total among the other rows;
+/// without one, the folder follows every row with a size, in either direction.
+#[test]
+fn size_sort_orders_folders_by_their_calculated_totals() {
+    let mut request = request();
+    request.options.sort = FindSortSpec {
+        column: FindSortColumn::Size,
+        descending: false,
+    };
+    let ids = |request: &FindFeedProjectionRequest| {
+        project(request, None)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|entry| entry.id.0)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&request), [21, 8, 3]);
+    request.folder_sizes = Arc::new(std::collections::HashMap::from([(EntryId(3), 15)]));
+    assert_eq!(ids(&request), [21, 3, 8]);
+    request.options.sort.descending = true;
+    assert_eq!(ids(&request), [8, 3, 21]);
+    request.folder_sizes = Default::default();
+    assert_eq!(ids(&request), [8, 21, 3]);
 }
 
 #[test]

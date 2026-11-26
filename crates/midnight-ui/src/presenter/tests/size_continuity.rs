@@ -171,7 +171,10 @@ fn rejected_sort_and_refresh_leave_active_scan_and_cached_progress_unchanged() {
 }
 
 #[test]
-fn progress_and_completion_never_resort_the_displayed_listing() {
+/// Size events never reorder the shown rows in place. Sorted by Size, the totals
+/// that finished while the calculation ran ask the backend for one re-sort at its
+/// end (within the running interval nothing more); see `size_order`.
+fn progress_never_reorders_rows_and_completion_requests_one_backend_resort() {
     let root = test_root().join("panel");
     let mut p = Presenter::new(root.clone(), test_root());
     let navigation = begin(&mut p, PaneId::Left, root.to_str().unwrap());
@@ -221,7 +224,18 @@ fn progress_and_completion_never_resort_the_displayed_listing() {
         &send,
     );
     assert!(Arc::ptr_eq(&displayed, &p.panes[0].entries));
-    assert!(commands.borrow().is_empty());
+    let commands = commands.into_inner();
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(
+        commands[0],
+        Command::Resort {
+            sort: SortSpec {
+                column: SortColumn::Size,
+                descending: false,
+            },
+            ..
+        }
+    ));
     assert_eq!(p.panes[0].folder_sizes[&root.join("a")].bytes, 100);
     assert_eq!(p.panes[0].folder_sizes[&root.join("b")].bytes, 1);
 }

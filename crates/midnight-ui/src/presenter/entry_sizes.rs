@@ -102,6 +102,7 @@ impl Presenter {
                     p.folder_column_samples.observe(size.bytes);
                     self.retired
                         .push(Box::new(p.folder_sizes.insert(scope.path.clone(), size)));
+                    p.folder_size_stored();
                 } else {
                     self.retired.push(Box::new(size));
                 }

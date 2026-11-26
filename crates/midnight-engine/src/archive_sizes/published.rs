@@ -62,6 +62,20 @@ pub(crate) fn snapshot(
     published.snapshot_for(source)
 }
 
+/// The length a Size sort orders `entry` by: a member folder's finished total,
+/// partial ones included (`FolderSize::sort_bytes`); a member file's own length.
+pub(crate) fn sort_size(entry: &Entry, sizes: Option<&ArchiveSizeSnapshot>) -> Option<u64> {
+    match entry.kind {
+        EntryKind::Directory => {
+            let node = entry.virtual_node.as_ref()?;
+            sizes?.get(node.id)?.sort_bytes()
+        }
+        EntryKind::DirectoryLink => None,
+        _ => entry.metadata.size,
+    }
+}
+
+/// An exact length only: a member folder's finished total without errors.
 pub(crate) fn size(entry: &Entry, sizes: Option<&ArchiveSizeSnapshot>) -> Option<u64> {
     match entry.kind {
         EntryKind::Directory => {
@@ -94,8 +108,13 @@ mod tests {
             modified: None,
             access: Default::default(),
         });
-        for (finished, errors, expected) in [(false, 0, None), (true, 1, None), (true, 0, Some(12))]
-        {
+        // The exact length and the Size-sort length: a finished total that skipped
+        // unreadable members still sorts by what could be read.
+        for (finished, errors, expected, sorted) in [
+            (false, 0, None, None),
+            (true, 1, None, Some(12)),
+            (true, 0, Some(12), Some(12)),
+        ] {
             let sizes = ArchiveSizeSnapshot::new(
                 3,
                 1,
@@ -110,10 +129,12 @@ mod tests {
                 )]),
             );
             assert_eq!(size(&entry, Some(&sizes)), expected);
+            assert_eq!(sort_size(&entry, Some(&sizes)), sorted);
             assert_eq!(entry.metadata.size, Some(999));
             assert_eq!(entry.virtual_node.as_ref().unwrap().size, Some(999));
             entry.kind = EntryKind::DirectoryLink;
             assert_eq!(size(&entry, Some(&sizes)), None);
+            assert_eq!(sort_size(&entry, Some(&sizes)), None);
             entry.kind = EntryKind::Directory;
         }
         assert_eq!(size(&entry, None), None);

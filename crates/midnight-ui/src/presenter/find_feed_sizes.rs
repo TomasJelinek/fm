@@ -32,6 +32,19 @@ impl FeedSizeState {
         Box::new(std::mem::take(self))
     }
 
+    /// The finished totals a Size `sort` orders folder rows by; none for other columns.
+    pub(crate) fn sort_sizes(&self, sort: FindSortSpec) -> Arc<HashMap<EntryId, u64>> {
+        if sort.column != FindSortColumn::Size {
+            return Arc::default();
+        }
+        Arc::new(
+            self.values
+                .iter()
+                .filter_map(|(entry, size)| Some((*entry, size.sort_bytes()?)))
+                .collect(),
+        )
+    }
+
     fn covers(&self, entry: &Entry) -> bool {
         let Some(scope) = &self.scope else {
             return false;
@@ -213,6 +226,11 @@ impl Presenter {
             } => {
                 feed.sizes.running = false;
                 feed.sizes.finished = true;
+                // Sorted by Size: order the rows by the totals just calculated,
+                // keeping the cursor and marks on their rows.
+                if feed.projection.desired.sort.column == FindSortColumn::Size {
+                    feed.projection.changed();
+                }
                 (None, error)
             }
         };

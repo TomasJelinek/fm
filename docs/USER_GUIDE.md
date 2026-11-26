@@ -1600,8 +1600,16 @@ A file row has a tooltip only when its name is shortened (the whole name); a nat
 folder link's row shows its target, read when the pointer rests on it. Size-only
 UI updates are combined for both panes and shown
 at most four times per second; input and navigation remain immediate.
-Progress and scan completion update values without reordering rows; explicitly
-sort again to apply newly completed sizes to the order.
+Sorting by size (Ctrl+F6) keeps folders before files. Folders whose calculation
+finished are ordered by their totals, partial totals of a calculation that skipped
+unreadable entries included, with equal totals by name; folders without a finished
+total (never calculated, still running or cancelled) follow them, by name, in either
+direction. While a panel or an archive folder is sorted by size, finished totals
+re-sort it: at most once a second while a calculation runs and once when it ends,
+and only when a new total moves a folder. The cursor and the selection stay on
+their items. A Find result list fed to a panel orders folder rows by their totals
+among the files (it does not group folders) and re-sorts when its calculation ends.
+In the tree view, totals update without reordering rows; sort again to apply them.
 Quick drive/location buttons sit beside the drive dropdown.
 
 ## Updates

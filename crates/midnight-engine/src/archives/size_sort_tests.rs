@@ -232,7 +232,7 @@ impl Harness {
 }
 
 #[tokio::test]
-async fn explicit_size_sort_uses_published_complete_totals_and_preserves_member_metadata() {
+async fn explicit_size_sort_uses_published_finished_totals_and_preserves_member_metadata() {
     let source = source();
     let mut harness = Harness::new();
     let snapshot = harness.compute(source.clone()).await;
@@ -260,9 +260,12 @@ async fn explicit_size_sort_uses_published_complete_totals_and_preserves_member_
         harness.events.try_recv().is_err(),
         "no automatic navigation event"
     );
+    // Folder 4 finished as a partial total (a member without a length was skipped):
+    // it sorts by what could be counted (0 bytes, tied with the empty folder 6 by
+    // name). The link 5 has no total and follows the sized folders.
     for (descending, expected) in [
-        (false, vec![6, 3, 2, 4, 5, 8, 7]),
-        (true, vec![2, 3, 6, 4, 5, 7, 8]),
+        (false, vec![4, 6, 3, 2, 5, 8, 7]),
+        (true, vec![2, 3, 4, 6, 5, 7, 8]),
     ] {
         let listing = harness.sort(source.clone(), descending).await.unwrap();
         assert_eq!(

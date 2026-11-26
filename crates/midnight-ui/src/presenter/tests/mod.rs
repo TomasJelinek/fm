@@ -45,6 +45,7 @@ mod selection_anchor;
 mod selection_rectangle;
 mod shortcuts;
 mod size_continuity;
+mod size_order;
 mod tabs;
 mod tree;
 mod tree_checksums;
