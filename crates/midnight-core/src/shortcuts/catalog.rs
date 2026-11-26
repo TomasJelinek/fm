@@ -242,6 +242,13 @@ fn build() -> Vec<ShortcutDefinition> {
         ViewerOnlyContent,
         &["F5", "Ctrl+R"],
     );
+    // Only while a video with sound is shown; other content ignores it.
+    add(
+        "viewer.mute",
+        "Mute or unmute the video's sound",
+        ViewerOnlyContent,
+        &["M"],
+    );
     add("viewer.find", "Find in viewed file", ViewerAny, &["Ctrl+F"]);
     add("viewer.wrap", "Wrap viewer text", ViewerAny, &["Ctrl+W"]);
     add(

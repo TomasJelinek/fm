@@ -3,7 +3,8 @@ use midnight_core::{
     MediaAction, MediaControl, MediaControlId, MediaPhase, MediaSessionId, MediaSnapshot,
 };
 use midnight_media_host::{
-    CpuBudget, PlaybackEpoch, PlaybackSnapshot, PlaybackState, ResourcePolicy,
+    AudioSink, AudioVolume, CpuBudget, PlaybackEpoch, PlaybackSnapshot, PlaybackState,
+    ResourcePolicy,
     video_installation::{VideoInstallation, VideoWorker, both_failed, fallback_worker},
     video_process::{CapturedVideoSource, VideoProcess, VideoRetirement},
     video_session::{DecoderReply, DecoderRequest, VideoSession},
@@ -89,6 +90,7 @@ pub(crate) fn opening(session: MediaSessionId) -> MediaSnapshot {
         duration: None,
         seekable: false,
         playing: false,
+        audio: false,
         phase: MediaPhase::Opening,
     }
 }
@@ -144,6 +146,9 @@ impl ControlProgress {
     }
 }
 
+/// Opens the native output for a video with a qualified audio track.
+pub(crate) type OpenAudio = fn() -> io::Result<Box<dyn AudioSink>>;
+
 pub(crate) struct VideoView {
     cancelled: Arc<AtomicBool>,
     command: Option<SyncSender<DecoderRequest>>,
@@ -153,6 +158,10 @@ pub(crate) struct VideoView {
     broker: Option<JoinHandle<io::Result<()>>>,
     decoder_finished: Arc<AtomicBool>,
     session: Option<VideoSession>,
+    /// The window's sound level, shared with the playback of every video it opens.
+    volume: Arc<AudioVolume>,
+    open_audio: OpenAudio,
+    audio: bool,
     duration: Option<Duration>,
     wants_play: bool,
     controls: ControlProgress,
@@ -173,6 +182,9 @@ impl VideoView {
             broker: None,
             decoder_finished: Arc::new(AtomicBool::new(true)),
             session: None,
+            volume: Arc::default(),
+            open_audio: midnight_media_output::open_default,
+            audio: false,
             duration: None,
             wants_play: false,
             controls: ControlProgress::default(),
@@ -180,6 +192,37 @@ impl VideoView {
             notice: None,
             retirement_error: None,
         }
+    }
+
+    /// A view whose decoder broker is the test: it answers the returned requests
+    /// through the returned replies, and `open_audio` stands in for the device.
+    #[cfg(test)]
+    fn brokered_for_test(
+        session: MediaSessionId,
+        volume: Arc<AudioVolume>,
+        open_audio: OpenAudio,
+    ) -> (Self, SyncSender<Reply>, Receiver<DecoderRequest>) {
+        let (command, requests) = mpsc::sync_channel(1);
+        let (results, replies) = mpsc::sync_channel(2);
+        let view = Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            command: Some(command),
+            size: None,
+            replies,
+            broker: None,
+            decoder_finished: Arc::new(AtomicBool::new(false)),
+            session: None,
+            volume,
+            open_audio,
+            audio: false,
+            duration: None,
+            wants_play: false,
+            controls: ControlProgress::default(),
+            presentation: opening(session),
+            notice: None,
+            retirement_error: None,
+        };
+        (view, results, requests)
     }
 
     /// Start `first` of the installed helpers on `file`. The helper starts at once, while
@@ -191,6 +234,7 @@ impl VideoView {
         generation: u64,
         first: VideoWorker,
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
+        volume: Arc<AudioVolume>,
     ) -> Result<Self, String> {
         let id = NonZeroU64::new(generation).ok_or("Invalid video session identity")?;
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -243,6 +287,9 @@ impl VideoView {
             broker: Some(broker),
             decoder_finished,
             session: None,
+            volume,
+            open_audio: midnight_media_output::open_default,
+            audio: false,
             duration: None,
             wants_play: false,
             controls: ControlProgress::default(),
@@ -305,8 +352,9 @@ impl VideoView {
                 Reply::Opened(identity, metadata) => {
                     self.duration = metadata.duration;
                     let mut session =
-                        VideoSession::new(identity, metadata, midnight_media_output::open_default);
+                        VideoSession::new(identity, metadata, self.volume.clone(), self.open_audio);
                     self.notice = session.audio_notice().map(str::to_owned);
+                    self.audio = session.plays_audio();
                     if self.wants_play {
                         session.play(now).map_err(|error| error.to_string())?;
                     }
@@ -347,6 +395,7 @@ impl VideoView {
         }
         let mut snapshot = self.presentation();
         snapshot.playing = self.wants_play;
+        snapshot.audio = self.audio;
         snapshot.duration = self.duration;
         snapshot.seekable = self.duration.is_some_and(|end| !end.is_zero());
         snapshot.phase = match tick.playback.state {
@@ -605,7 +654,128 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use midnight_media_host::Playback;
+    use midnight_media_host::{
+        AudioPause, DeviceClock, Playback,
+        video_transport::{AudioTrack, PcmBlock, PullResult, SeekEpoch},
+    };
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// The samples the test device accepted on this test's thread.
+        static WRITTEN: RefCell<Vec<i16>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Accepts and keeps every frame queued, recording its samples.
+    struct Recording;
+
+    impl AudioSink for Recording {
+        fn start(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+        fn pause(&mut self) -> io::Result<AudioPause> {
+            Ok(AudioPause::Retained(self.sample_clock()?))
+        }
+        fn reset(&mut self) -> io::Result<()> {
+            WRITTEN.with_borrow_mut(Vec::clear);
+            Ok(())
+        }
+        fn write(&mut self, interleaved: &[i16]) -> io::Result<usize> {
+            WRITTEN.with_borrow_mut(|written| written.extend_from_slice(interleaved));
+            Ok(interleaved.len() / 2)
+        }
+        fn sample_clock(&mut self) -> io::Result<DeviceClock> {
+            Ok(DeviceClock {
+                played_frames: 0,
+                queued_frames: WRITTEN.with_borrow(Vec::len) / 2,
+            })
+        }
+    }
+
+    fn recording() -> io::Result<Box<dyn AudioSink>> {
+        Ok(Box::new(Recording))
+    }
+
+    fn pulled(identity: VideoIdentity, first_frame: u64, frames: Vec<VideoFrame>) -> Reply {
+        Reply::Finished(DecoderReply::Pulled(PullResult {
+            identity,
+            frames,
+            pcm: Some(PcmBlock {
+                first_frame,
+                samples: vec![8000; 8].into_boxed_slice(),
+            }),
+            end_of_media: false,
+        }))
+    }
+
+    #[test]
+    fn the_window_volume_reaches_the_audio_written_for_its_video() {
+        let volume = Arc::new(AudioVolume::default());
+        let (mut view, replies, requests) =
+            VideoView::brokered_for_test(MediaSessionId(1), volume.clone(), recording);
+        let identity = VideoIdentity {
+            session: SessionGeneration(NonZeroU64::new(1).unwrap()),
+            epoch: SeekEpoch(NonZeroU64::new(1).unwrap()),
+        };
+        let metadata = VideoMetadata {
+            duration: Some(Duration::from_secs(4)),
+            width: 2,
+            height: 1,
+            audio: AudioTrack::Qualified,
+        };
+        replies.send(Reply::Opened(identity, metadata)).unwrap();
+        let opened = view.poll().unwrap().unwrap();
+        assert!(
+            opened.snapshot.audio,
+            "the controls learn that it has sound"
+        );
+        assert!(matches!(requests.try_recv(), Ok(DecoderRequest::Pull(_))));
+        let frame = VideoFrame {
+            presentation: Duration::ZERO,
+            width: 2,
+            height: 1,
+            rgba: vec![0; 8].into_boxed_slice(),
+        };
+        replies.send(pulled(identity, 0, vec![frame])).unwrap();
+
+        // The window's level, set while the first block waits, scales it.
+        volume.set(50, false).unwrap();
+        let play = MediaControl {
+            session: MediaSessionId(1),
+            id: MediaControlId(1),
+            action: MediaAction::SetPlaying(true),
+        };
+        assert!(view.apply_control(play).unwrap());
+        view.poll().unwrap();
+        assert_eq!(WRITTEN.with_borrow(Vec::clone), [1000; 8]);
+
+        // Muting during playback silences the next block at once.
+        assert!(matches!(requests.try_recv(), Ok(DecoderRequest::Pull(_))));
+        replies.send(pulled(identity, 4, Vec::new())).unwrap();
+        volume.set(50, true).unwrap();
+        view.poll().unwrap();
+        assert_eq!(WRITTEN.with_borrow(|written| written[8..].to_vec()), [0; 8]);
+    }
+
+    #[test]
+    fn a_video_without_sound_reports_none() {
+        let (mut view, replies, _requests) =
+            VideoView::brokered_for_test(MediaSessionId(2), Arc::default(), || {
+                panic!("a video without an audio track opens no device")
+            });
+        let identity = VideoIdentity {
+            session: SessionGeneration(NonZeroU64::new(2).unwrap()),
+            epoch: SeekEpoch(NonZeroU64::new(1).unwrap()),
+        };
+        let metadata = VideoMetadata {
+            duration: Some(Duration::from_secs(4)),
+            width: 2,
+            height: 1,
+            audio: AudioTrack::Absent,
+        };
+        replies.send(Reply::Opened(identity, metadata)).unwrap();
+        view.poll().unwrap();
+        assert!(!view.presentation().audio);
+    }
 
     #[test]
     fn a_newer_play_intent_cannot_acknowledge_an_unsettled_seek() {

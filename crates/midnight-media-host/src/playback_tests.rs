@@ -12,6 +12,8 @@ struct Device {
     pause_discards: bool,
     reset_fails: bool,
     cancel_on_observe: Option<Rc<AtomicBool>>,
+    /// Every accepted sample, in submission order.
+    samples: Vec<i16>,
 }
 
 impl Device {
@@ -60,6 +62,9 @@ impl AudioSink for Sink {
         let accepted = device.partial.map_or(frames, |limit| frames.min(limit));
         device.submitted += accepted as u64;
         device.writes += 1;
+        device
+            .samples
+            .extend_from_slice(&interleaved[..accepted * PCM_CHANNELS]);
         Ok(accepted)
     }
 
@@ -367,4 +372,83 @@ fn drained_audio_hands_a_longer_video_tail_to_the_monotonic_clock() {
         .acknowledge_seek(seek.epoch, tail + Duration::from_secs(1))
         .unwrap();
     assert_eq!(device.borrow().starts, 2);
+}
+
+/// Distinct samples, each exactly divisible by eight.
+fn ramp(first: i16, frames: usize) -> Box<[i16]> {
+    (0..frames * PCM_CHANNELS)
+        .map(|index| first + 8 * index as i16)
+        .collect()
+}
+
+#[test]
+fn a_volume_change_applies_to_the_next_submitted_block_without_a_seek() {
+    let now = Instant::now();
+    let live = AtomicBool::new(false);
+    let device = Rc::new(RefCell::new(Device {
+        partial: Some(100),
+        ..Device::default()
+    }));
+    let volume = Arc::new(AudioVolume::default());
+    let mut player = Playback::with_audio_volume(
+        Duration::ZERO,
+        Box::new(Sink(device.clone())),
+        volume.clone(),
+    )
+    .unwrap();
+    let epoch = player.snapshot().epoch;
+    player.play(now).unwrap();
+    let block = ramp(8000, 300);
+    player.enqueue_pcm(epoch, 0, block.clone()).unwrap();
+
+    // Full volume submits the decoded samples unchanged.
+    player.pump(now, &live).unwrap();
+    assert_eq!(device.borrow().samples, block[..200]);
+
+    // Half volume reaches the next block, also frames that were already decoded.
+    volume.set(50, false).unwrap();
+    player.pump(now, &live).unwrap();
+    let eighth: Vec<i16> = block[200..400].iter().map(|sample| sample / 8).collect();
+    assert_eq!(device.borrow().samples[200..], eighth);
+
+    // Mute writes silence, so the device clock keeps running, and keeps the level.
+    volume.set(50, true).unwrap();
+    player.pump(now, &live).unwrap();
+    assert_eq!(device.borrow().samples[400..], [0; 200]);
+    assert_eq!(volume.get(), (50, true));
+    assert_eq!(device.borrow().submitted, 300);
+
+    // No device reset, seek or new generation for any of it.
+    assert_eq!(device.borrow().resets, 1);
+    assert_eq!(player.snapshot().epoch, epoch);
+    assert_eq!(player.snapshot().state, PlaybackState::Playing);
+}
+
+#[test]
+fn unmuting_restores_the_level_kept_while_muted() {
+    let now = Instant::now();
+    let live = AtomicBool::new(false);
+    let device = Rc::new(RefCell::new(Device {
+        partial: Some(10),
+        ..Device::default()
+    }));
+    let volume = Arc::new(AudioVolume::default());
+    volume.set(50, true).unwrap();
+    let mut player = Playback::with_audio_volume(
+        Duration::ZERO,
+        Box::new(Sink(device.clone())),
+        volume.clone(),
+    )
+    .unwrap();
+    let epoch = player.snapshot().epoch;
+    player.play(now).unwrap();
+    player
+        .enqueue_pcm(epoch, 0, vec![800; 40].into_boxed_slice())
+        .unwrap();
+    player.pump(now, &live).unwrap();
+    volume.set(50, false).unwrap();
+    player.pump(now, &live).unwrap();
+    let samples = device.borrow().samples.clone();
+    assert_eq!(samples[..20], [0; 20]);
+    assert_eq!(samples[20..], [100; 20]);
 }

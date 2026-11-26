@@ -138,6 +138,7 @@ fn newer_seek_rejects_pixels_already_prepared_for_the_previous_seek() {
         duration: Some(Duration::from_secs(10)),
         seekable: true,
         playing: false,
+        audio: false,
         phase: MediaPhase::Paused,
     };
     present_outputs(
@@ -364,6 +365,7 @@ fn retired_media_cannot_repopulate_controls_or_pixels_after_a_failed_replacement
         duration: Some(Duration::from_secs(8)),
         seekable: true,
         playing: true,
+        audio: false,
         phase: MediaPhase::Playing,
     };
     present_outputs(
@@ -446,6 +448,7 @@ fn video_status_changes_keep_the_canvas_and_same_session_advancing_pixels() {
             duration: Some(Duration::from_secs(8)),
             seekable: true,
             playing,
+            audio: false,
             phase: if playing {
                 MediaPhase::Playing
             } else {
@@ -636,6 +639,7 @@ fn mounted_video_controls_follow_applied_commands_and_content_replacement() {
             duration: Some(Duration::from_secs(8)),
             seekable: true,
             playing: matches!(&phase, MediaPhase::Playing),
+            audio: false,
             phase,
         })
     };

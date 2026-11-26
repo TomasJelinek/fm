@@ -220,6 +220,7 @@ impl Worker {
                     self.positions.generation,
                     opening.video_first,
                     self.wake.clone(),
+                    self.audio_volume.clone(),
                 )
                 .ok();
             }
@@ -305,6 +306,7 @@ impl Worker {
                             generation,
                             video_first,
                             self.wake.clone(),
+                            self.audio_volume.clone(),
                         )
                     }
                 };

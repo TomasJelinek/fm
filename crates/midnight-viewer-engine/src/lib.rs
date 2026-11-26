@@ -139,6 +139,8 @@ pub struct WindowSession {
     preferences: Arc<preferences::Preferences>,
     palette: Arc<palette::State>,
     fonts: Arc<OnceLock<Arc<[String]>>>,
+    /// The sound level of the videos this window plays (`set_media_volume`).
+    audio_volume: Arc<midnight_media_host::AudioVolume>,
 }
 
 struct WindowPermit(Arc<AtomicUsize>);
@@ -216,6 +218,22 @@ impl WindowSession {
             self.wakes.wake();
         }
         Ok(changed)
+    }
+
+    /// Set the sound level of the window's video playback: `percent` from 0 to
+    /// [`midnight_media_host::MAX_VOLUME_PERCENT`], and `muted`, which keeps the level.
+    /// It holds for every video the window opens. One atomic store: it never waits for
+    /// the worker, and the audio output reads it before the next block it submits.
+    /// A level out of range is refused and the current one stays.
+    pub fn set_media_volume(&self, percent: u8, muted: bool) -> Result<(), String> {
+        self.audio_volume
+            .set(percent, muted)
+            .map_err(|error| error.to_string())
+    }
+
+    /// The window's sound level: percent and whether it is muted.
+    pub fn media_volume(&self) -> (u8, bool) {
+        self.audio_volume.get()
     }
 
     pub fn preferences(&self) -> Arc<ViewerPreferences> {
@@ -474,6 +492,7 @@ impl Service {
         let (wakes, receiver) = input_queue::Wakes::channel();
         let mailbox = start.output.clone();
         let closed = Arc::new(AtomicBool::new(false));
+        let audio_volume = Arc::new(midnight_media_host::AudioVolume::default());
         let job = window_worker::Job {
             work: window_worker::Work {
                 service: self.clone(),
@@ -487,6 +506,7 @@ impl Service {
                 preferences: worker_preferences,
                 negotiate_layout,
                 palette_lifetime: palette::Lifetime::new(palette.clone()),
+                audio_volume: audio_volume.clone(),
             },
             start,
         };
@@ -509,6 +529,7 @@ impl Service {
             preferences,
             palette,
             fonts: self.fonts.clone(),
+            audio_volume,
         })
     }
 

@@ -194,3 +194,33 @@ fn previous_and_next_file_aliases_are_configurable_and_preserve_search_editing()
             .is_none()
     );
 }
+
+#[test]
+fn m_mutes_video_in_viewer_content_but_not_while_typing_a_search() {
+    let map = ShortcutMap::new(&[]).unwrap();
+    let m = ShortcutChord::parse("M").unwrap();
+    assert_eq!(
+        map.resolve(&m, ShortcutContext::Viewer).unwrap().id,
+        "viewer.mute"
+    );
+    assert!(map.resolve(&m, ShortcutContext::ViewerSearch).is_none());
+    assert!(map.resolve(&m, ShortcutContext::Comparison).is_none());
+    assert!(map.resolve(&m, ShortcutContext::Files).is_none());
+}
+
+#[test]
+fn the_mute_default_yields_to_an_m_saved_before_it_existed() {
+    // M was free in viewers before `viewer.mute`: a saved assignment stays valid and wins.
+    let saved = ShortcutMap::new(&[ShortcutBinding {
+        action: "viewer.reload".into(),
+        keys: vec!["M".into()],
+    }])
+    .unwrap();
+    assert_eq!(
+        saved
+            .resolve(&ShortcutChord::parse("M").unwrap(), ShortcutContext::Viewer)
+            .unwrap()
+            .id,
+        "viewer.reload"
+    );
+}

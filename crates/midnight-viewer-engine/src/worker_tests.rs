@@ -182,6 +182,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         video_installation: None,
         video: None,
         closing_video: None,
+        audio_volume: Arc::default(),
         video_retirement_error: None,
         files: Arc::from([]),
         current: 0,

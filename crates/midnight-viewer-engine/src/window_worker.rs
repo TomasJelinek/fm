@@ -18,6 +18,7 @@ pub(super) struct Work {
     pub preferences: Arc<crate::preferences::Preferences>,
     pub negotiate_layout: bool,
     pub palette_lifetime: crate::palette::Lifetime,
+    pub audio_volume: Arc<midnight_media_host::AudioVolume>,
 }
 
 pub(super) struct Job {
@@ -60,6 +61,7 @@ impl Work {
                     negotiate_layout: self.negotiate_layout,
                     palette: self.palette_lifetime.state(),
                     video: Box::new(move || service.video_installation()),
+                    audio_volume: self.audio_volume,
                     window,
                 },
                 self.launch,

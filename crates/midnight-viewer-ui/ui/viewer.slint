@@ -258,6 +258,8 @@ export component ViewerWindow inherits Window {
     out property <bool> content-focused: content-focus.has-focus;
     callback media-toggle(string);
     callback media-seek(string, float);
+    callback media-mute(string);
+    callback media-volume(string, float);
     callback input-key(KeyEvent, bool) -> bool;
     callback scroll(float, float) -> bool;
     // Scrollbar seeks: drag-seek(horizontal, position) arrives between
@@ -659,6 +661,8 @@ export component ViewerWindow inherits Window {
                 font-size: root.effective-ui-size; control-height: root.control-height;
                 toggle(session) => { root.media-toggle(session); }
                 seek(session, position) => { root.media-seek(session, position); }
+                mute(session) => { root.media-mute(session); }
+                volume(session, level) => { root.media-volume(session, level); }
             }
             if root.compact-status : Text {
                 height: root.status-row-height; text: root.shown-status; color: Theme.text;

@@ -209,6 +209,9 @@ fn paused_video_preserves_aspect_and_refits_on_resize_without_another_frame() {
     ));
     window.set_media_controls(MediaControlsState {
         session: "portrait-video".into(),
+        audio: false,
+        volume: 1.0,
+        muted: false,
         playing: false,
         can_play_pause: true,
         can_seek: true,
@@ -326,6 +329,9 @@ fn video_controls_keep_file_navigation_shortcuts_in_content_context() {
     window.set_image_mode(true);
     window.set_media_controls(MediaControlsState {
         session: "video-keyboard-test".into(),
+        audio: false,
+        volume: 1.0,
+        muted: false,
         playing: true,
         can_play_pause: true,
         can_seek: true,
@@ -393,6 +399,9 @@ fn video_timeline_seeks_once_on_release_and_discards_a_replaced_session() {
     window.set_image_mode(true);
     let media = MediaControlsState {
         session: "first-video".into(),
+        audio: false,
+        volume: 1.0,
+        muted: false,
         playing: false,
         can_play_pause: true,
         can_seek: true,
@@ -444,6 +453,9 @@ fn video_timeline_seeks_once_on_release_and_discards_a_replaced_session() {
     pointer(0.55, None);
     window.set_media_controls(MediaControlsState {
         session: "replacement-video".into(),
+        audio: false,
+        volume: 1.0,
+        muted: false,
         ..media
     });
     pointer(0.65, None);

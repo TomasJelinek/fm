@@ -316,6 +316,9 @@ pub struct MediaSnapshot {
     pub seekable: bool,
     /// Intended playback after the current seek or buffering interval.
     pub playing: bool,
+    /// The video plays sound: it has an audio track that the viewer decodes and an
+    /// output device opened for it. Volume and mute apply only then.
+    pub audio: bool,
     pub phase: MediaPhase,
 }
 

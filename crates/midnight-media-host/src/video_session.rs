@@ -1,7 +1,7 @@
 //! Pace a worker-owned video stream against the native audio or monotonic clock.
 use crate::{
-    AudioSink, MAX_HOST_FRAMES, MAX_PCM_BLOCK_FRAMES, PcmAdmission, Playback, PlaybackEpoch,
-    PlaybackSnapshot, PlaybackState, SeekRequest,
+    AudioSink, AudioVolume, MAX_HOST_FRAMES, MAX_PCM_BLOCK_FRAMES, PcmAdmission, Playback,
+    PlaybackEpoch, PlaybackSnapshot, PlaybackState, SeekRequest,
     video_transport::{
         AudioDemand, AudioTrack, PullCredit, PullResult, VideoFrame, VideoIdentity, VideoMetadata,
     },
@@ -10,7 +10,7 @@ use std::{
     collections::VecDeque,
     io,
     num::NonZeroU16,
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
@@ -59,14 +59,18 @@ pub struct VideoSession {
 }
 
 impl VideoSession {
+    /// Open audio output for a qualified track, played at the level `volume` holds.
     pub fn new(
         identity: VideoIdentity,
         metadata: VideoMetadata,
+        volume: Arc<AudioVolume>,
         open_audio: impl FnOnce() -> io::Result<Box<dyn AudioSink>>,
     ) -> Self {
         let (player, audio_notice) = match metadata.audio {
             AudioTrack::Qualified => {
-                match open_audio().and_then(|sink| Playback::with_audio(Duration::ZERO, sink)) {
+                match open_audio()
+                    .and_then(|sink| Playback::with_audio_volume(Duration::ZERO, sink, volume))
+                {
                     Ok(player) => (player, None),
                     Err(error) => (
                         Playback::video_only(Duration::ZERO),
@@ -98,6 +102,11 @@ impl VideoSession {
 
     pub fn audio_notice(&self) -> Option<&str> {
         self.audio_notice.as_deref()
+    }
+
+    /// Whether the session opened an audio output, so a volume change can be heard.
+    pub fn plays_audio(&self) -> bool {
+        self.player.snapshot().audio.is_some()
     }
 
     pub fn play(&mut self, now: Instant) -> io::Result<()> {

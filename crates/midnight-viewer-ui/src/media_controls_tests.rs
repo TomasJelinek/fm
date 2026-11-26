@@ -30,8 +30,125 @@ fn window() -> (ViewerWindow, MediaControls, SentControls, Rc<Cell<bool>>) {
                 accepts.get()
             }
         }),
+        Rc::new(|_, _| true),
     );
     (window, binding, sent, accepts)
+}
+
+type SentVolumes = Rc<RefCell<Vec<(u8, bool)>>>;
+
+/// A window whose controls record the sound levels they store; `accepts` refuses them.
+fn sound_window() -> (ViewerWindow, MediaControls, SentVolumes, Rc<Cell<bool>>) {
+    slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
+    let window = ViewerWindow::new().unwrap();
+    let volumes = SentVolumes::default();
+    let accepts = Rc::new(Cell::new(true));
+    let binding = MediaControls::install(
+        &window,
+        Rc::new(|_| true),
+        Rc::new({
+            let volumes = volumes.clone();
+            let accepts = accepts.clone();
+            move |percent, muted| {
+                volumes.borrow_mut().push((percent, muted));
+                accepts.get()
+            }
+        }),
+    );
+    (window, binding, volumes, accepts)
+}
+
+fn with_sound(mut snapshot: MediaSnapshot) -> MediaSnapshot {
+    snapshot.audio = true;
+    snapshot
+}
+
+#[test]
+fn mute_and_volume_are_disabled_until_the_video_plays_sound() {
+    let (window, media, volumes, _) = sound_window();
+    let state = window.get_media_controls();
+    assert!(!state.audio && !state.muted);
+    assert_eq!(state.volume, 1.0);
+    let session = MediaSessionId(3);
+    assert!(media.begin(session));
+    assert!(!window.get_media_controls().audio, "unknown while opening");
+    window.invoke_media_mute("3".into());
+    window.invoke_media_volume("3".into(), 0.5);
+    assert!(!media.toggle_mute());
+    assert!(media.apply(snapshot(session, 0, 1, 0, false)));
+    assert!(!window.get_media_controls().audio, "no audio track");
+    window.invoke_media_mute("3".into());
+    assert!(!media.toggle_mute());
+    assert!(volumes.borrow().is_empty());
+
+    assert!(media.apply(with_sound(snapshot(session, 0, 2, 0, false))));
+    assert!(window.get_media_controls().audio);
+    let mut failed = with_sound(snapshot(session, 0, 3, 0, false));
+    failed.phase = MediaPhase::Failed("Video playback has stopped".into());
+    assert!(media.apply(failed));
+    assert!(
+        !window.get_media_controls().audio,
+        "a failed video plays nothing"
+    );
+}
+
+#[test]
+fn the_slider_sets_the_level_and_mute_keeps_it_for_unmute() {
+    let (window, media, volumes, _) = sound_window();
+    let session = MediaSessionId(4);
+    assert!(media.begin(session));
+    assert!(media.apply(with_sound(snapshot(session, 0, 1, 0, false))));
+    window.invoke_media_volume("4".into(), 0.454);
+    let state = window.get_media_controls();
+    assert_eq!(state.volume, 0.45);
+    assert!(!state.muted);
+    window.invoke_media_volume("4".into(), 0.45); // The same level is not sent again.
+    window.invoke_media_mute("4".into());
+    let muted = window.get_media_controls();
+    assert!(muted.muted);
+    assert_eq!(muted.volume, 0.45, "the slider keeps the level while muted");
+    assert!(media.toggle_mute()); // M unmutes at the kept level.
+    assert!(!window.get_media_controls().muted);
+    window.invoke_media_mute("4".into());
+    window.invoke_media_volume("4".into(), 0.8); // Moving the slider also unmutes.
+    assert_eq!(
+        *volumes.borrow(),
+        [
+            (45, false),
+            (45, true),
+            (45, false),
+            (45, true),
+            (80, false)
+        ]
+    );
+    // Out of range, not a number or another video's controls: nothing changes.
+    window.invoke_media_volume("4".into(), 1.01);
+    window.invoke_media_volume("4".into(), -0.01);
+    window.invoke_media_volume("4".into(), f32::NAN);
+    window.invoke_media_volume("3".into(), 0.1);
+    window.invoke_media_mute("3".into());
+    assert_eq!(volumes.borrow().len(), 5);
+    assert_eq!(window.get_media_controls().volume, 0.8);
+}
+
+#[test]
+fn the_level_carries_over_to_the_next_video_of_the_window() {
+    let (window, media, volumes, accepts) = sound_window();
+    assert!(media.begin(MediaSessionId(5)));
+    assert!(media.apply(with_sound(snapshot(MediaSessionId(5), 0, 1, 0, false))));
+    window.invoke_media_volume("5".into(), 0.3);
+    window.invoke_media_mute("5".into());
+    assert!(media.retire(MediaSessionId(5)));
+    assert!(media.begin(MediaSessionId(6)));
+    let next = window.get_media_controls();
+    assert_eq!(next.volume, 0.3);
+    assert!(next.muted);
+    assert!(media.apply(with_sound(snapshot(MediaSessionId(6), 0, 1, 0, false))));
+    // A level the audio output refuses (a closed window) is not shown as set.
+    accepts.set(false);
+    window.invoke_media_mute("6".into());
+    assert!(window.get_media_controls().muted);
+    assert_eq!(*volumes.borrow(), [(30, false), (30, true), (30, false)]);
 }
 
 fn snapshot(
@@ -49,6 +166,7 @@ fn snapshot(
         duration: Some(Duration::from_secs(120)),
         seekable: true,
         playing,
+        audio: false,
         phase: if playing {
             MediaPhase::Playing
         } else {
@@ -239,7 +357,7 @@ fn active_video_preserves_viewer_file_commands_and_leaves_canvas_scroll_local() 
         capture.borrow_mut().push(input);
         true
     });
-    let media = MediaControls::install(&open.window, Rc::new(|_| false));
+    let media = MediaControls::install(&open.window, Rc::new(|_| false), Rc::new(|_, _| false));
     assert!(media.begin(MediaSessionId(1)));
     assert!(!open.window.invoke_scroll(1., 12.));
     assert!(!crate::dispatch_key(&open, "viewer.find"));
@@ -249,4 +367,28 @@ fn active_video_preserves_viewer_file_commands_and_leaves_canvas_scroll_local() 
         inputs.borrow().as_slice(),
         [ViewerInput::NextFile, ViewerInput::PreviousFile],
     ));
+}
+
+#[test]
+fn the_mute_key_reaches_the_window_audio_output() {
+    let (_runtime, _windows, open, _service) = crate::image_presentation_tests::open();
+    open.timer.stop();
+    assert!(
+        !crate::dispatch_key(&open, "viewer.mute"),
+        "no video is shown"
+    );
+    let session = MediaSessionId(1);
+    assert!(open.media_controls.begin(session));
+    assert!(
+        open.media_controls
+            .apply(with_sound(snapshot(session, 0, 1, 0, false)))
+    );
+    assert_eq!(open.session.media_volume(), (100, false));
+    assert!(crate::dispatch_key(&open, "viewer.mute"));
+    assert!(open.window.get_media_controls().muted);
+    assert_eq!(open.session.media_volume(), (100, true));
+    open.window.invoke_media_volume("1".into(), 0.6);
+    assert_eq!(open.session.media_volume(), (60, false));
+    assert!(crate::dispatch_key(&open, "viewer.mute"));
+    assert_eq!(open.session.media_volume(), (60, true));
 }

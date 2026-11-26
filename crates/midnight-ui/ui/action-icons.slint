@@ -96,6 +96,8 @@ export global FallbackIcons {
     out property <image> sort-ascending: @image-url("icons/sort-ascending.svg");
     out property <image> sort-descending: @image-url("icons/sort-descending.svg");
     out property <image> pause: @image-url("icons/pause.svg");
+    out property <image> sound: @image-url("icons/sound.svg");
+    out property <image> sound-off: @image-url("icons/sound-off.svg");
     // The panel's compact view picker shows the shown view's glyph.
     out property <image> view-detailed: @image-url("icons/view-detailed.svg");
     out property <image> view-brief: @image-url("icons/view-brief.svg");
@@ -113,6 +115,8 @@ export global FallbackIcons {
             : label == "Browse…" || label == "Browse image…" || label == "Change icon…" || label == "Insert file" ? FallbackIcons.open-path
             : label == "Open" || label == "Resume" || label == "Play" ? FallbackIcons.run
             : label == "Pause" ? FallbackIcons.pause
+            : label == "Mute" ? FallbackIcons.sound
+            : label == "Unmute" ? FallbackIcons.sound-off
             : label == "Copy details" || label == "Copy as" ? FallbackIcons.copy
             : label == "Add" || label == "Add current" || label == "Insert value" ? FallbackIcons.tab-add
             : label == "Reset" || label == "Retry" || label == "Retry with authorization" || label == "Refresh"

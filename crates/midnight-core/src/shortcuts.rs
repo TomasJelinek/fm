@@ -510,6 +510,7 @@ impl ShortcutMap {
                         | "viewer.document-previous"
                         | "viewer.zoom-to"
                         | "viewer.reload"
+                        | "viewer.mute"
                         | "compare.next-difference"
                         | "compare.previous-difference"
                         | "compare.first-difference"

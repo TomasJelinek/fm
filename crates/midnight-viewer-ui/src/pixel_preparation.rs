@@ -688,6 +688,7 @@ mod palette_tests {
                     duration: Some(Duration::from_secs(8)),
                     seekable: true,
                     playing: false,
+                    audio: false,
                     phase: MediaPhase::Paused,
                 }),
             ],

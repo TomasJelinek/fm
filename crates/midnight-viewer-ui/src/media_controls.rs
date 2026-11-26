@@ -57,6 +57,11 @@ impl Active {
         }
     }
 
+    /// The video plays sound, so its volume and mute can be changed.
+    fn audio(&self) -> bool {
+        self.playback_allowed() && self.latest.as_ref().is_some_and(|snapshot| snapshot.audio)
+    }
+
     fn playing(&self) -> bool {
         self.pending.map_or_else(
             || {
@@ -170,6 +175,7 @@ impl Active {
         };
         MediaControlsState {
             session: self.session.0.to_string().into(),
+            audio: self.audio(),
             playing,
             can_play_pause: self.playback_allowed(),
             can_seek: self.seek_duration().is_some(),
@@ -179,6 +185,7 @@ impl Active {
             time: time.into(),
             status: status.into(),
             error: midnight_core::visible_name(error).as_ref().into(),
+            ..MediaControlsState::default()
         }
     }
 }
@@ -206,19 +213,98 @@ fn timestamp(value: Duration) -> String {
     }
 }
 
+/// The window's sound level. It outlives each video, so the next file the window shows
+/// plays at the same level; it is not saved with the settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Volume {
+    percent: u8,
+    muted: bool,
+}
+
+impl Default for Volume {
+    fn default() -> Self {
+        Self {
+            percent: 100,
+            muted: false,
+        }
+    }
+}
+
+/// A change of the window's sound level from its controls.
+enum Sound {
+    ToggleMute,
+    /// The slider's fraction of full volume. Moving the slider also unmutes.
+    Level(f32),
+}
+
+impl Volume {
+    fn changed(self, sound: Sound) -> Option<Self> {
+        let next = match sound {
+            Sound::ToggleMute => Self {
+                muted: !self.muted,
+                ..self
+            },
+            Sound::Level(fraction) => {
+                if !(0.0..=1.0).contains(&fraction) {
+                    return None;
+                }
+                Self {
+                    percent: (fraction * 100.0).round() as u8,
+                    muted: false,
+                }
+            }
+        };
+        (next != self).then_some(next)
+    }
+}
+
 #[derive(Default)]
 struct State {
     highest: Option<MediaSessionId>,
     active: Option<Active>,
+    volume: Volume,
 }
 
 impl State {
     fn presentation(&self) -> MediaControlsState {
-        self.active
+        let mut state = self
+            .active
             .as_ref()
-            .map_or_else(MediaControlsState::default, Active::presentation)
+            .map_or_else(MediaControlsState::default, Active::presentation);
+        state.volume = f32::from(self.volume.percent) / 100.0;
+        state.muted = self.volume.muted;
+        state
+    }
+
+    /// Change the level for the active video with sound. `apply` stores it in the
+    /// window's audio output and says whether it took it.
+    fn sound(
+        &mut self,
+        session: Option<&str>,
+        sound: Sound,
+        apply: &dyn Fn(u8, bool) -> bool,
+    ) -> bool {
+        let Some(active) = &self.active else {
+            return false;
+        };
+        if session.is_some_and(|session| session.parse::<u64>().ok() != Some(active.session.0))
+            || !active.audio()
+        {
+            return false;
+        }
+        let Some(next) = self.volume.changed(sound) else {
+            return false;
+        };
+        if !apply(next.percent, next.muted) {
+            return false;
+        }
+        self.volume = next;
+        true
     }
 }
+
+/// Stores a sound level in the window's audio output: percent and muted.
+pub type SetVolume = Rc<dyn Fn(u8, bool) -> bool>;
 
 /// The viewer owns one binding for its lifetime. Worker delivery is asynchronous
 /// and the sender reports admission without delivering a snapshot inline.
@@ -226,14 +312,20 @@ pub struct MediaControls {
     window: Weak<ViewerWindow>,
     state: Rc<RefCell<State>>,
     sender: Rc<dyn Fn(MediaControl) -> bool>,
+    set_volume: SetVolume,
 }
 
 impl MediaControls {
-    pub fn install(window: &ViewerWindow, send: Rc<dyn Fn(MediaControl) -> bool>) -> Self {
+    pub fn install(
+        window: &ViewerWindow,
+        send: Rc<dyn Fn(MediaControl) -> bool>,
+        set_volume: SetVolume,
+    ) -> Self {
         let binding = Self {
             window: window.as_weak(),
             state: Rc::new(RefCell::new(State::default())),
             sender: send,
+            set_volume,
         };
         let weak = binding.window.clone();
         let state = Rc::downgrade(&binding.state);
@@ -265,8 +357,39 @@ impl MediaControls {
         let toggle = dispatch.clone();
         window.on_media_toggle(move |session| toggle(session, Input::Toggle));
         window.on_media_seek(move |session, value| dispatch(session, Input::Seek(value)));
+        let sound = {
+            let weak = binding.window.clone();
+            let state = Rc::downgrade(&binding.state);
+            let set_volume = Rc::downgrade(&binding.set_volume);
+            Rc::new(move |session: SharedString, sound| {
+                if let (Some(window), Some(state), Some(set_volume)) =
+                    (weak.upgrade(), state.upgrade(), set_volume.upgrade())
+                    && state
+                        .borrow_mut()
+                        .sound(Some(session.as_str()), sound, &*set_volume)
+                {
+                    window.set_media_controls(state.borrow().presentation());
+                }
+            })
+        };
+        let mute = sound.clone();
+        window.on_media_mute(move |session| mute(session, Sound::ToggleMute));
+        window.on_media_volume(move |session, value| sound(session, Sound::Level(value)));
         binding.refresh();
         binding
+    }
+
+    /// Mute or unmute the active video from the keyboard (`viewer.mute`). False when no
+    /// video with sound is shown.
+    pub(super) fn toggle_mute(&self) -> bool {
+        let changed = self
+            .state
+            .borrow_mut()
+            .sound(None, Sound::ToggleMute, &*self.set_volume);
+        if changed {
+            self.refresh();
+        }
+        changed
     }
 
     /// Begin only from a trusted viewer open transition.

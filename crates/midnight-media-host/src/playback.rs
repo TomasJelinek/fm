@@ -1,7 +1,11 @@
+use crate::volume::{AudioVolume, UNITY_GAIN, scale_pcm};
 use std::{
     collections::VecDeque,
     io,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -98,10 +102,13 @@ struct Audio {
     next_frame: u64,
     submitted: u64,
     device: DeviceClock,
+    volume: Arc<AudioVolume>,
+    /// The block being submitted at a level below full; reserved once.
+    scaled: Vec<i16>,
 }
 
 impl Audio {
-    fn new(sink: Box<dyn AudioSink>, base: Duration) -> Self {
+    fn new(sink: Box<dyn AudioSink>, base: Duration, volume: Arc<AudioVolume>) -> Self {
         Self {
             sink,
             pending: VecDeque::with_capacity(MAX_HOST_FRAMES),
@@ -109,6 +116,8 @@ impl Audio {
             next_frame: 0,
             submitted: 0,
             device: DeviceClock::default(),
+            volume,
+            scaled: Vec::with_capacity(MAX_PCM_BLOCK_FRAMES * PCM_CHANNELS),
         }
     }
 
@@ -174,7 +183,17 @@ impl Audio {
             .min(MAX_PCM_BLOCK_FRAMES)
             .min(MAX_DEVICE_FRAMES - self.device.queued_frames);
         if frames != 0 && !cancelled.load(Ordering::Acquire) {
-            let accepted = self.sink.write(head[..frames].as_flattened())?;
+            // The level applies from this block on: one lock-free load per step. Queued
+            // host frames stay unscaled, so a later change still reaches them. Muted
+            // output writes silence, which keeps the device clock driving the video.
+            let block = head[..frames].as_flattened();
+            let gain = self.volume.gain();
+            let accepted = if gain == UNITY_GAIN {
+                self.sink.write(block)?
+            } else {
+                scale_pcm(block, gain, &mut self.scaled);
+                self.sink.write(&self.scaled)?
+            };
             if accepted > frames {
                 return Err(invalid("audio sink accepted more frames than supplied"));
             }
@@ -213,12 +232,21 @@ impl Playback {
         }
     }
 
-    /// Establish a known stopped output. Unavailable audio is an error, so a
-    /// caller must explicitly choose video-only playback if that is desired.
-    pub fn with_audio(position: Duration, mut sink: Box<dyn AudioSink>) -> io::Result<Self> {
+    /// Establish a known stopped output at full volume. Unavailable audio is an error,
+    /// so a caller must explicitly choose video-only playback if that is desired.
+    pub fn with_audio(position: Duration, sink: Box<dyn AudioSink>) -> io::Result<Self> {
+        Self::with_audio_volume(position, sink, Arc::default())
+    }
+
+    /// As [`Self::with_audio`], at the level `volume` holds whenever PCM is submitted.
+    pub fn with_audio_volume(
+        position: Duration,
+        mut sink: Box<dyn AudioSink>,
+        volume: Arc<AudioVolume>,
+    ) -> io::Result<Self> {
         sink.reset()?;
         let mut player = Self::video_only(position);
-        player.audio = Some(Audio::new(sink, position));
+        player.audio = Some(Audio::new(sink, position, volume));
         Ok(player)
     }
 

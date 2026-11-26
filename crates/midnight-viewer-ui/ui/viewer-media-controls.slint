@@ -3,6 +3,11 @@ import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
 
 export struct MediaControlsState {
     session: string,
+    // The video plays sound: mute and volume are available.
+    audio: bool,
+    // The window's level, 0 to 1 of full volume; kept while muted.
+    volume: float,
+    muted: bool,
     playing: bool,
     can-play-pause: bool,
     can-seek: bool,
@@ -12,16 +17,27 @@ export struct MediaControlsState {
     error: string,
 }
 
-component PlaybackTimeline inherits Rectangle {
+// A horizontal media slider from 0 to 1: the playback position and the volume. The
+// timeline commits a drag when it is released (each seek decodes); a `live` slider
+// commits while it is dragged (a volume change is cheap and should be heard at once).
+component MediaSlider inherits Rectangle {
     in property <string> session;
     in property <bool> enabled;
     in property <float> position;
-    in property <string> time;
+    // Shown in the accent colour unless `dimmed` (the volume while muted).
+    in property <bool> dimmed;
+    in property <bool> live;
+    in property <float> step: 0.01;
+    in property <string> label;
+    in property <string> description;
+    // The accessible value runs from 0 to this (100 for a percentage).
+    in property <float> value-scale: 1;
     in property <color> accent;
     in property <length> control-height;
+    in property <length> preferred: 160px;
+    in property <float> stretch: 1;
     callback seek(string, float);
 
-    private property <float> step: 0.01;
     private property <float> current-position: clamp(root.position, 0, 1);
     private property <string> pressed-session;
     private property <float> press-position;
@@ -34,21 +50,21 @@ component PlaybackTimeline inherits Rectangle {
     private property <length> thumb-size: Theme.touch ? 20px : 16px;
     private property <length> track-width: max(1px, root.width - root.thumb-size);
 
-    min-width: 44px; preferred-width: 160px;
+    min-width: 44px; preferred-width: root.preferred;
     min-height: root.control-height; preferred-height: root.control-height;
-    horizontal-stretch: 1; vertical-stretch: 0;
+    horizontal-stretch: root.stretch; vertical-stretch: 0;
     forward-focus: keys;
     accessible-role: slider;
-    accessible-label: "Playback position";
-    accessible-description: root.time;
+    accessible-label: root.label;
+    accessible-description: root.description;
     accessible-enabled: root.enabled;
     accessible-orientation: horizontal;
-    accessible-value: root.shown-position;
+    accessible-value: root.shown-position * root.value-scale;
     accessible-value-minimum: 0;
-    accessible-value-maximum: 1;
-    accessible-value-step: root.step;
+    accessible-value-maximum: root.value-scale;
+    accessible-value-step: root.step * root.value-scale;
     accessible-action-set-value(value) => {
-        if value.is-float() { root.adjust(value.to-float()); }
+        if value.is-float() { root.adjust(value.to-float() / root.value-scale); }
     }
     accessible-action-increment => { root.adjust(root.current-position + root.step); }
     accessible-action-decrement => { root.adjust(root.current-position - root.step); }
@@ -77,7 +93,7 @@ component PlaybackTimeline inherits Rectangle {
     Rectangle {
         x: root.thumb-size / 2; y: (root.height - self.height) / 2;
         width: root.track-width * root.shown-position; height: 4px;
-        background: root.enabled ? root.accent : Theme.muted-text;
+        background: root.enabled && !root.dimmed ? root.accent : Theme.muted-text;
         border-radius: 2px;
     }
     Rectangle {
@@ -89,7 +105,7 @@ component PlaybackTimeline inherits Rectangle {
         Rectangle {
             x: 4px; y: 4px;
             width: parent.width - 8px; height: self.width; border-radius: self.width / 2;
-            background: root.enabled ? root.accent : Theme.muted-text;
+            background: root.enabled && !root.dimmed ? root.accent : Theme.muted-text;
         }
     }
     keys := FocusScope {
@@ -99,8 +115,11 @@ component PlaybackTimeline inherits Rectangle {
                 || event.modifiers.meta || event.modifiers.shift {
                 return reject;
             }
-            if event.text == Key.LeftArrow { root.adjust(root.current-position - root.step); }
-            else if event.text == Key.RightArrow { root.adjust(root.current-position + root.step); }
+            if event.text == Key.LeftArrow || event.text == Key.DownArrow {
+                root.adjust(root.current-position - root.step);
+            } else if event.text == Key.RightArrow || event.text == Key.UpArrow {
+                root.adjust(root.current-position + root.step);
+            }
             else if event.text == Key.Home { root.adjust(0); }
             else if event.text == Key.End { root.adjust(1); }
             else { return reject; }
@@ -123,12 +142,13 @@ component PlaybackTimeline inherits Rectangle {
                 root.press-position = root.current-position;
                 root.preview-position = root.position-at(self.mouse-x);
                 root.pressed-session = root.session;
+                if root.live { root.seek(root.session, root.preview-position); }
             } else if event.kind == PointerEventKind.up {
                 let session = root.pressed-session;
                 let commit = root.scrubbing;
                 let target = root.position-at(self.mouse-x);
                 root.pressed-session = "";
-                if commit && abs(target - root.press-position) > 0.00001 {
+                if commit && (root.live || abs(target - root.press-position) > 0.00001) {
                     root.seek(session, target);
                 }
             }
@@ -136,9 +156,16 @@ component PlaybackTimeline inherits Rectangle {
         moved => {
             if self.pressed && root.scrubbing {
                 root.preview-position = root.position-at(self.mouse-x);
+                if root.live { root.seek(root.session, root.preview-position); }
             }
         }
     }
+}
+
+// The mute toggle: the speaker glyph alone, named by its accessible label and tooltip.
+component MuteButton inherits ActionButton {
+    in property <string> tip;
+    Tooltip { text: @markdown("\{root.tip}"); }
 }
 
 export component MediaControls inherits Rectangle {
@@ -149,6 +176,8 @@ export component MediaControls inherits Rectangle {
     in property <length> control-height;
     callback toggle(string);
     callback seek(string, float);
+    callback mute(string);
+    callback volume(string, float);
     private property <length> inset: root.compact ? 4px : 6px;
 
     background: Theme.surface;
@@ -172,11 +201,12 @@ export component MediaControls inherits Rectangle {
                 enabled: root.state.can-play-pause;
                 clicked => { root.toggle(root.state.session); }
             }
-            PlaybackTimeline {
+            MediaSlider {
                 session: root.state.session;
                 enabled: root.state.can-seek;
                 position: root.state.position;
-                time: root.state.time;
+                label: "Playback position";
+                description: root.state.time;
                 accent: root.accent; control-height: root.control-height;
                 seek(session, position) => { root.seek(session, position); }
             }
@@ -191,6 +221,32 @@ export component MediaControls inherits Rectangle {
                 overflow: elide; vertical-alignment: center;
                 accessible-role: text; accessible-label: "Playback time";
                 accessible-value: root.state.time;
+            }
+            // Sound: disabled for a video without it (no audio track, a codec the viewer
+            // cannot decode or no output device; the status line says which).
+            MuteButton {
+                font-size: root.font-size; compact: true; glyph-only: true;
+                width: max(32px, root.control-height);
+                control-height: root.control-height; minimum-control-height: root.control-height;
+                text: root.state.muted ? "Unmute" : "Mute";
+                // While the video opens, whether it has sound is not known yet.
+                tip: !root.state.audio && root.state.can-play-pause ? "This video has no sound"
+                    : root.state.muted ? "Unmute (M)" : "Mute (M)";
+                enabled: root.state.audio;
+                clicked => { root.mute(root.state.session); }
+            }
+            MediaSlider {
+                session: root.state.session;
+                enabled: root.state.audio;
+                position: root.state.volume;
+                dimmed: root.state.muted;
+                live: true; step: 0.05;
+                label: "Volume";
+                description: root.state.muted ? "Muted" : "";
+                value-scale: 100;
+                preferred: root.compact ? 64px : 96px; stretch: 0;
+                accent: root.accent; control-height: root.control-height;
+                seek(session, level) => { root.volume(session, level); }
             }
         }
     }

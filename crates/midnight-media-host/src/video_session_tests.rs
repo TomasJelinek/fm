@@ -1,7 +1,7 @@
 use super::*;
 use crate::video_transport::{SeekEpoch, SessionGeneration};
 use crate::{AudioPause, DeviceClock, PCM_CHANNELS, PCM_RATE};
-use std::{cell::Cell, num::NonZeroU64, rc::Rc};
+use std::{cell::Cell, num::NonZeroU64, rc::Rc, sync::Arc};
 
 fn identity(session: u64, epoch: u64) -> VideoIdentity {
     VideoIdentity {
@@ -19,6 +19,7 @@ fn session() -> VideoSession {
             height: 1,
             audio: AudioTrack::Absent,
         },
+        Arc::default(),
         || panic!("silent media does not open a native device"),
     )
 }
@@ -122,6 +123,7 @@ fn exhausted_audio_advances_the_clock_before_the_video_queue_reaches_eof() {
             height: 1,
             audio: AudioTrack::Qualified,
         },
+        Arc::default(),
         || Ok(Box::new(EmptySink)),
     );
     session.play(start).unwrap();
@@ -306,6 +308,7 @@ fn final_pcm_with_eof_hands_the_drained_audio_clock_to_the_video_tail() {
             height: 1,
             audio: AudioTrack::Qualified,
         },
+        Arc::default(),
         || {
             Ok(Box::new(DiscardingSink {
                 submitted: 0,
@@ -414,6 +417,7 @@ fn an_empty_seek_preview_discards_final_pcm_and_can_restart_through_a_real_seek(
             height: 1,
             audio: AudioTrack::Qualified,
         },
+        Arc::default(),
         || {
             Ok(Box::new(DiscardingSink {
                 submitted: 0,
@@ -483,4 +487,104 @@ fn an_empty_seek_preview_discards_final_pcm_and_can_restart_through_a_real_seek(
             ..
         }))
     ));
+}
+
+/// Accepts every write and keeps it queued; records the samples.
+struct RecordingSink(Rc<std::cell::RefCell<Vec<i16>>>);
+
+impl AudioSink for RecordingSink {
+    fn start(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    fn pause(&mut self) -> io::Result<AudioPause> {
+        Ok(AudioPause::Retained(self.sample_clock()?))
+    }
+    fn reset(&mut self) -> io::Result<()> {
+        self.0.borrow_mut().clear();
+        Ok(())
+    }
+    fn write(&mut self, interleaved: &[i16]) -> io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(interleaved);
+        Ok(interleaved.len() / PCM_CHANNELS)
+    }
+    fn sample_clock(&mut self) -> io::Result<DeviceClock> {
+        Ok(DeviceClock {
+            played_frames: 0,
+            queued_frames: self.0.borrow().len() / PCM_CHANNELS,
+        })
+    }
+}
+
+fn metadata(audio: AudioTrack) -> VideoMetadata {
+    VideoMetadata {
+        duration: Some(Duration::from_secs(4)),
+        width: 2,
+        height: 1,
+        audio,
+    }
+}
+
+#[test]
+fn only_a_session_with_an_opened_output_plays_audio() {
+    let written = Rc::default();
+    let sound = VideoSession::new(
+        identity(2, 1),
+        metadata(AudioTrack::Qualified),
+        Arc::default(),
+        move || Ok(Box::new(RecordingSink(written))),
+    );
+    assert!(sound.plays_audio());
+    for (audio, opened) in [
+        (AudioTrack::Absent, false),
+        (AudioTrack::Unqualified, false),
+        (AudioTrack::Qualified, true),
+    ] {
+        let session = VideoSession::new(identity(2, 1), metadata(audio), Arc::default(), || {
+            assert!(opened, "only a qualified track opens a device");
+            Err(io::Error::other("no audio device"))
+        });
+        assert!(!session.plays_audio());
+    }
+}
+
+#[test]
+fn the_shared_volume_scales_the_session_pcm_while_it_plays() {
+    let now = Instant::now();
+    let stopped = AtomicBool::new(false);
+    let written: Rc<std::cell::RefCell<Vec<i16>>> = Rc::default();
+    let volume = Arc::new(AudioVolume::default());
+    volume.set(50, false).unwrap();
+    let mut session = VideoSession::new(
+        identity(2, 1),
+        metadata(AudioTrack::Qualified),
+        volume.clone(),
+        {
+            let written = written.clone();
+            move || Ok(Box::new(RecordingSink(written)))
+        },
+    );
+    assert!(matches!(
+        session.next_request(),
+        Some(DecoderRequest::Pull(PullCredit {
+            audio: crate::video_transport::AudioDemand::Frames(_),
+            ..
+        }))
+    ));
+    session
+        .accept(
+            DecoderReply::Pulled(PullResult {
+                identity: identity(2, 1),
+                frames: vec![frame_at(0)],
+                pcm: Some(crate::video_transport::PcmBlock {
+                    first_frame: 0,
+                    samples: vec![-8000; 8].into_boxed_slice(),
+                }),
+                end_of_media: false,
+            }),
+            now,
+        )
+        .unwrap();
+    session.play(now).unwrap();
+    session.tick(now, &stopped).unwrap();
+    assert_eq!(*written.borrow(), [-1000; 8]);
 }

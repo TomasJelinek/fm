@@ -524,6 +524,17 @@ impl ViewerWindows {
                             .is_some_and(|open| open.enqueue(ViewerInput::MediaControl(control)))
                     }
                 }),
+                // The level goes straight to the window's audio output: one atomic store,
+                // never queued behind other input and never refused for a full queue.
+                Rc::new({
+                    let weak = weak.clone();
+                    move |percent, muted| {
+                        weak.upgrade().is_some_and(|open| {
+                            !open.closed.get()
+                                && open.session.set_media_volume(percent, muted).is_ok()
+                        })
+                    }
+                }),
             ),
             window,
             archive,
@@ -1795,6 +1806,9 @@ fn dispatch_keyboard_shortcut(open: &OpenWindow, action: &str) -> bool {
 }
 
 fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
+    if action == "viewer.mute" {
+        return open.media_controls.toggle_mute();
+    }
     if media_controls::is_active(&open.window)
         && !matches!(
             action,

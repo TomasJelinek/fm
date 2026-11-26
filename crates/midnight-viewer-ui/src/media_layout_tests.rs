@@ -148,6 +148,7 @@ fn snapshot(control: u64, revision: u64, seconds: u64, phase: MediaPhase) -> Med
         duration: Some(Duration::from_secs(120)),
         seekable: true,
         playing: phase == MediaPhase::Playing,
+        audio: false,
         phase,
     }
 }
@@ -185,6 +186,7 @@ fn pressing_video_controls_keeps_the_video_area_and_controls_in_place() {
                 accepts.get()
             }
         }),
+        Rc::new(|_, _| true),
     );
     let pixels = [17, 190, 90, 255].repeat(160 * 90);
     window.set_surface(slint::Image::from_rgba8_premultiplied(

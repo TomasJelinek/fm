@@ -258,6 +258,8 @@ struct Worker {
     video_installation: Option<VideoInstallation>,
     video: Option<VideoView>,
     closing_video: Option<VideoView>,
+    /// The window's sound level (`WindowSession::set_media_volume`), kept across files.
+    audio_volume: Arc<midnight_media_host::AudioVolume>,
     video_retirement_error: Option<String>,
     /// Native paths or provider labels of the bounded navigation order.
     files: Arc<[PathBuf]>,
@@ -341,6 +343,8 @@ pub(crate) struct Services {
     pub negotiate_layout: bool,
     /// The service's installed video support, discovered when an opening may route to it.
     pub video: Box<dyn FnOnce() -> Option<VideoInstallation> + Send>,
+    /// The window's sound level, shared with every video it plays.
+    pub audio_volume: Arc<midnight_media_host::AudioVolume>,
     /// The window's admission credit. It is returned after all window work is destroyed
     /// and before Closed is published (or by unwinding), so a window that saw Closed can
     /// open another at once.
@@ -370,6 +374,7 @@ pub(crate) fn run(
         palette: palette_state,
         negotiate_layout,
         video,
+        audio_volume,
         window,
     } = services;
     output.put(ViewerOutput::Status(PREPARING.into()));
@@ -452,6 +457,7 @@ pub(crate) fn run(
         video_installation,
         video: None,
         closing_video: None,
+        audio_volume,
         video_retirement_error: None,
         files: order.files,
         current: order.current,
