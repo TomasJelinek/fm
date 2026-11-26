@@ -17,6 +17,13 @@ $sizes = @(16, 20, 24, 32, 40, 48, 64, 128, 256)
 if ($Variant) {
     $assets = Join-Path $assets "variants/$Variant"
 }
+# Source rectangles in master-image pixels. The wider rectangles give the two
+# folders a taller profile when rendered into a square taskbar icon.
+$crop = switch ($Variant) {
+    'origami-trail' { [Drawing.Rectangle]::new(63, 135, 1128, 938) }
+    'interleave'    { [Drawing.Rectangle]::new(146, 126, 966, 966) }
+    default         { [Drawing.Rectangle]::new(90, 123, 1076, 956) }
+}
 $source = [Drawing.Image]::FromFile((Join-Path $assets 'master.png'))
 try {
     foreach ($size in $sizes) {
@@ -28,7 +35,8 @@ try {
             $graphics.CompositingQuality = [Drawing.Drawing2D.CompositingQuality]::HighQuality
             $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
             $graphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-            $graphics.DrawImage($source, [Drawing.Rectangle]::new(0, 0, $size, $size))
+            $destination = [Drawing.Rectangle]::new(0, 0, $size, $size)
+            $graphics.DrawImage($source, $destination, $crop, [Drawing.GraphicsUnit]::Pixel)
             $bitmap.Save($stream, [Drawing.Imaging.ImageFormat]::Png)
             $frames.Add($stream.ToArray())
             if ($size -eq 256) {
