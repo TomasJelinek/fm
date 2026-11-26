@@ -166,6 +166,11 @@ impl ImageWorker {
                         None => (None, None),
                     };
                     *permit = acquired_permit;
+                    crate::open_trace::mark(if prepared.is_some() {
+                        "image_spare_claimed"
+                    } else {
+                        "image_cold_start"
+                    });
                     let opened = if let Some(prepared) = prepared {
                         // The manager already rejected stale unused spares. The host performs
                         // the final identity/source guard immediately before the consuming Open.
@@ -203,6 +208,7 @@ impl ImageWorker {
                             return Err(error.to_string());
                         }
                     };
+                    crate::open_trace::mark("image_session_opened");
                     let result = (|| {
                         if let Some(startup) = &startup {
                             startup.opened(&provider);
@@ -251,6 +257,7 @@ impl ImageWorker {
                                                     Duration::from_secs(15),
                                                 )
                                                 .map_err(|error| error.to_string())?;
+                                            crate::open_trace::mark("image_tile_rendered");
                                             crate::image_pixels::premultiply(&mut frame.rgba);
                                             let pixels =
                                                 Arc::new(ViewerPixels::new(frame.rgba, charge)?);

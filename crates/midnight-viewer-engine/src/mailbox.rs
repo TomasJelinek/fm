@@ -299,7 +299,10 @@ impl Mailbox {
             );
         if failure || media_retired || notice || occupied < 8 - reserved {
             match &output {
-                ViewerOutput::Frame(_) => self.finish_open(Ok(())),
+                ViewerOutput::Frame(_) => {
+                    crate::open_trace::mark("frame_published");
+                    self.finish_open(Ok(()))
+                }
                 ViewerOutput::ImageUnavailable { message, .. } => {
                     self.finish_open(Err(message.clone()))
                 }

@@ -225,6 +225,7 @@ impl Worker {
                 .ok();
             }
             self.pending_layout = Some(opening);
+            crate::open_trace::mark("layout_selected");
             output.put(ViewerOutput::LayoutSelected {
                 token: selected.token,
                 mode: selected.mode,
@@ -251,6 +252,7 @@ impl Worker {
         }
         self.layout.accept(token)?;
         let opening = self.pending_layout.take()?;
+        crate::open_trace::mark("layout_ready");
         // Image/PDF Fit uses the raw physical canvas; text and HTML retain the
         // existing independently bounded surface and effective device scale.
         self.image_size = [geometry.width, geometry.height];
@@ -331,7 +333,9 @@ impl Worker {
                     .get(index - self.images.len())
                     .ok_or("Selected HTML viewer is no longer available.")?
                     .clone();
+                crate::open_trace::mark("web_open_start");
                 self.open_web(provider, file)?;
+                crate::open_trace::mark("web_session_started");
                 None
             }
             crate::routing::Route::Process { index } => {
@@ -350,16 +354,20 @@ impl Worker {
                 ));
                 None
             }
-            crate::routing::Route::Native { index, mode, .. } => Some(
-                self.runtime
+            crate::routing::Route::Native { index, mode, .. } => {
+                crate::open_trace::mark("plugin_open_start");
+                let session = self
+                    .runtime
                     .open(
                         &self.runtime.catalog()[index].id,
                         file,
                         self.generation,
                         mode,
                     )
-                    .map_err(|error| error.to_string())?,
-            ),
+                    .map_err(|error| error.to_string())?;
+                crate::open_trace::mark("plugin_session_opened");
+                Some(session)
+            }
         };
         self.apply_font();
         if let Some(session) = &self.session {

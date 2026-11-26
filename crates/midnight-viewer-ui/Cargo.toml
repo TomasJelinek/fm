@@ -13,6 +13,9 @@ autotests = false
 # (`src/acceptance_seams.rs`) and opt-in native performance probes. The
 # application builds without it.
 acceptance-seams = []
+# Opening phase timestamps in optimized probe builds (`MIDNIGHT_VIEWER_OPEN_TRACE=1`);
+# debug builds always contain them. The application builds without it.
+open-trace = ["midnight-viewer-engine/open-trace"]
 
 [dependencies]
 midnight-core.workspace = true

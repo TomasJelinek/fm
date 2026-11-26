@@ -12,6 +12,7 @@ pub(super) fn bind(
         if let Some(open) = weak.upgrade()
             && !open.closed.get()
         {
+            trace_phase(&open, 8); // Delivery woken by prepared output.
             receive(&open, &service, copy.as_ref());
         }
     });
@@ -140,6 +141,13 @@ pub(super) fn pixels(
     }
     #[cfg(not(test))]
     Err("Prepared viewer pixels do not match the current frame.".into())
+}
+
+/// An opening trace mark without a frame (`pixel_preparation::OpeningTrace`).
+pub(super) fn trace_phase(open: &OpenWindow, phase: u8) {
+    if let Some(preparation) = open.preparation.borrow().as_ref() {
+        preparation.trace.mark(phase, 0, 0, 0);
+    }
 }
 
 pub(super) fn trace_frame(open: &OpenWindow, phase: u8, frame: &ViewerFrame) {

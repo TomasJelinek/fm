@@ -375,6 +375,7 @@ pub(crate) fn run(
     output.put(ViewerOutput::Status(PREPARING.into()));
     let link_capture = capture.clone();
     let order = crate::capture::prepare_with(&launch, closed, capture)?;
+    crate::open_trace::mark("capture_prepared");
     let links = links::Links::new(
         link_capture,
         order.capture.clone(),
@@ -404,7 +405,9 @@ pub(crate) fn run(
     {
         None
     } else {
-        video()
+        let video = video();
+        crate::open_trace::mark("video_discovered");
+        video
     };
     // Ambiguous identities are disabled across transports before any code loads.
     let mut identities = std::collections::HashMap::new();
@@ -812,7 +815,9 @@ impl Worker {
         self.caption = format!("{} — Midnight Explorer", path.display());
         let result = (|| {
             let file = captured.ok_or("File identity is not ready")??;
+            crate::open_trace::mark("file_captured");
             let opening = self.prepare_opening(&path, file)?;
+            crate::open_trace::mark("route_selected");
             // Strips are reused only by a text view that paints the same rows again; an
             // image, PDF, HTML, Office or video view would hold them until text returns.
             if !raster::prepared_text_mode(self.mode) {

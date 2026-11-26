@@ -668,6 +668,11 @@ impl Worker {
         // A full batch can leave events queued; the browser wakes only for newer output.
         self.web_backlog = events.len() >= WEB_BATCH;
         for event in events {
+            crate::open_trace::mark(if matches!(event.kind, api::EventKind::Frame(_)) {
+                "web_frame_event"
+            } else {
+                "web_event"
+            });
             // Closed ends the session and must still see whether an error preceded it.
             if let Some(web) = self.web.as_mut()
                 && !matches!(event.kind, api::EventKind::Closed)

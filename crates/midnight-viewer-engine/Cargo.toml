@@ -6,6 +6,12 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+# Opening phase timestamps (`src/open_trace.rs`) in optimized builds, for the
+# `open_latency` probe only. Debug builds always contain them; the application
+# builds without this feature.
+open-trace = []
+
 [dependencies]
 midnight-media-host = { path = "../midnight-media-host" }
 midnight-media-output = { path = "../midnight-media-output" }

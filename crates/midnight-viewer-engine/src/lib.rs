@@ -36,6 +36,7 @@ mod link_slug;
 mod mailbox;
 mod navigation;
 mod office_preview;
+pub mod open_trace;
 #[cfg(test)]
 mod opening_retirement_tests;
 mod page;

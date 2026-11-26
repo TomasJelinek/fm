@@ -37,6 +37,7 @@ impl Job {
 
 impl Work {
     fn run(self) {
+        crate::open_trace::mark("worker_start");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if self.service.fonts.get().is_none()
                 && let Some(names) =
@@ -44,7 +45,9 @@ impl Work {
             {
                 let _ = self.service.fonts.set(names);
             }
+            crate::open_trace::mark("fonts_ready");
             let (runtime, images, web) = self.service.catalogs()?;
+            crate::open_trace::mark("catalogs_ready");
             // Video support is discovered only for an opening that may route to it.
             let service = self.service.clone();
             crate::worker::run(

@@ -8,30 +8,25 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Debug-only, opt-in first-frame timestamps. Disabled instances own no allocation.
+/// Opt-in first-frame timestamps in debug and `open-trace` builds. Disabled instances own
+/// no allocation.
 #[derive(Clone, Default)]
 pub(super) struct OpeningTrace {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "open-trace"))]
     state: Option<Arc<Mutex<opening_trace::State>>>,
 }
 
 impl OpeningTrace {
     pub fn new() -> Self {
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "open-trace"))]
         {
-            use std::sync::{
-                OnceLock,
-                atomic::{AtomicU64, Ordering},
-            };
-            static ENABLED: OnceLock<bool> = OnceLock::new();
-            static ORIGIN: OnceLock<Instant> = OnceLock::new();
+            use std::sync::atomic::{AtomicU64, Ordering};
             static OPENING: AtomicU64 = AtomicU64::new(1);
-            if *ENABLED.get_or_init(|| {
-                std::env::var_os("MIDNIGHT_VIEWER_OPEN_TRACE").is_some_and(|value| value == "1")
-            }) {
+            // The engine's phase marks share this origin (`open_trace`).
+            if let Some(origin) = midnight_viewer_engine::open_trace::origin() {
                 let trace = Self {
                     state: Some(Arc::new(Mutex::new(opening_trace::State::new(
-                        *ORIGIN.get_or_init(Instant::now),
+                        origin,
                         OPENING.fetch_add(1, Ordering::Relaxed),
                     )))),
                 };
@@ -43,7 +38,7 @@ impl OpeningTrace {
     }
 
     pub fn active(&self) -> bool {
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "open-trace"))]
         if let Some(state) = &self.state {
             return !lock(state).finished;
         }
@@ -51,7 +46,7 @@ impl OpeningTrace {
     }
 
     pub fn mark(&self, phase: u8, generation: u64, revision: u64, pending: u8) {
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "open-trace"))]
         if let Some(state) = &self.state {
             lock(state).mark(phase, generation, revision, pending);
         }
@@ -71,7 +66,7 @@ impl OpeningTrace {
     }
 
     pub fn finish(&self, generation: u64, revision: u64) -> Option<OpeningReport> {
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "open-trace"))]
         if let Some(state) = &self.state {
             return lock(state).finish(generation, revision);
         }
@@ -82,11 +77,11 @@ impl OpeningTrace {
 
 /// Only retired through the backend service; formatting and stderr never run on UI.
 pub(super) struct OpeningReport {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "open-trace"))]
     _records: opening_trace::Report,
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "open-trace"))]
 mod opening_trace {
     use super::*;
     const CAPACITY: usize = 64;

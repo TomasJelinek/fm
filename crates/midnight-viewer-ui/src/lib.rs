@@ -599,6 +599,9 @@ impl ViewerWindows {
                 if open.closed.get() {
                     return;
                 }
+                if open.layout.borrow().pending_ack {
+                    pixel_delivery::trace_phase(&open, 7); // Geometry tick awaiting a layout.
+                }
                 preferences::present_font_catalog(&open);
                 image_motion::refresh_scale(&open);
                 pump_geometry(&open);
@@ -821,8 +824,10 @@ fn flush_layout_ack(open: &OpenWindow) -> bool {
         layout.token
     };
     let Some(geometry) = layout_geometry(&open.window) else {
+        pixel_delivery::trace_phase(open, 5); // Canvas not settled yet.
         return true;
     };
+    pixel_delivery::trace_phase(open, 6); // Layout acknowledged.
     let sender = open.input.borrow().clone();
     if sender(ViewerInput::LayoutReady { token, geometry }) && !open.closed.get() {
         let mut layout = open.layout.borrow_mut();

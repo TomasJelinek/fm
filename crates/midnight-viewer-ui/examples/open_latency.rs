@@ -5,7 +5,15 @@
 //! docs/verification/2026-11-20-viewer-speed.md.
 //! With `--together FILE FILE [FILE...]`, leave every viewer surface open,
 //! placing successive windows on successive monitors when more than one is available.
-//! Set `MIDNIGHT_PROBE_PARENT=1` to keep a native parent visible as in the file manager.
+//! Set `MIDNIGHT_PROBE_PARENT=1` to keep a native parent visible as in the file manager;
+//! each viewer then takes the parent's captured bounds, as the file manager's take the main
+//! window's. `MIDNIGHT_PROBE_REPEAT=N` opens each file N times (default 3); the first
+//! opening in a process is the cold one. `MIDNIGHT_PROBE_SETTLE_MS=N` waits N ms after
+//! startup before the first opening (default: the first 250 ms tick), as a user who presses
+//! F3 a moment after the window appeared. `MIDNIGHT_PROBE_PAUSE_MS=N` waits N ms after each
+//! opening's first frame before the next opening. Build with `--features open-trace` and
+//! set MIDNIGHT_VIEWER_OPEN_TRACE=1 for per-phase timestamps in optimized builds. Startup
+//! phases per viewer kind: docs/verification/2026-11-26-viewer-startup.md.
 #[cfg(target_os = "linux")]
 #[path = "support/native_html_linux.rs"]
 mod native_linux;
@@ -29,6 +37,12 @@ use std::{
 };
 
 const REPEAT: usize = 3;
+
+fn environment_number(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+}
 
 fn launch(path: &std::path::Path) -> ViewerLaunch {
     let entries: Arc<[Entry]> = [Entry::new(EntryId(0), path.to_owned(), EntryKind::File)].into();
@@ -132,7 +146,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if paths.is_empty() || together && paths.len() < 2 {
         return Err("usage: open_latency FILE... | --together FILE FILE [FILE...]".into());
     }
-    let repeat = if together { 1 } else { REPEAT };
+    let repeat = if together {
+        1
+    } else {
+        environment_number("MIDNIGHT_PROBE_REPEAT").map_or(REPEAT, |value| value.max(1) as usize)
+    };
+    let settle = Duration::from_millis(environment_number("MIDNIGHT_PROBE_SETTLE_MS").unwrap_or(0));
+    let pause = Duration::from_millis(environment_number("MIDNIGHT_PROBE_PAUSE_MS").unwrap_or(0));
+    let finished = Rc::new(Cell::new(None::<Instant>));
     select_renderer()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -168,6 +189,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Rc::new(Cell::new(None::<Instant>));
     let done = Rc::new(Cell::new(None::<Result<Duration, String>>));
     let windows = RefCell::new(Vec::<slint::Weak<midnight_viewer_ui::ViewerWindow>>::new());
+    // With a native parent, each viewer takes the parent's captured bounds, monitor scale
+    // and position, as the file manager's viewers take the main window's.
+    let placement = Rc::new(RefCell::new(None::<midnight_ui_input::WindowPlacement>));
+    let captured = placement.clone();
     let timer = slint::Timer::default();
     let tick = {
         let manager = manager.clone();
@@ -211,9 +236,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     windows.borrow_mut().clear();
                 }
                 started.set(None);
+                finished.set(Some(Instant::now()));
                 return;
             }
             let index = next.get();
+            if index == 0 && process.elapsed() < settle
+                || finished.get().is_some_and(|at| at.elapsed() < pause)
+            {
+                return;
+            }
             if index >= paths.len() * repeat {
                 if together {
                     let visible = windows
@@ -234,10 +265,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             next.set(index + 1);
             let start = Instant::now();
+            if let Some(origin) = midnight_viewer_engine::open_trace::origin() {
+                eprintln!(
+                    "viewer_phase at_us={} phase=probe_open_request attempt={}",
+                    origin.elapsed().as_micros(),
+                    index % repeat
+                );
+            }
             started.set(Some(start));
             let finished = done.clone();
             let ready = Box::new(move |result: Result<(), String>| {
                 finished.set(Some(result.map(|()| start.elapsed())));
+            });
+            let placement = captured.borrow().clone().unwrap_or_else(|| {
+                midnight_ui_input::WindowPlacement::from(slint::LogicalSize::new(1000.0, 700.0))
             });
             let opened = manager.open_with_ready(
                 launch(&paths[index / repeat]),
@@ -250,7 +291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     selection_text: [0; 4],
                     accent: [133, 185, 244, 255],
                 },
-                slint::LogicalSize::new(1000.0, 700.0),
+                placement,
                 keys.clone(),
                 Rc::new(|_| {}),
                 ready,
@@ -274,7 +315,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // Settle between openings like a user would; timing excludes this pause.
     let timer = if std::env::var_os("MIDNIGHT_PROBE_PARENT").is_some_and(|value| value == "1") {
-        native_parent::run(true, move |_| {
+        native_parent::run(true, move |parent| {
+            *placement.borrow_mut() = Some(parent);
             timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), tick);
             Ok(timer)
         })?
