@@ -68,6 +68,9 @@ comparison usually reports the change first.
 | `cargo test -p midnight-core --lib watch` | 2 passed |
 | `cargo test -p midnight-ui --lib presenter::tests::volumes` | 6 passed |
 | `cargo check -p midnight-platform-linux --tests --target x86_64-unknown-linux-gnu` | compiled on Windows; the Linux tests did not run here |
+| `cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings` | passed (Windows) |
+| `cargo clippy -p midnight-platform-linux -p midnight-core --all-targets --target x86_64-unknown-linux-gnu -- -D warnings` | passed |
+| `cargo fmt --all --check`, `git diff --check` | passed |
 
 New tests: the Windows message filter and window lifetime; the `subst` latency (ignored,
 it changes the session's drive letters); engine hints with a fake watch (a new drive is
