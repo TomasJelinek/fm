@@ -142,6 +142,24 @@ copies nothing and leaves the clipboard as it was. It ends with:
 A copy taking longer than 300 ms shows its progress ("Copying the whole file… 42%") and
 how much text it holds. An empty file copies empty text.
 
+## Opening a viewer window
+
+`ViewerWindows` keeps at most one viewer component built ahead of the next opening.
+- It is built on the UI thread 1.5 s after `prepare_spare_window` (the application calls
+  it when it installs its viewers) and 1.5 s after each opening takes it.
+- It owns no native window, surface, engine session or helper process until an opening
+  shows it. `release_spare_window` drops it and stops refilling; the application calls
+  it on exit.
+- Why: creating a component creates its window renderer. Slint's winit backend then
+  enumerates every graphics adapter to check for a GPU, even with the application's
+  shared device, which took 150–180 ms on Windows.
+- Cost: an idle spare held 36–39 MB of private memory in the opening probe.
+- Measurements and the remaining window-creation cost are in the
+  [viewer startup record](../verification/2026-11-26-viewer-startup.md).
+- `open_latency --features open-trace` with `MIDNIGHT_VIEWER_OPEN_TRACE=1` prints the
+  engine's opening phases (`midnight-viewer-engine/src/open_trace.rs`) and the window's
+  opening trace from an optimized build.
+
 ## First display and raster geometry
 
 A viewer opened from the application captures its parent's physical bounds and
