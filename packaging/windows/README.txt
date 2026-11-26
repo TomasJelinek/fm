@@ -1,4 +1,4 @@
-Midnight Explorer 0.6.0 - Windows x64 preview
+Midnight Explorer 0.6.1 - Windows x64 preview
 
 Extract the complete ZIP to a folder, then run midnight-explorer.exe.
 Keep the viewers, filesystems and thumbnailers folders beside midnight-explorer.exe,
@@ -64,6 +64,6 @@ License: GNU General Public License, version 3 or (at your option) any later
 version, with no warranty; see LICENSE.txt.
 The plugins are licensed under the same terms.
 Source of this release (its tagged commit; BUILD-INFO.json names the revision):
-https://github.com/TomasJelinek/fm/tree/v0.6.0
+https://github.com/TomasJelinek/fm/tree/v0.6.1
 Releases: https://github.com/TomasJelinek/fm/releases
 Dependency notices and licenses are included alongside the executable.
