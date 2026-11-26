@@ -6,7 +6,7 @@ exclude = ["api", "filesystem-api", "image-viewer-api", "thumbnail-api", "web-vi
     "vendor/i-slint-renderer-femtovg", "vendor/image"]
 
 [workspace.package]
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.99"
 publish = false
