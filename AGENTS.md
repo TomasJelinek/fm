@@ -1,4 +1,107 @@
-# Project rules
+# Agent guide: Midnight Explorer
+
+Starting context for agents (and people) working in this repository: what it holds,
+what to read first, the commands that build, test and validate it, and the project
+rules that every change follows. Project terms are defined in the
+[glossary](docs/GLOSSARY.md).
+
+## What this repository owns
+
+- **The application:** Midnight Explorer, a two-panel desktop file manager for Windows
+  x64 and Linux x86-64, written in Rust with Slint (the `crates/` workspace; the
+  executable is `midnight-explorer`).
+- **The public plugin APIs and SDKs:** separate Cargo workspaces (`api/`,
+  `filesystem-api/`, `image-viewer-api/`, `thumbnail-api/`, `web-viewer-api/`,
+  `worker-api/`) that plugins build against.
+- **The shipped plugins:** viewers, filesystems (native, Network Neighborhood and the
+  archive worker) and thumbnailers under `plugins/`, each an independent Cargo
+  workspace that depends only on the public API/SDK, never on `crates/`.
+- **Build, packaging and release tooling:** `build.bat`, `build.sh`, `scripts/`,
+  `packaging/` and the CI workflows in `.github/`.
+
+Not owned here: third-party dependencies (listed in
+[THIRD_PARTY.md](docs/THIRD_PARTY.md)), apart from the patched renderer sources in
+`vendor/`; and the [Open Salamander](docs/GLOSSARY.md#salamander) sources that some
+documents cite as behavioral reference, which are never copied.
+
+## Start here
+
+1. [README.md](README.md): the product, its first run and the build commands.
+2. [docs/README.md](docs/README.md): the documentation map, with every current
+   contract and reference.
+3. [docs/developer/README.md](docs/developer/README.md): the architecture, the plugin
+   APIs and the index of developer documents.
+
+Before changing code, also read [CODE_STYLE.md](CODE_STYLE.md),
+[SECURITY.md](SECURITY.md) and the [project rules](#project-rules) below. The
+[user guide](docs/USER_GUIDE.md) describes the behavior users see, and
+[feature status](docs/FEATURE_STATUS.md) what is implemented and verified.
+
+## Repository layout
+
+| Path | What it holds |
+| --- | --- |
+| `README.md` | Product purpose, download, first run, build and support. |
+| `AGENTS.md` | This guide and the project rules. |
+| `docs/README.md` | Documentation entry point. |
+| `docs/developer/` | Developer and plugin API documents, with the [quick start](docs/developer/QUICK_START.md) for a plugin. |
+| `docs/releases/` | Release notes of each preview. |
+| `docs/verification/` | Dated test evidence; records, not current documentation. |
+| `crates/` | The application workspace: core, engine, platform adapters, UI and the executable. |
+| `api/`, `*-api/` | Public API/SDK workspaces. |
+| `plugins/` | Independent plugin workspaces. |
+| `scripts/` | Build, packaging, validation and test helpers, with their tests in `scripts/tests/`. |
+| `packaging/` | Release package files: the packaged README texts, the Linux desktop entry, dependency license texts and the update public key. |
+| `vendor/` | Patched third-party renderer sources ([vendor/README.md](vendor/README.md)). |
+| `.github/` | CI workflows and their shared actions. |
+| `_build/`, `.tools/` | Build output and toolchain caches; ignored, never committed. |
+
+## Commands
+
+Run every command from the repository root. Prerequisites for all of them: Rust
+1.99.1 with rustfmt and Clippy ([rust-toolchain.toml](rust-toolchain.toml)); on Windows
+the MSVC C++ build tools, PowerShell 7 and Python 3.12 or later; on Linux a C compiler,
+`pkg-config`, the libraries that `scripts/setup-linux.sh` installs and Python 3.11 or
+later (3.12 for validation). The [user guide](docs/USER_GUIDE.md#build-and-run) lists
+them in full.
+
+| Task | Windows | Linux |
+| --- | --- | --- |
+| Build the application and every plugin | `build.bat` (add `release` for an optimized build) | `./build.sh` (add `release`) |
+| Format check | `cargo fmt --all -- --check` | Same |
+| Lint | `cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings` | Same |
+| Workspace tests, as CI runs them | `python -B scripts/ci-workspace-tests.py --keep-test-artifacts` | Same |
+| Targeted tests of a change | Build the affected tests once with `cargo test --no-run`, then run them with `scripts/run-targeted-tests.py` ([targeted test execution](docs/developer/TEST_EXECUTION.md#targeted-test-execution)) | Same |
+| Source-size check | `pwsh scripts/check-source-size.ps1` | `bash scripts/check-source-size.sh` |
+| Full validation (every CI test of the platform) | `build.bat --validate` or `pwsh -NoProfile -File scripts\validate.ps1` | `./build.sh --validate` or `bash scripts/validate.sh` |
+| End-to-end acceptance suite (opt-in) | `pwsh -File scripts\acceptance.ps1` | `bash scripts/acceptance.sh` |
+
+Validation and the acceptance suite are long; follow the
+[project rules](#project-rules) on when to run broad suites, and the
+[test execution guide](docs/developer/TEST_EXECUTION.md) for steps, options and
+environment.
+
+## Confirm the application runs
+
+A passing build and passing tests do not prove that the application starts in this
+environment. After a build, run the filesystem smoke check; it needs the native
+filesystem plugin beside the executable, which the build helpers install, but no
+display:
+
+```sh
+cargo run -p midnight-explorer --locked -- --smoke-test
+```
+
+It prints `volumes: N`, the number of entries in each panel's start folder (`Left: N
+entries`, `Right: N entries`) and whether other accounts can change the installation
+(`installation: private`, or `installation: shared; …`), and exits with status 0. Run directly, `midnight-explorer.exe` on Windows is a GUI
+program whose output a console does not show, so read its exit code instead (the
+[user guide](docs/USER_GUIDE.md#windows-x64) has the command). With a display,
+`cargo run -p midnight-explorer --locked -- --ui-smoke-test --software` also starts the
+main window with fresh in-memory settings and exits. A failing start is diagnosed in
+[Troubleshooting](docs/TROUBLESHOOTING.md).
+
+## Project rules
 
 - Third-party libraries must be usable for the intended development, application
   use and distribution **without mandatory fees, subscriptions or royalties**.
@@ -48,13 +151,14 @@ not authorize unrelated backlog work. The detailed working agreement is in
   proposals; requests owner fixes before integration; and verifies reported
   outcomes against source and actual results.
 - Perf agent supports findings with profiling and before/after measurements
-  coordinated through Build leases. Implementation roles own fixes; the Architect
+  coordinated through build leases. Implementation roles own fixes; the Architect
   owns architecture decisions.
 - In a shared checkout, role agents do not switch branches, merge, stage another
   role's files or start competing builds. The Orchestrator coordinates Git
   checkpoints and integration, or explicitly arranges isolated checkouts.
 - Independently developed plugins depend only on the public API/SDK and own their
-  tests. Changes to host sources require a separately assigned host change.
+  tests. Changes to host sources (the application in `crates/`) require a separately
+  assigned host change.
 - One owner holds each Cargo target-directory build lease. Compile compatible
   test groups once, run independent headless tests with bounded parallelism and
   run desktop/input tests serially. Coordinate full validation after integration.
@@ -62,3 +166,6 @@ not authorize unrelated backlog work. The detailed working agreement is in
   risks and unresolved work. Documentation distinguishes implemented behavior
   from plans and records only verified evidence; a test or CI job's existence is
   not proof that it passed.
+
+[Build, desktop and WSL leases](docs/GLOSSARY.md#lease) are coordination rules for
+development only.
