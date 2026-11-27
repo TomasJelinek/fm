@@ -130,7 +130,10 @@ A Copy to a local FAT32 or exFAT directory uses the exclusive namespace lane. It
 creates a new stage in the destination and holds the file handle through readback
 and the no-replace rename. A FAT directory index may change during that rename. A
 collision leaves the existing file intact, and cleanup operates on the held stage.
-Local transfer sources and Move destinations still require the 128-bit `FileIdInfo`.
+Since 0.6.4 a Copy source (and a checksum calculation's source) on a local FAT, FAT32,
+exFAT, CDFS or UDF volume is read as a network source without IDs: through the
+handles it keeps open (`reads_without_ids` in `transfer_network_identity.rs`). Move
+sources and Move destinations on one volume still require the 128-bit `FileIdInfo`.
 Windows also supports ordinary Copy sources and destinations on network shares
 that omit file IDs. See [Windows network Copy](../../docs/developer/transfers.md#windows-network-shares-without-file-ids)
 for its handle-sharing rules.

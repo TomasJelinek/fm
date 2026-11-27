@@ -13,8 +13,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,
-        FreeLibrary, HMODULE,
+        ERROR_CALL_NOT_IMPLEMENTED, ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL,
+        ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, FreeLibrary, HMODULE,
     },
     Storage::FileSystem::*,
     System::LibraryLoader::*,
@@ -174,13 +174,26 @@ pub(crate) fn snapshot(file: &File) -> io::Result<Snapshot> {
 }
 
 /// The file's volume and identity: `FileIdInfo`'s 128-bit file ID, or, where the file
-/// system has none ([`no_file_id`]), the 64-bit file index of
-/// `GetFileInformationByHandle`, widened. A volume answers one way for every file, so a
-/// capture and its revalidations always compare identities of one kind. FAT file systems
-/// also report no change time (always 0) and keep write times in 2-second steps, and some
-/// network servers report a zero index for every file, so there a revision detects fewer
-/// changes (`docs/developer/content-reads.md`).
+/// system has none ([`no_file_id`]) or reports an all-zero ID (MS-FSCC 2.4.26: a server
+/// without 128-bit IDs), the 64-bit file index of `GetFileInformationByHandle`, widened.
+/// The filesystem plugin and the host's Find follow the same rule, so their identities
+/// of one file agree. A volume answers one way for every file, so a capture and its
+/// revalidations always compare identities of one kind. FAT file systems also report no
+/// change time (always 0) and keep write times in 2-second steps, and some network
+/// servers report a zero index for every file, so there a revision detects fewer
+/// changes ("File systems" in `docs/developer/content-reads.md`).
 fn identity(file: &File) -> io::Result<(u64, [u8; 16])> {
+    choose_identity(file_id(file), || {
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: file owns the live handle and the output is a valid, writable structure.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(information)
+    })
+}
+
+fn file_id(file: &File) -> io::Result<FILE_ID_INFO> {
     let mut id = FILE_ID_INFO::default();
     // SAFETY: file owns the live handle and the output is writable for its exact length.
     if unsafe {
@@ -190,33 +203,44 @@ fn identity(file: &File) -> io::Result<(u64, [u8; 16])> {
             (&mut id as *mut FILE_ID_INFO).cast(),
             size_of::<FILE_ID_INFO>() as u32,
         )
-    } != 0
+    } == 0
     {
-        return Ok((id.VolumeSerialNumber, id.FileId.Identifier));
-    }
-    let error = io::Error::last_os_error();
-    if !no_file_id(&error) {
-        return Err(error);
-    }
-    let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: file owns the live handle and the output is a valid, writable structure.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(index_identity(&information))
+    Ok(id)
+}
+
+/// [`identity`]'s choice between a `FileIdInfo` answer and the file index, which is
+/// asked for only when the 128-bit ID is missing or all zero.
+fn choose_identity(
+    id: io::Result<FILE_ID_INFO>,
+    index: impl FnOnce() -> io::Result<BY_HANDLE_FILE_INFORMATION>,
+) -> io::Result<(u64, [u8; 16])> {
+    match id {
+        Ok(id) if id.FileId.Identifier != [0; 16] => {
+            return Ok((id.VolumeSerialNumber, id.FileId.Identifier));
+        }
+        Ok(_) => {}
+        Err(error) if no_file_id(&error) => {}
+        Err(error) => return Err(error),
+    }
+    Ok(index_identity(&index()?))
 }
 
 /// Whether `FileIdInfo` failed because the file system or server has no 128-bit file ID,
 /// rather than because the handle failed: FAT32 and exFAT answer
 /// `ERROR_INVALID_PARAMETER` (measured), and other drivers and SMB servers that lack the
-/// information class answer it, `ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED` or
-/// `ERROR_INVALID_LEVEL` (CD and DVD file systems, WebDAV, older SMB servers).
+/// information class answer `ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED`,
+/// `ERROR_INVALID_LEVEL` or `ERROR_CALL_NOT_IMPLEMENTED` (CD and DVD file systems,
+/// WebDAV, SMB 2 servers). The same set as `midnight-platform-windows` and the native
+/// filesystem plugin ("File systems" in `docs/developer/content-reads.md`).
 fn no_file_id(error: &io::Error) -> bool {
     [
         ERROR_INVALID_PARAMETER,
         ERROR_INVALID_FUNCTION,
         ERROR_NOT_SUPPORTED,
         ERROR_INVALID_LEVEL,
+        ERROR_CALL_NOT_IMPLEMENTED,
     ]
     .into_iter()
     .any(|code| error.raw_os_error() == Some(code as i32))
@@ -353,7 +377,7 @@ mod revision_policy_tests {
 #[cfg(test)]
 mod identity_tests {
     use super::*;
-    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_NETNAME_DELETED};
 
     /// FAT32 and exFAT have no 128-bit file ID: the 64-bit file index stands in, its
     /// high and low halves in place and the volume serial widened.
@@ -380,16 +404,67 @@ mod identity_tests {
             ERROR_INVALID_FUNCTION,
             ERROR_NOT_SUPPORTED,
             ERROR_INVALID_LEVEL,
+            ERROR_CALL_NOT_IMPLEMENTED,
         ] {
             assert!(
                 no_file_id(&io::Error::from_raw_os_error(code as i32)),
                 "{code}"
             );
+            let identity = choose_identity(Err(io::Error::from_raw_os_error(code as i32)), || {
+                Ok(BY_HANDLE_FILE_INFORMATION {
+                    dwVolumeSerialNumber: 9,
+                    nFileIndexLow: 4,
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+            assert_eq!(identity.0, 9);
+            assert_eq!(identity.1[0], 4);
         }
-        assert!(!no_file_id(&io::Error::from_raw_os_error(
-            ERROR_ACCESS_DENIED as i32
-        )));
+        for code in [ERROR_ACCESS_DENIED, ERROR_NETNAME_DELETED] {
+            let error = io::Error::from_raw_os_error(code as i32);
+            assert!(!no_file_id(&error));
+            let failure = choose_identity(Err(error), || -> io::Result<_> {
+                panic!("only a missing ID falls back")
+            })
+            .unwrap_err();
+            assert_eq!(failure.raw_os_error(), Some(code as i32));
+        }
         assert!(!no_file_id(&io::Error::other("no OS code")));
+    }
+
+    /// A server that answers `FileIdInfo` with an all-zero ID has no 128-bit IDs: the
+    /// file index stands in, as in the filesystem plugin and the host's Find. A real
+    /// 128-bit ID is used as reported, without asking for the index.
+    #[test]
+    fn an_all_zero_file_id_falls_back_to_the_file_index() {
+        let index = || {
+            Ok(BY_HANDLE_FILE_INFORMATION {
+                dwVolumeSerialNumber: 0x1731_1e74,
+                nFileIndexLow: 0x55,
+                ..Default::default()
+            })
+        };
+        let zero = FILE_ID_INFO {
+            VolumeSerialNumber: 0x0123_4567_89ab_cdef,
+            FileId: FILE_ID_128 {
+                Identifier: [0; 16],
+            },
+        };
+        let (volume, id) = choose_identity(Ok(zero), index).unwrap();
+        assert_eq!(volume, 0x1731_1e74);
+        assert_eq!(id[0], 0x55);
+        let real = FILE_ID_INFO {
+            FileId: FILE_ID_128 {
+                Identifier: [3; 16],
+            },
+            ..zero
+        };
+        let identity = choose_identity(Ok(real), || -> io::Result<_> {
+            panic!("a real ID needs no index")
+        })
+        .unwrap();
+        assert_eq!(identity, (0x0123_4567_89ab_cdef, [3; 16]));
     }
 
     /// A file on a FAT32 or exFAT volume, named by `MIDNIGHT_TEST_FAT_FILE` (opened for

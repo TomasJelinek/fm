@@ -23,7 +23,8 @@ pub(super) fn for_cmd(path: &Path) -> io::Result<PathBuf> {
             let converted = native::open_parent(&candidate).map_err(|_| unsupported())?;
             let original_id = native::local_identity(&original).map_err(|_| unsupported())?;
             let converted_id = native::local_identity(&converted).map_err(|_| unsupported())?;
-            if original_id != converted_id {
+            // An unknown (all-zero) ID cannot show that both names reach one folder.
+            if original_id != converted_id || !original_id.is_known() {
                 return Err(unsupported());
             }
             Ok(candidate)

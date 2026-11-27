@@ -7,23 +7,17 @@ use windows_sys::Win32::System::SystemServices::{IO_REPARSE_TAG_CLOUD, IO_REPARS
 
 /// Inspect the retained handle, including when Windows exposes cloud placeholders.
 /// Cloud data is supplied by its filter on this same file; name-surrogate tags
-/// (links/mounts) and every other reparse provider remain unsupported.
+/// (links/mounts) and every other reparse provider remain unsupported. File systems
+/// without reparse tags (FAT32, exFAT) are classified by their basic attributes.
 pub fn require_readable_file(file: &File) -> Result<(), Failure> {
-    let mut info = FILE_ATTRIBUTE_TAG_INFO::default();
-    // SAFETY: the file owns its live handle; the output has exactly the declared capacity.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileAttributeTagInfo,
-            (&mut info as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
-            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(Failure::from_io(std::io::Error::last_os_error()));
-    }
+    let info = crate::identity::attribute_tag(file).map_err(Failure::from_io)?;
     // SAFETY: GetFileType only inspects the retained handle.
-    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
+    readable(&info, unsafe { GetFileType(file.as_raw_handle()) })
+}
+
+/// A disk file that is no directory and either no reparse point or cloud data.
+pub(crate) fn readable(info: &FILE_ATTRIBUTE_TAG_INFO, file_type: u32) -> Result<(), Failure> {
+    if file_type != FILE_TYPE_DISK
         || info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
         || (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
             && !cloud_content_tag(info.ReparseTag))
@@ -92,42 +86,24 @@ impl Snapshot {
     }
 }
 fn basic(file: &File) -> Result<FILE_BASIC_INFO, Failure> {
-    let mut value = FILE_BASIC_INFO::default();
-    // SAFETY: the file owns its live handle and output covers exactly FILE_BASIC_INFO.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileBasicInfo,
-            (&mut value as *mut FILE_BASIC_INFO).cast(),
-            size_of::<FILE_BASIC_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(Failure::from_io(std::io::Error::last_os_error()));
-    }
-    Ok(value)
+    crate::identity::basic(file).map_err(Failure::from_io)
 }
+/// The file's version: identity ([`crate::identity::file_identity`], the 128-bit ID or
+/// the 64-bit index where a file system has none), length, last-write and change time.
+/// FAT file systems keep no change time (always 0) and 2-second write times.
 pub fn snapshot(file: &File) -> Result<Snapshot, Failure> {
     let before = basic(file)?;
-    let mut id = FILE_ID_INFO::default();
+    let (volume, id) = crate::identity::file_identity(file).map_err(Failure::from_io)?;
     let mut standard = FILE_STANDARD_INFO::default();
-    // SAFETY: retained live handle and exact writable output structure capacities.
+    // SAFETY: retained live handle and exact writable output structure capacity.
     if unsafe {
         GetFileInformationByHandleEx(
             file.as_raw_handle(),
-            FileIdInfo,
-            (&mut id as *mut FILE_ID_INFO).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
+            FileStandardInfo,
+            (&mut standard as *mut FILE_STANDARD_INFO).cast(),
+            size_of::<FILE_STANDARD_INFO>() as u32,
         )
     } == 0
-        || unsafe {
-            GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileStandardInfo,
-                (&mut standard as *mut FILE_STANDARD_INFO).cast(),
-                size_of::<FILE_STANDARD_INFO>() as u32,
-            )
-        } == 0
     {
         return Err(Failure::from_io(std::io::Error::last_os_error()));
     }
@@ -142,8 +118,8 @@ pub fn snapshot(file: &File) -> Result<Snapshot, Failure> {
         .map_err(|_| Failure::new(ErrorCode::Invalid, "Invalid native file length."))?;
     Ok(Snapshot {
         length,
-        volume: id.VolumeSerialNumber,
-        id: id.FileId.Identifier,
+        volume,
+        id,
         write: after.LastWriteTime,
         change: after.ChangeTime,
     })

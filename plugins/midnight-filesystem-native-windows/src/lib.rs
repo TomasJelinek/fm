@@ -3,6 +3,8 @@
 //! Independent native Windows Browse/Read/Rename provider. No application crate dependencies.
 mod adapter;
 mod content;
+#[allow(unsafe_code)]
+mod identity;
 mod path;
 mod rename;
 #[allow(unsafe_code)]

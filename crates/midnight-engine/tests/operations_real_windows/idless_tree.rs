@@ -199,3 +199,35 @@ async fn streamed_idless_sources_keep_the_next_read_handle_through_a_conflict() 
         );
     }
 }
+
+/// Folder sizes, Properties and the folder tree tell folders apart by their size
+/// identity. On a share that reports index 0 for every entry, each folder gets a key of
+/// its canonical path instead, so no folder repeats its ancestor.
+#[test]
+fn zero_index_folders_have_distinct_size_identities() {
+    use midnight_core::DirectoryService;
+    let fixture = Fixture::new("network-zero-index");
+    let share = fixture.directory("share");
+    let child = share.join("child");
+    fs::create_dir_all(child.join("grandchild")).unwrap();
+    let _scope = Scope::new(&share, Response::ZeroIndex).unwrap();
+    let provider = LocalFileSystem::new(None);
+    let cancel = Cancellation::default();
+    let identity = |path: &std::path::Path| {
+        provider
+            .resolve_size_directory(path, &cancel)
+            .unwrap()
+            .unwrap()
+            .identity
+    };
+    let identities = [
+        identity(&share),
+        identity(&child),
+        identity(&child.join("grandchild")),
+    ];
+    assert_eq!(identities[1], identity(&child), "stable for one folder");
+    assert_ne!(identities[0], identities[1]);
+    assert_ne!(identities[1], identities[2]);
+    assert_ne!(identities[0], identities[2]);
+    assert!(identities.iter().all(|identity| identity.object != [0; 16]));
+}

@@ -13,6 +13,9 @@ pub enum Response {
     Unsupported,
     AllZero,
     AccessDenied,
+    /// An all-zero `FileIdInfo` ID and file index 0 for every entry, with the real volume
+    /// serial number: the WebDAV redirector and SMB servers without file IDs.
+    ZeroIndex,
 }
 
 enum Entries {

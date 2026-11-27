@@ -47,6 +47,15 @@ pub(crate) struct Identity {
     pub(crate) id: [u8; 16],
 }
 
+impl Identity {
+    /// False for an all-zero ID: the file index of a server or file system that reports
+    /// index 0 for every entry (the WebDAV redirector, some SMB servers), which tells no
+    /// two entries apart. Callers must not treat two such identities as one object.
+    pub(crate) fn is_known(&self) -> bool {
+        self.id != [0; 16]
+    }
+}
+
 /// The volume serial number and 128-bit `FileIdInfo` identifier. It survives renames
 /// and moves within its volume (NTFS, ReFS). Move capture and precise namespace pins
 /// compare identities across their own renames and require this form.
@@ -89,7 +98,8 @@ fn file_id(file: &File) -> io::Result<Identity> {
     if let Some(reply) = crate::test_network_ids::response(file) {
         return match reply {
             crate::test_network_ids::Response::Unsupported => Err(io::Error::from_raw_os_error(50)),
-            crate::test_network_ids::Response::AllZero => identity_from_info(information),
+            crate::test_network_ids::Response::AllZero
+            | crate::test_network_ids::Response::ZeroIndex => identity_from_info(information),
             crate::test_network_ids::Response::AccessDenied => Err(io::Error::from_raw_os_error(5)),
         };
     }
@@ -103,13 +113,9 @@ fn file_id(file: &File) -> io::Result<Identity> {
         )
     } == 0
     {
-        let failure = io::Error::last_os_error();
-        // Some redirectors report ERROR_INVALID_LEVEL or ERROR_CALL_NOT_IMPLEMENTED
-        // for this information class; permission and connection failures stay errors.
-        return Err(match failure.raw_os_error() {
-            Some(124 | 120) => io::ErrorKind::Unsupported.into(),
-            _ => failure,
-        });
+        // A missing information class is `unsupported`; permission and connection
+        // failures stay errors.
+        return Err(io::Error::last_os_error());
     }
     identity_from_info(information)
 }
@@ -126,19 +132,28 @@ fn identity_from_info(information: FILE_ID_INFO) -> io::Result<Identity> {
     })
 }
 
-/// ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED and ERROR_INVALID_PARAMETER are returned
-/// by filesystems (FAT32, exFAT, some redirectors) without an extended information class.
+/// Whether a handle query failed because the file system or server does not implement
+/// the information class (`FileIdInfo`, `FileAttributeTagInfo`, the extended disposition
+/// and rename classes), rather than because the handle or the access failed:
+/// ERROR_INVALID_FUNCTION (1), ERROR_NOT_SUPPORTED (50), ERROR_INVALID_PARAMETER (87,
+/// FAT32 and exFAT, measured), ERROR_CALL_NOT_IMPLEMENTED (120) and ERROR_INVALID_LEVEL
+/// (124), or an explicit `Unsupported` kind. `midnight-plugin-host` and the native
+/// filesystem plugin use the same set ("File systems" in
+/// `docs/developer/content-reads.md`).
 pub(crate) fn unsupported(error: &io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(1 | 50 | 87)) || error.kind() == io::ErrorKind::Unsupported
+    matches!(error.raw_os_error(), Some(1 | 50 | 87 | 120 | 124))
+        || error.kind() == io::ErrorKind::Unsupported
 }
 
 /// The 64-bit file index and 32-bit volume serial number, for filesystems without
 /// `FileIdInfo` (see [`local_identity`]).
 pub(crate) fn legacy_identity(file: &File) -> io::Result<Identity> {
     #[cfg(feature = "test-fixtures")]
-    if crate::test_network_ids::response(file).is_some() {
-        return Err(io::ErrorKind::Unsupported.into());
-    }
+    let zero_index = match crate::test_network_ids::response(file) {
+        Some(crate::test_network_ids::Response::ZeroIndex) => true,
+        Some(_) => return Err(io::ErrorKind::Unsupported.into()),
+        None => false,
+    };
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: file retains the live handle and information is an exact writable native
     // structure for this synchronous metadata-only query.
@@ -149,6 +164,10 @@ pub(crate) fn legacy_identity(file: &File) -> io::Result<Identity> {
         } else {
             error
         });
+    }
+    #[cfg(feature = "test-fixtures")]
+    if zero_index {
+        (information.nFileIndexHigh, information.nFileIndexLow) = (0, 0);
     }
     let index =
         (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);

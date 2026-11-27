@@ -12,7 +12,8 @@ pub(super) struct Ancestors {
     _directories: Vec<File>,
 }
 
-/// Some servers identify the selected folder but omit IDs on individual children.
+/// Some servers identify the selected folder but omit IDs on individual children; FAT,
+/// exFAT, CD and DVD volumes have none at all (`reads_without_ids`).
 pub(super) fn missing_id(
     failure: &FsError,
     access: Access,
@@ -21,7 +22,7 @@ pub(super) fn missing_id(
 ) -> Result<bool, FsError> {
     Ok(!matches!(access, Access::Move(_))
         && failure.kind == io::ErrorKind::Unsupported
-        && super::super::network_identity::is_network(file, path)?)
+        && super::super::network_identity::reads_without_ids(file, path)?)
 }
 
 pub(super) fn open(

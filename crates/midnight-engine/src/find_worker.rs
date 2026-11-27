@@ -400,9 +400,10 @@ fn search(
             if request.recursive && source.entry().kind == EntryKind::Directory {
                 if stack.len() >= request.limits.max_depth {
                     work.budget(FindBudget::Depth);
-                } else if stack
-                    .iter()
-                    .any(|(ancestor, _)| ancestor.entry().identity == source.entry().identity)
+                } else if source.entry().identity.is_known()
+                    && stack
+                        .iter()
+                        .any(|(ancestor, _)| ancestor.entry().identity == source.entry().identity)
                 {
                     work.error(find_error(
                         &source.entry().path,

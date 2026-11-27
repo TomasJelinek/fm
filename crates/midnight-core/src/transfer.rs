@@ -21,6 +21,16 @@ pub struct TransferIdentity {
     pub object: [u8; 16],
 }
 
+impl TransferIdentity {
+    /// False for an all-zero object: a file system or server that reports no file ID
+    /// and file index 0 for every entry (the Windows WebDAV redirector, some SMB
+    /// servers). Two such identities may name different objects, so they prove neither
+    /// a repeated folder nor a second name of one file.
+    pub fn is_known(&self) -> bool {
+        self.object != [0; 16]
+    }
+}
+
 /// Host-assigned access for an entire native namespace pin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferNamespaceAccess {

@@ -87,25 +87,13 @@ pub(super) struct Snapshot {
     pub links: u32,
 }
 
+/// The object's identity: its 128-bit file ID or, where the file system has none
+/// (FAT32, exFAT, CD/DVD, WebDAV, SMB 2), its 64-bit file index
+/// ([`crate::identity::file_identity`]). Rename compares identities only before its own
+/// rename, so a FAT index that moves with a longer name is never compared across it.
 pub(super) fn identity(file: &File) -> io::Result<Identity> {
-    let mut info = FILE_ID_INFO::default();
-    // SAFETY: file retains its live handle and info is an aligned, exact-sized
-    // writable FILE_ID_INFO output through this synchronous metadata query.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileIdInfo,
-            (&mut info as *mut FILE_ID_INFO).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(Identity {
-        volume: info.VolumeSerialNumber,
-        id: info.FileId.Identifier,
-    })
+    let (volume, id) = crate::identity::file_identity(file)?;
+    Ok(Identity { volume, id })
 }
 
 fn basic(file: &File) -> io::Result<FILE_BASIC_INFO> {

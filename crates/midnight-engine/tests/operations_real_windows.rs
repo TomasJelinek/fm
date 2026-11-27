@@ -64,12 +64,17 @@ async fn real_directory_corpus_matches_independent_sha256_for_both_policies() {
 
 /// Run with MIDNIGHT_TEST_FAT_DIRECTORY pointing to a writable FAT32/exFAT folder.
 /// Only the uniquely named temporary subdirectory on that volume receives any writes.
+/// The tree copied there is then copied back to NTFS: a FAT source has no file IDs, so
+/// Copy reads it through bindings its open handles keep (before, it was refused).
+/// Skipped when the variable is unset.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "opt-in: needs MIDNIGHT_TEST_FAT_DIRECTORY on FAT32/exFAT media"]
 async fn verified_copy_to_fat_preserves_tree_and_existing_file() {
-    let base = std::path::PathBuf::from(
-        std::env::var_os("MIDNIGHT_TEST_FAT_DIRECTORY").expect("set MIDNIGHT_TEST_FAT_DIRECTORY"),
-    );
+    let Some(base) = std::env::var_os("MIDNIGHT_TEST_FAT_DIRECTORY").map(std::path::PathBuf::from)
+    else {
+        eprintln!("skipped: MIDNIGHT_TEST_FAT_DIRECTORY is not set");
+        return;
+    };
     let facts = LocalFileSystem::new(None)
         .link_destination(&base, &Cancellation::default())
         .unwrap();
@@ -83,6 +88,21 @@ async fn verified_copy_to_fat_preserves_tree_and_existing_file() {
         .unwrap();
     let fixture = Fixture::new("copy-to-fat");
     verified_copy_and_conflict(&fixture.root, target.path()).await;
+    let back = fixture.directory("back");
+    let mut harness = Harness::new();
+    let on_fat = target.path().join("source");
+    harness
+        .enqueue(
+            1,
+            std::slice::from_ref(&on_fat),
+            &back,
+            TransferVerification::FullSha256,
+            false,
+        )
+        .await;
+    assert!(harness.completed(1).await.verified_bytes > 0);
+    harness.close().await;
+    assert_eq!(manifest(&back.join("source")), manifest(&on_fat));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

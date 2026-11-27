@@ -40,8 +40,11 @@ pub(in crate::transfer) fn prepare(
         Ok(ids) => ids,
         Err(failure)
             if native::unsupported(&failure)
-                && (super::super::network_identity::is_network(&probe, &path)?
-                    || super::super::network_identity::is_network(&parent, &parent_path)?) =>
+                && (super::super::network_identity::reads_without_ids(&probe, &path)?
+                    || super::super::network_identity::reads_without_ids(
+                        &parent,
+                        &parent_path,
+                    )?) =>
         {
             return network::open(&parent, &parent_path, name, Access::Copy(links), cancel)
                 .map(|source| Box::new(source) as Box<dyn TransferSource>);

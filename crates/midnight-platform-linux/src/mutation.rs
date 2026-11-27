@@ -750,7 +750,7 @@ impl Staged {
             STAGED_NAME,
             RenameFlags::NOREPLACE,
         ) {
-            return Err(self.abandon(prepared, native_error(&prepared.item.path, e), true));
+            return Err(self.abandon(prepared, no_replace_error(&prepared.item.path, e), true));
         }
         if let Err(failure) = prepared.identity.verify(
             &self.directory,
@@ -1037,6 +1037,29 @@ fn check_cancel(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
 
 fn native_error(path: &Path, error: rustix::io::Errno) -> FsError {
     FsError::from_io(OPERATION, path, error.into())
+}
+
+/// The error of a `renameat2(RENAME_NOREPLACE)` request. The Linux NFS client and FUSE
+/// file systems without the flag (sshfs, ntfs-3g, exfat-fuse) refuse every flagged
+/// rename with EINVAL, and some file systems answer ENOSYS or EOPNOTSUPP: an explicit
+/// refusal that names the requirement. Every other error stays the native error.
+fn no_replace_error(path: &Path, error: rustix::io::Errno) -> FsError {
+    use rustix::io::Errno;
+    if ![Errno::INVAL, Errno::NOSYS, Errno::OPNOTSUPP].contains(&error) {
+        return native_error(path, error);
+    }
+    FsError::from_io(
+        OPERATION,
+        path,
+        io::Error::new(
+            ErrorKind::Unsupported,
+            format!(
+                "This filesystem cannot rename an entry without replacing another \
+                 (renameat2 RENAME_NOREPLACE; NFS and sshfs, for example), which Rename, \
+                 Delete and Trash need to keep the selected item safe ({error})"
+            ),
+        ),
+    )
 }
 
 fn error(path: &Path, kind: ErrorKind, message: &str) -> FsError {

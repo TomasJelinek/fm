@@ -20,7 +20,10 @@ pub(super) struct Candidates {
 
 impl Candidates {
     pub(super) fn collect(&mut self, entry: &FindEntry, work: &mut Work<'_>) -> bool {
-        if self.identities.contains(&entry.identity) {
+        // A second name of a counted file (a hard link) is no duplicate. An unknown
+        // identity (index 0 for every file on some shares) tells no files apart.
+        let known = entry.identity.is_known();
+        if known && self.identities.contains(&entry.identity) {
             return true;
         }
         if entry.metadata.size.is_none() {
@@ -64,7 +67,9 @@ impl Candidates {
             ));
             return false;
         }
-        self.identities.insert(entry.identity);
+        if known {
+            self.identities.insert(entry.identity);
+        }
         self.entries.push(Candidate {
             entry: entry.clone(),
             digest: None,

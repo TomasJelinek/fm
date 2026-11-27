@@ -91,3 +91,51 @@ fn actual_windows_read_sharing_failure_is_incomplete_and_a_new_search_recovers()
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|row| row.duplicate_group_size == 2));
 }
+
+/// A share whose server reports no file ID and index 0 for every entry (the WebDAV
+/// redirector, some SMB servers): recursive Find enters every folder and duplicate
+/// search compares every file. Before, each subfolder was refused as an identity cycle
+/// and every file after the first was dropped as another name of it.
+#[test]
+fn a_share_without_file_ids_is_searched_recursively_and_for_duplicates() {
+    use midnight_platform_windows::test_network_ids::{Response, Scope};
+    let fixture = qa_fixture::Folder::new(&qa_fixture::operations_find(), "find-zero-ids-");
+    let nested = fixture.path().join("first").join("second");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(fixture.path().join("top.txt"), b"same bytes").unwrap();
+    fs::write(nested.join("deep.txt"), b"same bytes").unwrap();
+    fs::write(nested.join("other.txt"), b"different!").unwrap();
+    let _scope = Scope::new(fixture.path(), Response::ZeroIndex).unwrap();
+    let mut query = FindRequest::new(
+        FindSessionId(1),
+        FindGeneration(1),
+        vec![fixture.path().to_owned()],
+    );
+    let (summary, rows) = run(&query);
+    assert_eq!(summary.completion, FindCompletion::Completed, "{summary:?}");
+    assert_eq!(summary.progress.errors, 0, "{:?}", summary.diagnostics);
+    let mut names: Vec<_> = rows
+        .iter()
+        .map(|row| row.entry.path.file_name().unwrap().to_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["deep.txt", "first", "other.txt", "second", "top.txt"]
+    );
+    assert!(rows.iter().all(|row| !row.entry.identity.is_known()));
+    query.duplicates = true;
+    let (summary, rows) = run(&query);
+    assert_eq!(summary.completion, FindCompletion::Completed, "{summary:?}");
+    let mut duplicates: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.entry.path.file_name().unwrap().to_owned(),
+                row.duplicate_group_size,
+            )
+        })
+        .collect();
+    duplicates.sort();
+    assert_eq!(duplicates, [("deep.txt".into(), 2), ("top.txt".into(), 2)]);
+}

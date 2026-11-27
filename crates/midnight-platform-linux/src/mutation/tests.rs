@@ -1171,3 +1171,27 @@ fn rename_and_permanent_delete_work_on_a_filesystem_without_posix_modes() {
         .unwrap();
     rename_and_delete_in(fixture.path());
 }
+
+/// NFS and FUSE file systems without RENAME_NOREPLACE (sshfs, ntfs-3g) refuse the
+/// staging rename that Rename, Delete and Trash begin with: an explicit Unsupported
+/// refusal that names the requirement, never a bare "Invalid argument". A denial or a
+/// missing entry stays the native error.
+#[test]
+fn a_filesystem_without_no_replace_rename_is_refused_in_words() {
+    use rustix::io::Errno;
+    let path = Path::new("/mnt/nfs/selected");
+    for errno in [Errno::INVAL, Errno::NOSYS, Errno::OPNOTSUPP] {
+        let refusal = super::no_replace_error(path, errno);
+        assert_eq!(refusal.kind, ErrorKind::Unsupported, "{errno:?}");
+        assert!(
+            refusal.message.contains("RENAME_NOREPLACE"),
+            "{}",
+            refusal.message
+        );
+    }
+    for errno in [Errno::ACCESS, Errno::NOENT, Errno::XDEV] {
+        let error = super::no_replace_error(path, errno);
+        assert_ne!(error.kind, ErrorKind::Unsupported, "{errno:?}");
+        assert!(!error.message.contains("RENAME_NOREPLACE"));
+    }
+}
