@@ -503,9 +503,15 @@ impl Presenter {
     }
 
     /// Automatic re-reads wait while replacing the committed rows would abort a
-    /// drag gesture from the pane or a directory comparison that captured them.
+    /// drag gesture from the pane or a directory comparison that captured them, or
+    /// drop an action (Ctrl+F8, F5, Properties, ...) waiting for the selection its
+    /// key press asked for: a re-read accepts a new navigation, which cancels that
+    /// action without a word (`selection_navigation_accepted`). The wait is short,
+    /// the engine answers every selection request, and the kept hint re-reads the
+    /// folder in the retry pass that follows.
     fn background_refresh_blocked(&self, pane: PaneId) -> bool {
-        self.comparison.in_progress()
+        self.selection_actions[pane.index()].is_some()
+            || self.comparison.in_progress()
             || self
                 .drag_drop
                 .lifecycle

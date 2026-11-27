@@ -1165,6 +1165,90 @@ fn ctrl_f8_on_the_parent_row_right_after_a_deselect_calculates_the_shown_folder(
     assert_eq!(s.files.fallback.as_deref(), Some(p.panes[0].display_path()));
 }
 
+/// Ctrl+F8 right after Insert waits for the selection the Insert asked for. A change
+/// hint for the folder that arrives meanwhile (a file written or scanned in it) used to
+/// re-read the folder at once, and the re-read silently dropped the waiting action: no
+/// window, no message. The re-read now waits for the action, as it waits for a drag.
+#[test]
+fn a_folder_change_while_ctrl_f8_waits_for_the_selection_still_opens_the_window() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    let pane = &mut p.panes[0];
+    pane.generation = 1;
+    pane.successful_generation = Some(NavigationId(1));
+    pane.selection_context = NavigationId(1);
+    pane.selection_committed_context = NavigationId(1);
+    pane.entries = vec![Entry::new(
+        EntryId(1),
+        pane.path.join("one"),
+        EntryKind::File,
+    )]
+    .into();
+    pane.index = Arc::new(DirectoryIndex::from_entries(&pane.entries));
+    pane.cursor = Some(EntryId(1));
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let refreshes = || {
+        sent.borrow()
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    Command::Refresh {
+                        pane: PaneId::Left,
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    // Insert, then Ctrl+F8 before the engine answered the Insert.
+    assert!(p.send_selection(
+        PaneId::Left,
+        SelectionAction::Toggle(Path::new("left/one").into()),
+        &send
+    ));
+    p.request_checksums(PaneId::Left, &send);
+    assert!(
+        p.selection_actions[0].is_some(),
+        "it waits for the selection"
+    );
+    assert!(p.checksums.sessions.is_empty());
+    // The folder's change hint arrives: it is kept, the folder is not re-read yet.
+    assert!(!p.refresh_if_changed(PaneId::Left, NavigationId(1), &send));
+    p.flush_selection(&send);
+    assert_eq!(
+        refreshes(),
+        0,
+        "a re-read now would drop the waiting action"
+    );
+    assert!(p.selection_actions[0].is_some());
+    // The Insert's selection arrives: the window opens on the marked file ...
+    let view = p.panes[0].index.clone();
+    p.apply_with_sender(
+        Event::SelectionChanged {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            revision: SelectionRevision(1),
+            selection: Arc::new(SelectionSnapshot::from_bits(view, vec![0b1]).unwrap()),
+            deferred: Default::default(),
+        },
+        &send,
+    );
+    let s = p
+        .checksums
+        .sessions
+        .values()
+        .next()
+        .expect("the window opens once the selection is known");
+    assert_eq!(s.files.selection.len(), 1);
+    // ... and the kept hint re-reads the folder after it.
+    p.flush_selection(&send);
+    assert_eq!(refreshes(), 1, "the retained hint re-reads the folder");
+}
+
 #[test]
 fn a_verification_starts_without_the_listed_files_of_an_earlier_calculation() {
     let (mut p, id) = setup(&|_| true);

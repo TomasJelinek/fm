@@ -916,6 +916,10 @@ impl App {
                 .archive_unlocks
                 .push(result.clone().map_err(|error| error.to_string())),
             Event::PreferencesLoaded(_) => self.settings_reads += 1,
+            // Free space and volume details arrive periodically and while other
+            // programs write to the volume: kept in the trace they push out the
+            // commands and events that explain a timeout.
+            Event::SpaceUpdated { .. } | Event::VolumeDetailsUpdated { .. } => return,
             _ => {}
         }
         trace_line(&self.trace, format!("{event:?}"));
