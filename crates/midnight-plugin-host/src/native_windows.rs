@@ -12,7 +12,10 @@ use std::{
     path::Path,
 };
 use windows_sys::Win32::{
-    Foundation::{FreeLibrary, HMODULE},
+    Foundation::{
+        ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,
+        FreeLibrary, HMODULE,
+    },
     Storage::FileSystem::*,
     System::LibraryLoader::*,
 };
@@ -147,33 +150,86 @@ pub(crate) fn open_executable_lease(path: &Path) -> io::Result<File> {
 }
 
 pub(crate) fn snapshot(file: &File) -> io::Result<Snapshot> {
-    let mut id = FILE_ID_INFO::default();
     let mut basic = FILE_BASIC_INFO::default();
-    // SAFETY: file owns the live handle and each output is writable for its exact length.
-    unsafe {
-        if GetFileInformationByHandleEx(
+    // SAFETY: file owns the live handle and the output is writable for its exact length.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&mut basic as *mut FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let (volume, id) = identity(file)?;
+    Ok(Snapshot {
+        length: file.metadata()?.len(),
+        volume,
+        id,
+        write: basic.LastWriteTime,
+        change: basic.ChangeTime,
+    })
+}
+
+/// The file's volume and identity: `FileIdInfo`'s 128-bit file ID, or, where the file
+/// system has none ([`no_file_id`]), the 64-bit file index of
+/// `GetFileInformationByHandle`, widened. A volume answers one way for every file, so a
+/// capture and its revalidations always compare identities of one kind. FAT file systems
+/// also report no change time (always 0) and keep write times in 2-second steps, and some
+/// network servers report a zero index for every file, so there a revision detects fewer
+/// changes (`docs/developer/content-reads.md`).
+fn identity(file: &File) -> io::Result<(u64, [u8; 16])> {
+    let mut id = FILE_ID_INFO::default();
+    // SAFETY: file owns the live handle and the output is writable for its exact length.
+    if unsafe {
+        GetFileInformationByHandleEx(
             file.as_raw_handle(),
             FileIdInfo,
             (&mut id as *mut FILE_ID_INFO).cast(),
             size_of::<FILE_ID_INFO>() as u32,
-        ) == 0
-            || GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileBasicInfo,
-                (&mut basic as *mut FILE_BASIC_INFO).cast(),
-                size_of::<FILE_BASIC_INFO>() as u32,
-            ) == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        )
+    } != 0
+    {
+        return Ok((id.VolumeSerialNumber, id.FileId.Identifier));
     }
-    Ok(Snapshot {
-        length: file.metadata()?.len(),
-        volume: id.VolumeSerialNumber,
-        id: id.FileId.Identifier,
-        write: basic.LastWriteTime,
-        change: basic.ChangeTime,
-    })
+    let error = io::Error::last_os_error();
+    if !no_file_id(&error) {
+        return Err(error);
+    }
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: file owns the live handle and the output is a valid, writable structure.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(index_identity(&information))
+}
+
+/// Whether `FileIdInfo` failed because the file system or server has no 128-bit file ID,
+/// rather than because the handle failed: FAT32 and exFAT answer
+/// `ERROR_INVALID_PARAMETER` (measured), and other drivers and SMB servers that lack the
+/// information class answer it, `ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED` or
+/// `ERROR_INVALID_LEVEL` (CD and DVD file systems, WebDAV, older SMB servers).
+fn no_file_id(error: &io::Error) -> bool {
+    [
+        ERROR_INVALID_PARAMETER,
+        ERROR_INVALID_FUNCTION,
+        ERROR_NOT_SUPPORTED,
+        ERROR_INVALID_LEVEL,
+    ]
+    .into_iter()
+    .any(|code| error.raw_os_error() == Some(code as i32))
+}
+
+/// `GetFileInformationByHandle`'s volume serial number and 64-bit file index as a
+/// snapshot identity: the index in the low eight bytes, little-endian, the rest zero.
+fn index_identity(information: &BY_HANDLE_FILE_INFORMATION) -> (u64, [u8; 16]) {
+    let index =
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+    let mut id = [0; 16];
+    id[..8].copy_from_slice(&index.to_le_bytes());
+    (u64::from(information.dwVolumeSerialNumber), id)
 }
 
 pub(crate) struct Library(HMODULE);
@@ -291,5 +347,70 @@ mod revision_policy_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+
+    /// FAT32 and exFAT have no 128-bit file ID: the 64-bit file index stands in, its
+    /// high and low halves in place and the volume serial widened.
+    #[test]
+    fn a_file_index_identity_keeps_both_halves_and_the_volume() {
+        let information = BY_HANDLE_FILE_INFORMATION {
+            dwVolumeSerialNumber: 0x1731_1e74,
+            nFileIndexHigh: 0x0102_0304,
+            nFileIndexLow: 0x0506_0708,
+            ..Default::default()
+        };
+        let (volume, id) = index_identity(&information);
+        assert_eq!(volume, 0x1731_1e74);
+        assert_eq!(id[..8], 0x0102_0304_0506_0708_u64.to_le_bytes());
+        assert_eq!(id[8..], [0; 8]);
+    }
+
+    /// Only answers that mean "no 128-bit file ID here" fall back to the file index; a
+    /// failing handle or a denial stays an error.
+    #[test]
+    fn only_a_missing_file_id_falls_back_to_the_file_index() {
+        for code in [
+            ERROR_INVALID_PARAMETER,
+            ERROR_INVALID_FUNCTION,
+            ERROR_NOT_SUPPORTED,
+            ERROR_INVALID_LEVEL,
+        ] {
+            assert!(
+                no_file_id(&io::Error::from_raw_os_error(code as i32)),
+                "{code}"
+            );
+        }
+        assert!(!no_file_id(&io::Error::from_raw_os_error(
+            ERROR_ACCESS_DENIED as i32
+        )));
+        assert!(!no_file_id(&io::Error::other("no OS code")));
+    }
+
+    /// A file on a FAT32 or exFAT volume, named by `MIDNIGHT_TEST_FAT_FILE` (opened for
+    /// reading only), is captured, read and revalidated; before the file-index fallback
+    /// its capture failed with ERROR_INVALID_PARAMETER, so no viewer, thumbnail,
+    /// comparison or archive could read it.
+    #[test]
+    #[ignore = "needs MIDNIGHT_TEST_FAT_FILE on a FAT32 or exFAT volume"]
+    fn a_file_on_a_fat_volume_is_captured_read_and_revalidated() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("MIDNIGHT_TEST_FAT_FILE").expect("MIDNIGHT_TEST_FAT_FILE"),
+        );
+        let captured = crate::CapturedFile::capture(&path).unwrap();
+        assert!(captured.length() > 0);
+        let head = captured
+            .read_at(0, 64.min(captured.length() as u32))
+            .unwrap();
+        assert!(!head.is_empty());
+        captured.revalidate().unwrap();
+        let again = crate::CapturedFile::capture(&path).unwrap();
+        assert!(!captured.change_time_alone_moved(&again));
+        again.revalidate().unwrap();
     }
 }

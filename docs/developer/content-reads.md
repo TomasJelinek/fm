@@ -32,6 +32,26 @@ Validation is the documented LiveValidated contract, not a filesystem snapshot
 or a guarantee against changes that the platform's metadata cannot detect.
 Capture, reading, validation and disposal remain backend work.
 
+## Identity on other file systems
+
+A Windows revision identifies the file by its volume and its 128-bit file ID
+(`FileIdInfo`). Where the file system or server has none, the file's 64-bit file index
+(`GetFileInformationByHandle`) stands in, widened: FAT32 and exFAT, which USB sticks
+and memory cards use, answer `ERROR_INVALID_PARAMETER` (measured on a FAT32 stick);
+CD and DVD file systems, WebDAV and SMB servers without the information class answer it,
+`ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED` or `ERROR_INVALID_LEVEL`. Any other
+failure stays an error. A volume answers one way for every file, so a capture and its
+revalidations compare identities of one kind. Before 0.6.4 such a volume failed every
+capture, so no viewer, thumbnail, comparison or archive could read its files.
+
+These file systems detect fewer changes: FAT keeps no change time (always 0) and write
+times in 2-second steps, and some network servers report the same index (zero) for every
+file, so there a change within those limits that keeps the length is not detected.
+Linux revisions use `fstat` (device, inode, length, modification and change times),
+which every file system answers, including vfat, exFAT, ntfs3, NFS, CIFS and FUSE mounts.
+`native_windows.rs` tests the fallback's classification and identity; an ignored test
+reads a real FAT file named by `MIDNIGHT_TEST_FAT_FILE`.
+
 ## Change-time drift (VIEW-05)
 
 A native revision includes the change time (NTFS ChangeTime, Linux ctime), which
