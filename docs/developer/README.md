@@ -6,8 +6,10 @@ The public Rust packages are `midnight-plugin-api` 0.2.0 and `midnight-plugin-sd
 application loader, content broker, viewer window, and Basic, Source and Markdown
 plugins are implemented. Windows x64 and Linux x64 have native integration coverage.
 This guide describes that implementation; the versioned draft API has not yet made a
-long-term compatibility commitment. The [document index](#document-index) below lists
-every developer document.
+long-term compatibility commitment. The [document index](#document-index) lists every
+developer document, and the [glossary](../GLOSSARY.md) defines project terms such as
+[plugin](../GLOSSARY.md#plugin), [worker](../GLOSSARY.md#worker) and
+[lease](../GLOSSARY.md#lease).
 
 Start with [building and installing a plugin](QUICK_START.md), then read the
 [ABI and lifecycle contract](ABI_AND_LIFECYCLE.md) and the
@@ -48,7 +50,7 @@ Application contributors working on copy and archive extraction should also read
 the internal [native transfer contract](TRANSFERS.md). Its Rust capabilities are
 not part of the external plugin ABI. The shared [operation progress contract](OPERATION_PROGRESS.md)
 covers Copy/Move/Delete discovery, pause, cancellation, truthful progress and the
-separate Jobs session ledger. The internal [engine ownership contract](ENGINE_LIFETIME.md)
+separate session ledger behind the [Jobs](../GLOSSARY.md#jobs) list. The internal [engine ownership contract](ENGINE_LIFETIME.md)
 describes runtime-independent retirement, bounded reservations and remaining actor boundaries.
 
 The [filesystem migration map](FILESYSTEM_MIGRATION.md) and
@@ -105,7 +107,7 @@ application services remain separate from independently developed plugin APIs.
 | [Path paste](PATH_PASTE.md) | Pasting folder paths into the path editor. |
 | [Panel diagnostics](PANEL_DIAGNOSTICS.md) | The panels' diagnostic icons and their details, watch status and free-space refresh. |
 | [Metadata filters](METADATA_FILTERS.md) | Panel metadata expressions: syntax and limits. |
-| [Filename colours](FILENAME_COLOR_OPTIONS.md) | Filename colour rules and their priority editor. |
+| [Filename colors](FILENAME_COLOR_OPTIONS.md) | Filename color rules and their priority editor. |
 | [Native icons](NATIVE_ICONS.md) | How icons are drawn at device-pixel sizes on Windows and Linux. |
 | [Pixel scrolling](SCROLLING.md) | Pixel scrolling of panels and text views, and the prepared text window. |
 | [Viewer scrolling](VIEWER_SCROLLING.md) | Viewer pointer feedback, position queues and latency measurement. |
@@ -128,8 +130,8 @@ application services remain separate from independently developed plugin APIs.
 
 ## Architecture and ownership
 
-This diagram and the ownership paragraph below describe the semantic native viewer
-C ABI 1.0. Image/PDF, thumbnail, archive and HTML process providers use their
+This diagram and the ownership paragraph that follows it describe the semantic native
+viewer C ABI 1.0. Image/PDF, thumbnail, archive and HTML process providers use their
 [separate protocols and hosts](#discovery-and-trust).
 
 ```mermaid
@@ -168,7 +170,7 @@ One Git repository contains **separate Cargo workspaces**:
 | `plugins/midnight-filesystem-network/` | Network Neighborhood discovery and share activation | Public filesystem plugin API/SDK path packages plus Windows WNet (windows-sys) or Linux GIO loaded at runtime through libloading |
 | `plugins/midnight-viewer-image/`, `plugins/midnight-viewer-pdf/` | Restricted image decoding and PDF rendering | Released raster/worker SDKs, the shared image decoder (images) and plugin-owned tests/codecs |
 | `plugins/image-decoder/` | Shared bounded image codecs | Path dependency of the image viewer and image thumbnail workers; not a public API |
-| `plugins/midnight-viewer-html/` | Optional Chromium (CEF) HTML provider | Released web viewer API 0.4.0 and pinned CEF bindings |
+| `plugins/midnight-viewer-html/` | Optional Chromium ([CEF](../GLOSSARY.md#cef), the Chromium Embedded Framework) HTML provider | Released web viewer API 0.4.0 and pinned CEF bindings |
 | `plugins/midnight-viewer-basic/` | Text/Binary decoding and search | Released public SDK plus plugin-owned dependencies |
 | `plugins/midnight-viewer-source/` | 25 lexical profiles, including XML/XAML/MSBuild, CSS, Makefiles and CSV/TSV; bounded scanning and styles | Its own workspace, lockfile, dependencies and [syntax/viewport tests](../../plugins/midnight-viewer-source/README.md) |
 | `plugins/midnight-viewer-markdown/` | Semantic Markdown | Its own workspace, lockfile, dependencies and tests |
@@ -185,8 +187,8 @@ and CI belong to the plugin package. Plugin builds may install their own package
 they must never patch application source or another plugin. Reading a reference
 implementation does not make it a linkable dependency.
 All third-party dependencies must satisfy the project's
-[dependency policy](../DEPENDENCY_POLICY.md), including no required licence
-fees for the intended use and distribution. That policy does not assign a licence
+[dependency policy](../DEPENDENCY_POLICY.md), including no required license
+fees for the intended use and distribution. That policy does not assign a license
 to the project's own API/SDK code.
 
 ## Discovery and trust
@@ -252,7 +254,10 @@ registrations and the deployments they select keep the strict policy. See the
 Windows uses an absolute library path and restricted DLL search flags; Linux uses
 absolute `dlopen` with `RTLD_NOW | RTLD_LOCAL`. Successfully loaded libraries are
 pinned for the process lifetime, at most 256 canonical entry paths. Closing a
-viewer destroys its instance only after quiescence; it does not unload the library.
+viewer destroys its instance only after quiescence (its jobs, contexts, service calls,
+output and leases have all ended; see
+[quiescent shutdown](ABI_AND_LIFECYCLE.md#quiescent-shutdown)); it does not unload the
+library.
 Install, remove or replace packages with the application stopped, then restart.
 A loaded path whose manifest ID/version changes is refused until restart.
 
@@ -273,7 +278,8 @@ regular-file handle for the session and validates it against that capture. Each
 read checks identity, length and change/write timestamps before and after reading;
 a viewer's capture and an archive file's capture accept a change time that alone
 moved (see [change-time drift](CONTENT_READS.md#change-time-drift-view-05)).
-This guarantee is **LiveValidated**, not an immutable snapshot. A detected change
+This guarantee is **LiveValidated** (checked again at every read), not an immutable
+snapshot. A detected change
 fails the read; consumers must not mix content from different revisions. Final
 symlinks, reparse files and special files are refused by the native open policy.
 
@@ -288,7 +294,7 @@ The [archive worker API](FILESYSTEM_API.md) is the separate
 [`midnight-filesystem-api` package `0.5.0`](../../filesystem-api/midnight-filesystem-api/Cargo.toml),
 with [wire protocols 1, 2, 3 and 4](../../filesystem-api/PROTOCOL.md). Independent
 archive workers use the [worker SDK](WORKER_SDK.md) and bounded source/list/read
-messages through pipes. Browse/Read, pane navigation, persistent tabs, F3 content
+messages through pipes. Browse/Read, panel navigation, persistent tabs, F3 content
 leases and verified F5 copy-out are implemented. Host-side extraction/copy-out
 uses member reads and the [verified transfer pipeline](TRANSFERS.md), including
 independent destination readback before native publication. The archive worker receives
@@ -321,8 +327,9 @@ implementation details, not public plugin exports.
 The [dynamic viewer/filesystem design](../superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md),
 [viewer/VFS design](../superpowers/specs/2026-11-04-viewer-vfs-design.md) and
 [network filesystem design](../superpowers/specs/2026-11-05-network-filesystem-design.md)
-record earlier staging and remaining requirements; the current API contracts above
-define implemented routes. The
+record earlier staging and remaining requirements; the current API contracts in
+[Filesystem/provider API status](#filesystemprovider-api-status) define implemented
+routes. The
 [viewer implementation extension](../superpowers/specs/2026-11-05-viewer-implementation-extension.md)
 records the semantic native viewer scope and its deviations from earlier staging.
 

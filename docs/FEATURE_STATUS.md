@@ -21,6 +21,9 @@ How to read it:
   the evidence. A test, scenario or CI job that exists is not evidence that it passed;
   only a recorded run is.
 - Release packages include this file. Its links point into the source repository.
+- Project terms, such as [Hot Paths](GLOSSARY.md#hot-paths), [worker](GLOSSARY.md#worker)
+  and [MSI installation](GLOSSARY.md#msi-installation), are defined in the
+  [glossary](GLOSSARY.md).
 
 ## Platforms, builds and packages
 
@@ -33,11 +36,12 @@ How to read it:
   Windows Installer error 2228 (no `Signature` table; fixed in 0.6.3). From 0.6.3 the
   installer asks: **Just for me** (the
   default, no administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`)
-  or **For all users** (UAC, `C:\Program Files\Midnight Explorer (MSI)`). Copies of
-  0.6.1 update through a newer MSI run by hand; copies of 0.6.3 and later also from the
-  update dialog ([Updates](#updates)). Only the built package is checked so far: CI's
+  or **For all users** (UAC, `C:\Program Files\Midnight Explorer (MSI)`). MSI
+  installations of 0.6.1 update through a newer MSI run by hand; those of 0.6.3 and later
+  also from the update dialog ([Updates](#updates)). Only the built package is checked so far: CI's
   release job now installs, upgrades, repairs and removes it in both scopes on a
-  disposable runner and runs ICE validation, but no run of those steps has passed yet
+  disposable runner and runs [ICE](GLOSSARY.md#ice) (Internal Consistency Evaluators)
+  validation, but no run of those steps has passed yet
   (REL-05).
 - **Linux specifics:** native Wayland drag and drop with other applications is new, not
   yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On
@@ -57,8 +61,8 @@ How to read it:
   ([release record](verification/2026-11-27-release-0.6.2.md#ci));
   CI times are in the [CI time record](verification/2026-11-21-ci-time.md).
   Acceptance runs on Windows are listed in the
-  [Windows acceptance record](developer/acceptance/windows.md); the area records below
-  list the runs on both systems.
+  [Windows acceptance record](developer/acceptance/windows.md); the area records linked
+  in each section list the runs on both systems.
 
 ## Updates
 
@@ -71,7 +75,7 @@ How to read it:
   startup (on; at most once every 20 hours) and Include preview releases (on); settings
   schema 40. Releases from 0.5.1 on are signed with the owner's release key, whose
   public half is built in; the published 0.5.1 carries `SHA256SUMS.minisig`.
-- **Windows Installer copies (from 0.6.3, not yet released):** a copy that
+- **MSI installations (from 0.6.3):** a copy that
   Windows Installer records in its folder (per user or per machine) downloads the
   release's MSI, verifies it against the signed `SHA256SUMS`, and on Install now hands
   it to `msiexec` from a copy of the executable in the private update folder, which
@@ -81,8 +85,8 @@ How to read it:
   statuses and the hand-off order are tested with fakes; `msiexec` opening a pinned
   package was checked with an administrative extraction. An update through
   `msiexec /i` of a real installation, in either scope, has not been run yet; it is
-  first possible from an installed 0.6.3 to the release after it (earlier MSI copies
-  offer the release page).
+  first possible from an installed 0.6.3 to the release after it (earlier MSI
+  installations offer the release page).
 - **Open:** extracted copies that only administrators can change are not updated in
   place; the release-build check of the test endpoint is not run by CI (REL-04); an
   end-to-end MSI update of an installed copy in both scopes (REL-05).
@@ -479,17 +483,17 @@ How to read it:
   density, fonts, the Scrolling glide slider: Off, Very short, Short, Default, Long or
   Very long, and the Scrolling speed slider: Very slow, Slow, Medium, Fast or Very fast
   wheel notches, both applied at once to panels, lists, dialogs and every viewer),
-  filename colours, previews, archives, editors, comparators,
+  filename colors, previews, archives, editors, comparators,
   Custom Commands, keyboard shortcuts and plugins, and the Manage Hot Paths window;
   export and import of the
   settings file; F1 keyboard help and the F10 menu; windows down to 320×200.
-- **Open:** at 320×200 with touch density and a 32 px font the colour picker scrolls
+- **Open:** at 320×200 with touch density and a 32 px font the color picker scrolls
   (OPTIONS-02); with the installed plugins, Hot Paths inside archives are checked only four
   archives deep in `viewers_archives` (added with the star, opened by number); the manager,
   menus, a restart and a changed archive are not (HOTPATH-02).
 - **Documents:** [keyboard shortcuts](KEYBOARD_SHORTCUTS.md),
   [settings files](SETTINGS_FILES.md),
-  [filename colours](developer/FILENAME_COLOR_OPTIONS.md),
+  [filename colors](developer/FILENAME_COLOR_OPTIONS.md),
   [dialog ergonomics](developer/DIALOG_ERGONOMICS.md),
   [theme provenance](THEME_PROVENANCE.md).
 - **Verified:** `options`, `options_general`, `options_appearance`, `options_colors`,

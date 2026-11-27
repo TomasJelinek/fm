@@ -6,7 +6,10 @@ many items one operation accepts, how much memory a helper process may use, and 
 bounds. A limit here is a fixed number in the code that a user can reach, or that
 decides how the application behaves under load. Per-call buffer sizes without an
 observable effect are left out; the feature documents linked in each row describe the
-surrounding behaviour.
+surrounding behavior. Project terms such as [mount](GLOSSARY.md#mount),
+[lease](GLOSSARY.md#lease) and [worker](GLOSSARY.md#worker) are defined in the
+[glossary](GLOSSARY.md); a native pin is an open handle on a file or folder that holds
+its native identity, so that a later check detects when it was replaced.
 
 Every value was read from the source code of this commit, not copied from other
 documents. Rows marked *(internal)* bound memory, queues or work inside the application
@@ -175,10 +178,10 @@ function that holds the value.
 | Limit | Value | When reached | Where | Details |
 | --- | --- | --- | --- | --- |
 | Settings file | 4 MiB | Refused: "The file is larger than the 4 MiB settings limit." | `crates/midnight-platform-common/src/settings.rs` `MAX_PREFERENCES_BYTES` | [Settings files](SETTINGS_FILES.md) |
-| Hot Paths (bookmarks) | 64 locations; a stored name of at most 512 bytes | Saving refused: "Remove bookmarks until at most 64 remain, then save again." | `crates/midnight-core/src/bookmark.rs` `MAX_BOOKMARKS`, `MAX_BOOKMARK_NAME_BYTES` | [User guide](USER_GUIDE.md#controls) |
+| [Hot Paths](GLOSSARY.md#hot-paths) | 64 locations; a stored name of at most 512 bytes | Saving refused (the message says bookmarks): "Remove bookmarks until at most 64 remain, then save again." | `crates/midnight-core/src/bookmark.rs` `MAX_BOOKMARKS`, `MAX_BOOKMARK_NAME_BYTES` | [User guide](USER_GUIDE.md#controls) |
 | Command line history | 100 entries, 1 MiB | Older entries are dropped | `crates/midnight-core/src/command_history.rs` `MAX_COMMAND_HISTORY`, `MAX_COMMAND_HISTORY_BYTES` | [User guide](USER_GUIDE.md#controls) |
 | Keyboard shortcut overrides | 256 overrides, 4 keys per action | Refused: "At most 256 shortcut overrides can be saved." / "At most four keys can be assigned to …" | `crates/midnight-core/src/shortcuts.rs` `MAX_SHORTCUT_OVERRIDES`, `MAX_SHORTCUT_KEYS` | [Keyboard shortcuts](KEYBOARD_SHORTCUTS.md) |
-| Filename colour rules | 32 | Refused: "At most 32 filename color rules are supported." | `crates/midnight-core/src/filename_colors.rs` | [Filename colours](developer/FILENAME_COLOR_OPTIONS.md) |
+| Filename color rules | 32 | Refused: "At most 32 filename color rules are supported." | `crates/midnight-core/src/filename_colors.rs` | [Filename colors](developer/FILENAME_COLOR_OPTIONS.md) |
 | Font size and family | 8–32 points; family name 512 bytes | Refused | `crates/midnight-core/src/preferences.rs` `FONT_SIZE_MIN`, `FONT_SIZE_MAX`, `MAX_FONT_FAMILY_BYTES` | [User guide](USER_GUIDE.md#controls) |
 | Editor rules | 64 rules, 64 arguments and 32 KiB per rule | Refused: "At most 64 editor rules are supported." | `crates/midnight-core/src/editor.rs` `MAX_EDITOR_RULES`, `MAX_EDITOR_ARGUMENTS`, `MAX_EDITOR_ARGUMENT_BYTES` | [User guide](USER_GUIDE.md#controls) |
 | Viewer associations | 512 extensions per viewer; 64 disabled viewers | Refused: "At most 512 extensions can be assigned to one viewer." | `crates/midnight-core/src/viewer_associations.rs`; `crates/midnight-core/src/viewer.rs` | [Viewer file types](VIEWER_ASSOCIATIONS.md) |

@@ -25,7 +25,7 @@ the formatting authority; strict Clippy checks run in CI.
   changing component boundaries, since child content can force Slint to inline
   an otherwise reusable component: so do `clip` at a use site, `visible` or
   `opacity` on a component's root, and inheriting from a user component
-  ([measurements](docs/verification/2026-11-18-slint-compile-time.md)). Never
+  ([Slint compile-time record](docs/verification/2026-11-18-slint-compile-time.md)). Never
   hand-edit generated Rust.
 - A Browse or ellipsis button beside a path field opens its chooser at the current
   edited path. File choosers also use its filename when the platform supports it.
@@ -42,7 +42,9 @@ the formatting authority; strict Clippy checks run in CI.
 - **Async boundaries:** filesystem/network/CPU-heavy work and large-data cleanup
   belong to backend workers. UI callbacks perform short input/presentation work.
   Use bounded channels, cooperative cancellation and explicit ownership.
-- **Text/paths:** preserve Unicode and raw provider identities, never use ANSI
+- **Text/paths:** preserve Unicode and raw provider identities (the exact names and IDs
+  a filesystem provider reports; see
+  [content identity](docs/developer/README.md#content-identity-and-unicode)), never use ANSI
   conversions, truncate operation paths or impose `MAX_PATH`. Display strings
   are not filesystem identities.
 - **Tests:** test observable behavior and real boundaries; cover errors, races,
@@ -75,7 +77,8 @@ Checks, as CI ([ci.yml](.github/workflows/ci.yml)) runs them for the main worksp
   `cargo fmt -p <package> -- --check` per workspace package there instead.
 - Clippy:
   `cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings`.
-  The feature makes Clippy check the opt-in acceptance suite too.
+  The feature makes Clippy check the opt-in
+  [acceptance suite](docs/developer/ACCEPTANCE.md) too.
 - Tests: CI runs every workspace test target with
   `python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts`, in
   several Cargo invocations. Locally, run the same targets with
