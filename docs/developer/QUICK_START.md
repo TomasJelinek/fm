@@ -1,7 +1,9 @@
 # Build, test and install a viewer plugin
 
-This guide covers independent viewer plugins. To build, validate and run the
-application itself, see [Build and run](../USER_GUIDE.md#build-and-run) in the user guide.
+This guide covers independent viewer [plugins](../GLOSSARY.md#plugin). To build,
+validate and run the application itself, see [Build and run](../USER_GUIDE.md#build-and-run)
+in the user guide. The messages a viewer exchanges with the host (sessions, requests,
+events and models) are defined in the [viewer protocol reference](VIEWER_PROTOCOL.md).
 
 Use Rust 1.99 or newer (the plugins' `rust-version`; the repository pins 1.99.1 in
 `rust-toolchain.toml`) with the native target toolchain: MSVC Build Tools on
@@ -39,12 +41,13 @@ relocating it between machines/operating systems.
 An independent plugin declares its own workspace and lockfile, with version-only
 public dependencies. The current SDK is 0.2.1, and a new plugin should depend on it
 (`midnight-plugin-sdk = { version = "=0.2.1", registry = "midnight" }`); plugins built
-on 0.1.0 or 0.2.0 keep loading. The example below and the
-[tiny viewer](examples/tiny-viewer/) still pin 0.1.0; nothing builds the example in
-CI or validation yet (SDK-05 in the [backlog](../IMPLEMENTATION_BACKLOG.md)). For
-example:
+on 0.1.0 or 0.2.0 keep loading. The [tiny viewer](examples/tiny-viewer/) still pins
+0.1.0, and nothing builds it in CI or validation yet (SDK-05 in the
+[backlog](../IMPLEMENTATION_BACKLOG.md)). A new plugin's `my-viewer/Cargo.toml`, in its
+own project folder `my-viewer/`:
 
 ```toml
+# my-viewer/Cargo.toml
 [workspace]
 resolver = "2"
 
@@ -59,7 +62,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-midnight-plugin-sdk = { version = "=0.1.0", registry = "midnight" }
+midnight-plugin-sdk = { version = "=0.2.1", registry = "midnight" }
 
 [profile.release]
 overflow-checks = true
@@ -79,8 +82,8 @@ that lockfile in the plugin project.
 ## Build an existing production plugin independently
 
 Export/copy `plugins/midnight-viewer-basic/` to a directory outside the application
-checkout and provide the SDK bundle separately. The commands below run from that
-exported plugin directory, with the bundle in `../plugin-sdk` and an application
+checkout and provide the SDK bundle separately. The commands of this section run from
+that exported plugin directory, with the bundle in `../plugin-sdk` and an application
 installation in `../app`. Replace these paths with your own private destinations;
 installation must satisfy the [native trust rules](README.md#discovery-and-trust).
 
@@ -111,7 +114,8 @@ application code or another plugin.
 
 The [Source](../../plugins/midnight-viewer-source/README.md) and
 [Markdown](../../plugins/midnight-viewer-markdown/README.md) plugins use the same
-CI/build arguments. Their `prepare-sdk` helpers generate a config under BuildRoot
+CI/build arguments. Their `prepare-sdk` helpers (`scripts/prepare-sdk.ps1` and
+`scripts/prepare-sdk.py` in each plugin) generate a config under BuildRoot
 that keeps the public registry and uses the normal Cargo cache for plugin-specific
 dependencies. The API-only bundle vendor directory does not contain every parser
 dependency. On an uncached machine, run `cargo fetch --locked --config GENERATED_CONFIG`
@@ -120,14 +124,21 @@ Python 3.11+ for reading the SDK config.
 
 For application maintainers building all six shipped viewer packages (basic,
 source, Markdown, image, PDF and HTML) from the shared repository, the existing
-orchestration helpers are:
+orchestration helpers run from the repository root. The examples use the newest SDK
+bundle that the packager wrote into `_build` (see
+[Obtain the public SDK bundle](#obtain-the-public-sdk-bundle)) and install into the
+release build output:
 
 ```powershell
-./scripts/build-viewers.ps1 -Profile release -SdkConfig <sdk>/.cargo/config.toml -AppDirectory <app> -Test -Offline
+$sdk = (Get-ChildItem -Directory -Path _build -Filter 'plugin-sdk-*' | Sort-Object Name | Select-Object -Last 1).FullName
+$app = '_build/release'
+./scripts/build-viewers.ps1 -Profile release -SdkConfig "$sdk/.cargo/config.toml" -AppDirectory $app -Test -Offline
 ```
 
 ```sh
-MIDNIGHT_TEST_VIEWERS=1 MIDNIGHT_VIEWERS_OFFLINE=1 bash scripts/build-viewers.sh release <sdk>/.cargo/config.toml <app>
+sdk=$(ls -d _build/plugin-sdk-* | sort | tail -n 1)
+app=_build/release
+MIDNIGHT_TEST_VIEWERS=1 MIDNIGHT_VIEWERS_OFFLINE=1 bash scripts/build-viewers.sh release "$sdk/.cargo/config.toml" "$app"
 ```
 
 Those helpers orchestrate independent builds; they do not make plugins members
@@ -177,7 +188,7 @@ description = "Displays files in my text format."
 Set Linux `target` to `x86_64-unknown-linux-gnu` and `entry_library` to the actual
 `.so` basename. ID and version must exactly equal `Viewer::ID`/`VERSION` in the
 loaded descriptor. The entry name is one filename, not an absolute/relative path.
-Use a unique stable ID and a dedicated package directory. Supply the licences and
+Use a unique stable ID and a dedicated package directory. Supply the licenses and
 notices required by your distribution; the loader itself validates the manifest
 and library rather than checking legal completeness.
 
@@ -230,7 +241,7 @@ your copied project. It depends only on the released SDK.
 
 Its `Viewer` implementation exports `midnight_plugin_entry_v1`, accepts one Text
 session, decodes Open/Viewport requests, reads through `Context::read`, emits a
-`TextPage` with exact scalar-boundary anchors through `Context::send`, and
+`TextPage` with exact anchors at UTF-8 scalar boundaries through `Context::send`, and
 completes in the send continuation. It checks session/generation, read errors,
 cancellation and logical close, handles output rejection, and owns no host pointer
 or private thread. The source illustrates the actual API rather than placeholder
@@ -266,7 +277,8 @@ Keep format tests and API/service fixtures inside your plugin. Cover malformed
 input, short reads without EOF, errors, cancellation, stale generations, source
 offsets above 4 GiB, checked overflow, UTF-8/UTF-16 boundaries, exact anchors,
 output pressure and shutdown with retained leases. Test bounded memory and the
-combined wire-item budget, not just successful small-file rendering. Run the
+combined wire-item budget ([protocol limits](VIEWER_PROTOCOL.md#limits)), not just
+successful small-file rendering. Run the
 same exported source project on Windows and Linux, with its own lockfile and no
 application-source dependencies.
 
