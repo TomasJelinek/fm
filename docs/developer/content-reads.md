@@ -116,7 +116,12 @@ searched again. vfat keeps 2-second write times, exfat 10 ms and sshfs 1 s.
 | Linux FUSE (sshfs, GVfs) | Yes | sshfs refused: no `RENAME_NOREPLACE` | Copy and Move to refused | inotify (local changes) and the 15-second check |
 
 Evidence: Windows FAT32 `FileIdInfo` → `ERROR_INVALID_PARAMETER` was measured on a USB
-stick; the other Windows rows follow MS-FSCC (appendix notes for 2.1.9, 2.1.10 and 2.4) and
+stick. On a UDF disc image (ISO 9660, Joliet and UDF, built with IMAPI2 and mounted
+without administrator rights) `FileIdInfo` and `FileAttributeTagInfo` both answer
+`ERROR_INVALID_PARAMETER`, the file index is non-zero, and the plugin-host capture and
+the native plugin's optical-volume test read and validate a JPEG through the fallbacks
+(27 November 2026). The other Windows rows follow MS-FSCC (appendix notes for 2.1.9,
+2.1.10 and 2.4) and
 the FAT and CDFS driver samples; the Linux rows follow the kernel's `fs/nfs`, `fs/fat`,
 `fs/exfat` and FUSE rename and `O_TMPFILE` support. Only NTFS, ext4 and tmpfs are tested
 on every run. The opt-in tests that read real volumes skip themselves when their variable
