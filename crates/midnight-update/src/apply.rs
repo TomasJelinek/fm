@@ -500,6 +500,9 @@ pub struct StartupReport {
     pub confirm: Option<String>,
     /// How the last update went, read once.
     pub outcome: Option<Outcome>,
+    /// How the last Windows Installer update of this copy went, read once
+    /// (`installer::startup`).
+    pub installer: Option<crate::installer::InstallOutcome>,
 }
 
 /// Reads `pending.json` and `result.json` of `installation` at start. `version` is the

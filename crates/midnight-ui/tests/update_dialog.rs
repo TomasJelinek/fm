@@ -242,6 +242,51 @@ fn a_copy_that_cannot_install_offers_the_release_page() {
 }
 
 #[test]
+fn a_windows_installer_copy_installs_with_install_now() {
+    let mut h = Harness::new();
+    h.open();
+    for needs_approval in [false, true] {
+        h.show(&UpdateView {
+            windows_installer: true,
+            needs_approval,
+            ..view(UpdatePhase::Ready)
+        });
+        assert_eq!(h.state().get_status(), "Install version 0.5.1");
+        assert!(h.has_button("Install now"));
+        assert!(!h.has_button("Restart now"));
+        let texts: Vec<String> = ui::visible_text_values(ui::popup_item(
+            &h.ui.window,
+            "Software update",
+            AccessibleRole::Groupbox,
+        ))
+        .into_iter()
+        .map(|text| text.to_string())
+        .collect();
+        let headline = texts
+            .iter()
+            .find(|text| text.starts_with("Version 0.5.1 is ready."))
+            .unwrap_or_else(|| panic!("{texts:?}"));
+        assert!(headline.contains("Windows Installer"), "{headline}");
+        assert_eq!(
+            headline.contains("administrator approval"),
+            needs_approval,
+            "{headline}"
+        );
+        render::snapshot(&h.ui, &format!("dialog-installer-{needs_approval}"));
+    }
+    ui::click_popup(&h.ui.window, "Install now", AccessibleRole::Button);
+    h.ui.draw();
+    assert_eq!(*h.actions.borrow(), ["restart"]);
+    // Approval is asked only of a Windows Installer copy.
+    h.show(&UpdateView {
+        needs_approval: true,
+        ..view(UpdatePhase::Ready)
+    });
+    assert!(h.has_button("Restart now"));
+    assert!(!h.state().get_needs_approval());
+}
+
+#[test]
 fn about_opens_the_update_dialog() {
     let mut h = Harness::new();
     h.ui.window.invoke_show_about();

@@ -6,10 +6,11 @@ use crate::{
     archive,
     client::{FetchError, UpdateClient, unix_now},
     install::{self, Installation, NotUpdatable, Staged, remove_tree},
+    installer::{InstalledCopy, ReadyInstaller, Scope},
     notes,
     release::{self, Finding, Platform, Release},
     state::{CheckState, StateStore},
-    trust::{self, MAX_SIGNATURE_BYTES, MAX_SUMS_BYTES, TrustAnchor},
+    trust::{self, MAX_SIGNATURE_BYTES, MAX_SUMS_BYTES, SignedSums, TrustAnchor},
 };
 use semver::Version;
 use std::{
@@ -42,7 +43,8 @@ pub enum Phase {
         total: u64,
     },
     Verifying,
-    /// Downloaded, verified and staged: "Restart to update".
+    /// Downloaded, verified and staged: "Restart to update". For a copy that Windows
+    /// Installer manages, the verified MSI is ready: "Install now".
     Ready,
     Failed {
         message: String,
@@ -76,6 +78,9 @@ pub struct Snapshot {
     pub last_checked: Option<u64>,
     /// How the last update went, shown once.
     pub notice: Option<String>,
+    /// This copy is installed by Windows Installer in this scope and updates with the
+    /// release's MSI (`installer`); `None` for an extracted release folder.
+    pub installer: Option<Scope>,
 }
 
 /// Everything the controller works with; tests build their own.
@@ -85,6 +90,10 @@ pub struct Environment {
     pub current: Version,
     pub platform: Option<Platform>,
     pub installation: Result<Installation, NotUpdatable>,
+    /// Set when Windows Installer manages this copy (`installer::detect`): it updates
+    /// with the release's MSI, and `installation` (which needs `BUILD-INFO.json`) is not
+    /// used.
+    pub installer: Option<InstalledCopy>,
     /// The user's private folder for downloads and `update-state.json`.
     pub private_folder: PathBuf,
     pub startup: StartupReport,
@@ -111,6 +120,7 @@ pub struct UpdateController {
     snapshot: Arc<Mutex<Snapshot>>,
     cancel: Arc<AtomicBool>,
     staged: Arc<Mutex<Option<(Installation, Staged)>>>,
+    ready: Arc<Mutex<Option<ReadyInstaller>>>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -134,16 +144,23 @@ impl UpdateController {
             unavailable: None,
             last_checked: None,
             notice: None,
+            installer: None,
         }));
         let staged = Arc::new(Mutex::new(None));
+        let ready = Arc::new(Mutex::new(None));
         let cancel = Arc::new(AtomicBool::new(false));
         let (jobs, receiver) = mpsc::channel();
-        let shared = (snapshot.clone(), staged.clone(), cancel.clone());
+        let shared = (
+            snapshot.clone(),
+            staged.clone(),
+            ready.clone(),
+            cancel.clone(),
+        );
         let worker = thread::Builder::new()
             .name("midnight-update".into())
             .spawn(move || {
                 let environment = environment();
-                let (snapshot, staged, cancel) = shared;
+                let (snapshot, staged, ready, cancel) = shared;
                 if let Ok(mut slot) = snapshot.lock() {
                     *slot = initial_snapshot(&environment);
                 }
@@ -155,6 +172,7 @@ impl UpdateController {
                     environment,
                     snapshot,
                     staged,
+                    ready,
                     cancel,
                     publish,
                     offer: None,
@@ -174,6 +192,7 @@ impl UpdateController {
             snapshot,
             cancel,
             staged,
+            ready,
             worker,
         }
     }
@@ -218,6 +237,11 @@ impl UpdateController {
         self.staged.lock().ok().and_then(|staged| staged.clone())
     }
 
+    /// The verified MSI that "Install now" hands to Windows Installer.
+    pub fn installer_ready(&self) -> Option<ReadyInstaller> {
+        self.ready.lock().ok().and_then(|ready| ready.clone())
+    }
+
     /// Stops a download in progress and the worker; returns at once.
     pub fn stop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
@@ -244,6 +268,9 @@ fn unavailable(environment: &Environment) -> Option<String> {
                 .into(),
         );
     }
+    if environment.installer.is_some() {
+        return None;
+    }
     environment
         .installation
         .as_ref()
@@ -252,6 +279,9 @@ fn unavailable(environment: &Environment) -> Option<String> {
 }
 
 fn initial_staged(environment: &Environment) -> Option<(Installation, Staged)> {
+    if environment.installer.is_some() {
+        return None;
+    }
     let installation = environment.installation.as_ref().ok()?;
     let staged = install::read_staged(installation)?;
     (staged.version()? > environment.current).then(|| (installation.clone(), staged))
@@ -262,6 +292,12 @@ fn initial_snapshot(environment: &Environment) -> Snapshot {
     // The new version learns of its update while confirming it; the outcome file that
     // the updater writes afterwards is read at a later start, where only a failure is news.
     let notice = match (&environment.startup.confirm, &environment.startup.outcome) {
+        // A Windows Installer copy started again by the MSI hand-off.
+        _ if environment.startup.installer.is_some() => environment
+            .startup
+            .installer
+            .as_ref()
+            .map(|outcome| outcome.notice()),
         (Some(to), _) => Some(format!("Updated to version {to}.")),
         (None, Some(Outcome::RolledBack { to, reason, .. })) => Some(format!(
             "Version {to} did not start correctly, so the previous version was restored. {reason}"
@@ -292,6 +328,7 @@ fn initial_snapshot(environment: &Environment) -> Snapshot {
         unavailable: unavailable(environment),
         last_checked: None,
         notice,
+        installer: environment.installer.as_ref().map(|copy| copy.scope),
     }
 }
 
@@ -300,6 +337,7 @@ struct Worker {
     store: StateStore,
     snapshot: Arc<Mutex<Snapshot>>,
     staged: Arc<Mutex<Option<(Installation, Staged)>>>,
+    ready: Arc<Mutex<Option<ReadyInstaller>>>,
     cancel: Arc<AtomicBool>,
     publish: Publisher,
     offer: Option<Release>,
@@ -433,11 +471,9 @@ impl Worker {
                 });
             }
             Finding::Newer { release, skipped } => {
-                let blocked = self
-                    .environment
-                    .platform
-                    .as_ref()
-                    .and_then(|platform| release.missing_files(platform));
+                let blocked = self.environment.platform.as_ref().and_then(|platform| {
+                    release.missing_package(platform, self.environment.installer.is_some())
+                });
                 let (text, cut) = notes::excerpt(&release.notes);
                 let offer = Offer {
                     version: release.version.to_string(),
@@ -475,107 +511,18 @@ impl Worker {
         let Some(platform) = self.environment.platform else {
             return self.fail("Updates are not published for this system.".into());
         };
+        if let Some(copy) = self.environment.installer.clone() {
+            return self.download_installer(release, platform, copy);
+        }
         let installation = match &self.environment.installation {
             Ok(installation) => installation.clone(),
             Err(reason) => return self.fail(reason.to_string()),
         };
-        if let Some(reason) = release.missing_files(&platform) {
-            return self.fail(reason);
-        }
         let archive_name = platform.archive_name(&release.version);
-        let (Some(archive_asset), Some(sums_asset), Some(signature_asset)) = (
-            release.asset(&archive_name).cloned(),
-            release.asset(release::SUMS_NAME).cloned(),
-            release.asset(release::SIGNATURE_NAME).cloned(),
-        ) else {
-            return self.fail("The release is missing files.".into());
+        let (signed, folder, archive) = match self.fetch_verified(&release, &platform, false) {
+            Ok(fetched) => fetched,
+            Err(message) => return self.fail(message),
         };
-        let folder = self
-            .environment
-            .private_folder
-            .join("download")
-            .join(release.version.to_string());
-        if let Err(error) = fs::create_dir_all(&folder) {
-            return self.fail(format!("The download folder cannot be created: {error}"));
-        }
-        // Only this version's download can be resumed: the folders that downloads of other
-        // versions left (stopped, failed or never installed) go now.
-        remove_other_downloads(&folder);
-        self.update(|snapshot| {
-            snapshot.phase = Phase::Downloading {
-                received: 0,
-                total: archive_asset.size,
-            };
-        });
-        // The signature first: an unsigned or forged release downloads nothing large.
-        let client = self.environment.client.clone();
-        let fetched = client
-            .fetch_small(
-                &sums_asset.url,
-                "application/octet-stream",
-                MAX_SUMS_BYTES,
-                &self.cancel,
-            )
-            .and_then(|sums| {
-                client
-                    .fetch_small(
-                        &signature_asset.url,
-                        "application/octet-stream",
-                        MAX_SIGNATURE_BYTES,
-                        &self.cancel,
-                    )
-                    .map(|signature| (sums, signature))
-            });
-        let (sums, signature) = match fetched {
-            Ok(files) => files,
-            Err(error) => return self.fail(error.to_string()),
-        };
-        let signature = String::from_utf8_lossy(&signature);
-        let signed = match trust::verify_sums(
-            self.environment.anchor.as_ref(),
-            &sums,
-            &signature,
-            &release.version,
-        ) {
-            Ok(signed) => signed,
-            Err(error) => return self.fail(error.to_string()),
-        };
-        if signed.digest(&archive_name).is_none() {
-            return self.fail(trust::TrustError::NotListed(archive_name).to_string());
-        }
-        let archive = folder.join(&archive_name);
-        let total = archive_asset.size;
-        let snapshot = self.snapshot.clone();
-        let publish = &self.publish;
-        let last = &mut self.last_progress;
-        let mut progress = |received: u64, total: u64| {
-            let now = Instant::now();
-            if last.is_some_and(|last| now.duration_since(last) < Duration::from_millis(100))
-                && received < total
-            {
-                return;
-            }
-            *last = Some(now);
-            let current = {
-                let mut guard = snapshot
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                guard.phase = Phase::Downloading { received, total };
-                guard.clone()
-            };
-            publish(current);
-        };
-        if !archive.is_file()
-            && let Err(error) = client.download(
-                &archive_asset.url,
-                &archive,
-                total,
-                &self.cancel,
-                &mut progress,
-            )
-        {
-            return self.fail(error.to_string());
-        }
         self.update(|snapshot| snapshot.phase = Phase::Verifying);
         // Extracted through the handle that was checked (`SignedSums::open_checked`).
         let checked = match signed.open_checked(&archive_name, &archive) {
@@ -618,6 +565,143 @@ impl Worker {
             *slot = Some((installation, staged));
         }
         self.update(|snapshot| snapshot.phase = Phase::Ready);
+    }
+
+    /// A copy that Windows Installer manages: the release's MSI, checked against its
+    /// signed line, stays in the private download folder until "Install now" hands it to
+    /// `msiexec` (`installer`), which checks it again before it starts.
+    fn download_installer(&mut self, release: Release, platform: Platform, copy: InstalledCopy) {
+        let Some(name) = platform.installer_name(&release.version) else {
+            return self.fail("Releases carry no installer package for this system.".into());
+        };
+        let (signed, _, package) = match self.fetch_verified(&release, &platform, true) {
+            Ok(fetched) => fetched,
+            Err(message) => return self.fail(message),
+        };
+        self.update(|snapshot| snapshot.phase = Phase::Verifying);
+        if let Err(error) = signed.open_checked(&name, &package) {
+            let _ = fs::remove_file(&package);
+            return self.fail(error.to_string());
+        }
+        let Some(sha256) = signed.digest(&name) else {
+            return self.fail(trust::TrustError::NotListed(name).to_string());
+        };
+        if let Ok(mut slot) = self.ready.lock() {
+            *slot = Some(ReadyInstaller {
+                copy,
+                package,
+                sha256,
+                version: release.version.to_string(),
+                page_url: release.page_url.clone(),
+            });
+        }
+        self.update(|snapshot| snapshot.phase = Phase::Ready);
+    }
+
+    /// Fetches and verifies the signed checksum list, then downloads the file that
+    /// updates this copy (the archive, or the MSI with `installer`) once the list names
+    /// it. Returns the list, the download folder and the downloaded file; the caller
+    /// checks the file's own digest.
+    fn fetch_verified(
+        &mut self,
+        release: &Release,
+        platform: &Platform,
+        installer: bool,
+    ) -> Result<(SignedSums, PathBuf, PathBuf), String> {
+        if let Some(reason) = release.missing_package(platform, installer) {
+            return Err(reason);
+        }
+        let name = platform
+            .package_name(&release.version, installer)
+            .ok_or_else(|| "The release is missing files.".to_owned())?;
+        let (Some(package_asset), Some(sums_asset), Some(signature_asset)) = (
+            release.asset(&name).cloned(),
+            release.asset(release::SUMS_NAME).cloned(),
+            release.asset(release::SIGNATURE_NAME).cloned(),
+        ) else {
+            return Err("The release is missing files.".into());
+        };
+        let folder = self
+            .environment
+            .private_folder
+            .join("download")
+            .join(release.version.to_string());
+        fs::create_dir_all(&folder)
+            .map_err(|error| format!("The download folder cannot be created: {error}"))?;
+        // Only this version's download can be resumed: the folders that downloads of other
+        // versions left (stopped, failed or never installed) go now.
+        remove_other_downloads(&folder);
+        self.update(|snapshot| {
+            snapshot.phase = Phase::Downloading {
+                received: 0,
+                total: package_asset.size,
+            };
+        });
+        // The signature first: an unsigned or forged release downloads nothing large.
+        let client = self.environment.client.clone();
+        let (sums, signature) = client
+            .fetch_small(
+                &sums_asset.url,
+                "application/octet-stream",
+                MAX_SUMS_BYTES,
+                &self.cancel,
+            )
+            .and_then(|sums| {
+                client
+                    .fetch_small(
+                        &signature_asset.url,
+                        "application/octet-stream",
+                        MAX_SIGNATURE_BYTES,
+                        &self.cancel,
+                    )
+                    .map(|signature| (sums, signature))
+            })
+            .map_err(|error| error.to_string())?;
+        let signature = String::from_utf8_lossy(&signature);
+        let signed = trust::verify_sums(
+            self.environment.anchor.as_ref(),
+            &sums,
+            &signature,
+            &release.version,
+        )
+        .map_err(|error| error.to_string())?;
+        if signed.digest(&name).is_none() {
+            return Err(trust::TrustError::NotListed(name).to_string());
+        }
+        let path = folder.join(&name);
+        let total = package_asset.size;
+        let snapshot = self.snapshot.clone();
+        let publish = &self.publish;
+        let last = &mut self.last_progress;
+        let mut progress = |received: u64, total: u64| {
+            let now = Instant::now();
+            if last.is_some_and(|last| now.duration_since(last) < Duration::from_millis(100))
+                && received < total
+            {
+                return;
+            }
+            *last = Some(now);
+            let current = {
+                let mut guard = snapshot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.phase = Phase::Downloading { received, total };
+                guard.clone()
+            };
+            publish(current);
+        };
+        if !path.is_file() {
+            client
+                .download(
+                    &package_asset.url,
+                    &path,
+                    total,
+                    &self.cancel,
+                    &mut progress,
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        Ok((signed, folder, path))
     }
 }
 

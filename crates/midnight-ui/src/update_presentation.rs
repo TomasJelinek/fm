@@ -57,6 +57,11 @@ pub struct UpdateView {
     pub received: u64,
     pub total: u64,
     pub page_url: String,
+    /// This copy is installed by Windows Installer: "Install now" hands the verified MSI
+    /// to it, and the application closes and opens again.
+    pub windows_installer: bool,
+    /// The installation is for all users: Windows asks for administrator approval.
+    pub needs_approval: bool,
 }
 
 thread_local! {
@@ -108,6 +113,8 @@ pub fn show_update(window: &MainWindow, view: &UpdateView) {
         SharedString::default()
     });
     state.set_has_release_page(view.page_url.starts_with("https://"));
+    state.set_windows_installer(view.windows_installer);
+    state.set_needs_approval(view.windows_installer && view.needs_approval);
     PAGE_URL.with(|url| url.borrow_mut().clone_from(&view.page_url));
 }
 

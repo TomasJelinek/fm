@@ -159,6 +159,12 @@ fn main() -> std::process::ExitCode {
     if midnight_update::apply::ApplyRequest::from_arguments(&arguments).is_some() {
         return std::process::ExitCode::from(midnight_update::apply::run(&arguments));
     }
+    // The Windows Installer hand-off that "Install now" starts (a copy of this executable
+    // in the private update folder): it runs msiexec on the verified MSI, then starts the
+    // installed application again. It never opens a window either.
+    if midnight_update::installer::InstallRequest::from_arguments(&arguments).is_some() {
+        return std::process::ExitCode::from(midnight_update::installer::run(&arguments));
+    }
     // The Console window launcher of a Run directly command: a console program, not the
     // file manager. It runs the program with exactly its arguments and waits for a key.
     let mut arguments = arguments.into_iter();
@@ -226,7 +232,8 @@ fn run() -> Result<u8, String> {
     }
     let restart_arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let restart_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    // Held until the process exits: an updater waits until no copy runs from the folder.
+    // Held until the process exits: an updater (or the Windows Installer hand-off) waits
+    // until no copy runs from the installation.
     let (_instance, update_start) = updates::at_start();
     let update_restart = updates::RestartRequest::default();
     let software_status = Cell::new(0);
@@ -284,8 +291,9 @@ fn run() -> Result<u8, String> {
             Ok(())
         },
     )?;
-    // "Restart now": the window has closed and the session is saved; the updater waits
-    // for this process to exit, installs the update and starts the new version.
+    // "Restart now" or "Install now": the window has closed and the session is saved; the
+    // updater (or the Windows Installer hand-off) waits for this process to exit,
+    // installs the update and starts the application again.
     if let Some(restart) = update_restart.borrow_mut().take()
         && let Err(error) = updates::start_updater(restart, restart_arguments, restart_cwd)
     {

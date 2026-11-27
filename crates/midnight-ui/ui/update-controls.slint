@@ -31,6 +31,10 @@ export global UpdateState {
     in property <float> progress;
     in property <string> progress-text;
     in property <bool> has-release-page;
+    // This copy is installed by Windows Installer: ready means the verified MSI, which
+    // "Install now" hands to Windows Installer; `needs-approval` for an all-users copy.
+    in property <bool> windows-installer;
+    in property <bool> needs-approval;
     // Options › General › Updates, part of the Options draft.
     in-out property <bool> check-at-startup: true;
     in-out property <bool> include-previews: true;
@@ -53,6 +57,7 @@ export global UpdateState {
         : root.phase == 3 ? "Version " + root.latest-version + " is available"
         : root.phase == 4 ? "Downloading version " + root.latest-version + ": " + Math.round(root.progress * 100) + "%"
         : root.phase == 5 ? "Verifying version " + root.latest-version + "…"
+        : root.phase == 6 && root.windows-installer ? "Install version " + root.latest-version
         : root.phase == 6 ? "Restart to update to version " + root.latest-version
         : root.phase == 7 ? "Update failed: " + root.message
         : "Check for updates";
@@ -121,7 +126,10 @@ export component UpdateDialog inherits Rectangle {
         : root.phase == 2 ? "Midnight Explorer is up to date."
         : root.phase == 3 ? "Version " + UpdateState.latest-version + " is available."
         : root.phase == 4 ? "Downloading version " + UpdateState.latest-version + "…"
+        : root.phase == 5 && UpdateState.windows-installer ? "Verifying the signature of version " + UpdateState.latest-version + "…"
         : root.phase == 5 ? "Verifying the signature and unpacking version " + UpdateState.latest-version + "…"
+        : root.phase == 6 && UpdateState.needs-approval ? "Version " + UpdateState.latest-version + " is ready. Install now closes Midnight Explorer, Windows asks for administrator approval, Windows Installer updates it and Midnight Explorer opens again."
+        : root.phase == 6 && UpdateState.windows-installer ? "Version " + UpdateState.latest-version + " is ready. Install now closes Midnight Explorer, Windows Installer updates it and Midnight Explorer opens again."
         : root.phase == 6 ? "Version " + UpdateState.latest-version + " is ready. Restart Midnight Explorer to finish the update."
         : root.phase == 7 ? "The update did not succeed."
         : "Check GitHub for a newer version of Midnight Explorer.";
@@ -231,6 +239,7 @@ export component UpdateDialog inherits Rectangle {
                 }
                 main := HintedActionButton {
                     text: root.primary == 1 ? "Download and install"
+                        : root.primary == 2 && UpdateState.windows-installer ? "Install now"
                         : root.primary == 2 ? "Restart now"
                         : root.primary == 3 ? "Open release page"
                         : root.primary == 4 ? "Check now"
@@ -239,7 +248,10 @@ export component UpdateDialog inherits Rectangle {
                         : root.phase == 4 ? "Downloading…"
                         : "Verifying…";
                     primary: true; enabled: root.input-enabled && root.primary != 0;
-                    hint: root.primary == 1 ? "Download the new version in the background, check its signature and prepare it. Nothing changes until you restart."
+                    hint: root.primary == 1 && UpdateState.windows-installer ? "Download the new version's installer in the background and check its signature. Nothing changes until you install it."
+                        : root.primary == 1 ? "Download the new version in the background, check its signature and prepare it. Nothing changes until you restart."
+                        : root.primary == 2 && UpdateState.needs-approval ? "Close Midnight Explorer and install the new version with Windows Installer, which asks for administrator approval first. Midnight Explorer opens again with the same panels and tabs."
+                        : root.primary == 2 && UpdateState.windows-installer ? "Close Midnight Explorer and install the new version with Windows Installer. Midnight Explorer opens again with the same panels and tabs."
                         : root.primary == 2 ? "Close Midnight Explorer, install the new version and open it again with the same panels and tabs."
                         : root.primary == 3 ? "Show the release on GitHub in your browser to download it there."
                         : "Ask GitHub for the newest release now.";

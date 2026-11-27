@@ -353,8 +353,8 @@ refuses an existing MSI.
   only a folder with that file ([Updates](developer/UPDATES.md#staging)), and a folder
   that Windows Installer manages must be updated by a newer MSI instead.
 - **Installation:** one dual-purpose package (Windows Installer's single package
-  authoring: `ALLUSERS=2` with `MSIINSTALLPERUSER=1`; from the release after 0.6.2, whose
-  MSI was per user only). Its first dialog, **ScopeDlg**, asks who can use the
+  authoring: `ALLUSERS=2` with `MSIINSTALLPERUSER=1`; from 0.6.2, whose tag contains it;
+  0.6.1's MSI was per user only). Its first dialog, **ScopeDlg**, asks who can use the
   application:
   - **Just for me** (default): per user, without administrator rights or a UAC prompt,
     into `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, the 0.6.1 per-user MSI's
@@ -411,9 +411,22 @@ refuses an existing MSI.
   machine. That key and the installed folders, once empty, are removed on uninstall.
   Settings, caches and update downloads in `%LOCALAPPDATA%\Midnight Explorer` are never
   touched.
-- **Updates:** the application updates in place only a folder with `BUILD-INFO.json`,
-  which the MSI leaves out, so both scopes' copies offer the release page in the update
-  dialog; an all-users copy is also one its users cannot change.
+- **Updates:** the application swaps in place only a folder with `BUILD-INFO.json`,
+  which the MSI leaves out. From the first release after 0.6.2, an installed copy finds
+  its installation through Windows Installer (the product of this `UpgradeCode` whose
+  `InstallLocation`, set from `INSTALLDIR` by `SetInstallLocation`, is its folder, in
+  the per-user or the per-machine context) and updates with the next release's MSI: the
+  update dialog downloads `midnight-explorer-<version>-x86_64-pc-windows-msvc.msi`,
+  checks it against its line in the signed `SHA256SUMS` and runs
+  `msiexec /i <msi> /passive /norestart` with `ALLUSERS=2 MSIINSTALLPERUSER=1` (per
+  user) or `ALLUSERS=1` (per machine, through UAC) and `INSTALLDIR` set to the copy's
+  folder ([Updates](developer/UPDATES.md#windows-installer-copies)). The MSI therefore
+  must keep its name, its `UpgradeCode`, `SetInstallLocation`, the `INSTALLDIR`
+  property and its major upgrade, and its line must be in the signed `SHA256SUMS`
+  ([signing](#signing-the-release)); a release without it offers MSI copies the release
+  page. No marker file is added: Windows Installer's own records identify the copy,
+  also for copies installed by 0.6.1 and 0.6.2. Those versions cannot run the hand-off
+  themselves; their users run the next MSI once by hand.
 - **Not included:** the Visual C++ runtime (as for the ZIP), code signing (REL-03) and
   permissions of its own. **Retry with authorization** works from either scope's copy
   when its executable records the helper's digest
@@ -426,7 +439,9 @@ refuses an existing MSI.
   below `ProgramFiles64Folder` with the per-user folder action, key paths and registry
   values with root -1, no profile folder in `Directory`, shortcuts in
   `ProgramMenuFolder`, exactly the package's own folders removed on uninstall, the
-  dialog's scope and folder events, property-setting custom actions only), the
+  dialog's scope and folder events, property-setting custom actions only, and
+  `SetInstallLocation` recording `[INSTALLDIR]` as the install location, by which the
+  application finds an installed copy), the
   installed paths, and every file of the embedded cabinet, extracted with `expand.exe`,
   byte for byte against its ZIP entry. An administrative installation of an MSI made
   from the 0.6.0 ZIP extracted every file unchanged
@@ -514,8 +529,10 @@ python -B scripts/release-signing.py verify --version 0.6.1 _build/releases/v0.6
 ```
 
 `checksums` writes `SHA256SUMS` (`<sha256>  <file name>` lines, one for each archive and
-the MSI). The application's updater uses only its platform's archive line; the MSI's
-line lets users check the installer they download. `sign` asks for the
+the MSI). The application's updater uses its platform's archive line for an extracted
+copy and the MSI's line for a copy that Windows Installer manages; the MSI's line also
+lets users check the installer they download. A release whose `SHA256SUMS` lacks the
+MSI line cannot update MSI copies. `sign` asks for the
 key's password, writes `SHA256SUMS.minisig` with the trusted comment
 `timestamp:<now> file:SHA256SUMS release:midnight-explorer-<version>`, verifies it and
 refuses a secret key inside the repository or one that does not belong to

@@ -2,8 +2,10 @@
 
 Midnight Explorer can check GitHub for a newer release, download it, verify it against
 the project's release key and install it into its own folder, keeping the user's
-settings, panels and tabs. This document describes the protocol, the trust model, the
-installation swap and rollback, and how the release key is handled. The user-facing
+settings, panels and tabs. An extracted release folder replaces its own files; a copy
+installed with the release's MSI hands the verified MSI to Windows Installer. This
+document describes the protocol, the trust model, the installation swap and rollback,
+the Windows Installer hand-off, and how the release key is handled. The user-facing
 description is in the [user guide](../USER_GUIDE.md#updates); the network and
 signature summary is in [SECURITY.md](../../SECURITY.md#update-check).
 
@@ -18,7 +20,8 @@ and `crates/midnight-ui/ui/update-controls.slint` draws the button and the dialo
   tooltip and accessible name follow the state: "Check for updates" (idle or up to
   date), "Checking for updates…" with a moving line along the button's bottom edge,
   "Version X is available" with an accent dot, "Downloading version X: 45%" with a
-  progress line, "Verifying version X…", "Restart to update to version X" with an
+  progress line, "Verifying version X…", "Restart to update to version X" (for a
+  Windows Installer copy "Install version X") with an
   accent dot, and "Update failed: reason" with an error-coloured dot. Clicking opens
   the dialog and, when idle, up to date or failed, checks again. A toolbar too narrow to
   keep a useful strip of actions beside three buttons (touch spacing at 320 px) leaves
@@ -29,7 +32,9 @@ and `crates/midnight-ui/ui/update-controls.slint` draws the button and the dialo
   release is not installed automatically, the release notes as plain text (headings,
   emphasis and link targets removed, at most 1,600 characters, "…" when cut) and a note
   on what the check sends. The footer has one primary action for the state: Check now,
-  Download and install, Restart now or Open release page, or, disabled, the step under
+  Download and install, Restart now (Install now for a Windows Installer copy, whose
+  headline and hint also say when Windows asks for administrator approval) or Open
+  release page, or, disabled, the step under
   way (Checking…, Downloading…, Verifying…); Skip this version beside it while a version is offered;
   and Later or Close (Escape). Opening focuses the primary action, and when the state
   changes the keyboard moves to the new one.
@@ -136,7 +141,10 @@ An update is installed only if every check passes, in this order:
    (`release:midnight-explorer-0.5.1`), so an old signed list cannot be replayed as a
    newer release.
 4. `SHA256SUMS` lists the archive `midnight-explorer-<version>-<target>.<zip|tar.gz>`,
-   whose name carries the offered version and this platform's target.
+   whose name carries the offered version and this platform's target; for a Windows
+   Installer copy, the MSI `midnight-explorer-<version>-x86_64-pc-windows-msvc.msi`
+   instead (steps 6 and 7 do not apply to it; see
+   [Windows Installer copies](#windows-installer-copies)).
 5. The downloaded archive's SHA-256 equals its signed line. Only now is it opened as
    an archive, through the handle whose content was checked; on Windows that handle
    keeps other programs from changing, renaming or deleting the file meanwhile.
@@ -170,7 +178,8 @@ executable, and a folder this user can create, rename and remove entries in.
 Otherwise the dialog explains why and offers the release page:
 
 - a development build or a package that another installer manages has no
-  `BUILD-INFO.json`;
+  `BUILD-INFO.json` (a copy that Windows Installer installed from the release's MSI
+  updates with the MSI instead: [Windows Installer copies](#windows-installer-copies));
 - a folder that only administrators can change (for example below
   `C:\Program Files` or `/opt`) is left to an administrator: the application never
   asks for elevation to install an update.
@@ -244,6 +253,92 @@ If the computer loses power during step 3, the folder can hold a mix of both ver
 the previous version's files are in `.update/backup/` and the new one's in
 `.update/staging/`. Moving the backup's entries back restores the previous version.
 
+## Windows Installer copies
+
+The release MSI (`scripts/package-msi.py`, [Release build](../RELEASE_BUILD.md#windows-installer-msi))
+installs every file of the ZIP except `BUILD-INFO.json`, Just for me
+(`%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`) or For all users
+(`C:\Program Files\Midnight Explorer (MSI)`). Windows Installer owns those files, their
+registration and the Add/Remove Programs entry, so such a copy is never swapped: a newer
+MSI of the same `UpgradeCode` replaces it (`crates/midnight-update/src/installer.rs`).
+
+**Detection** (on the update thread, when no release folder is found):
+`installer::detect` asks msi.dll for the products of the MSI's fixed `UpgradeCode`
+`{DDF2A2BA-6901-484C-97B2-4EF662BF5E72}` (`MsiEnumRelatedProductsW`) and, for each, its
+`InstallLocation` and `VersionString` in the per-user (`MSIINSTALLCONTEXT_USERUNMANAGED`)
+and the per-machine context (`MsiGetProductInfoExW`). The copy is an MSI installation
+when exactly one of them names the running executable's folder (compared after
+resolving both paths, so case and a trailing separator do not matter), the executable is
+`midnight-explorer.exe`, no `BUILD-INFO.json` lies beside it and the recorded version is
+the running one; the context is its scope. More than one match or another version shows
+the reason and the release page. The MSI's `SetInstallLocation` action records
+`InstallLocation`, so copies installed by 0.6.1 and 0.6.2 are found too; no marker file
+is needed, and none in the folder could make a copy count as installed.
+
+**Download:** with an MSI copy the controller fetches and verifies `SHA256SUMS` exactly
+as for an archive, then downloads the MSI, whose line the signed list must contain, to
+`<private folder>/download/<version>/` and checks its SHA-256 through a handle that
+denies writing. A release without the MSI, or whose list does not name it, is offered
+with the reason and the release page. Nothing is unpacked; the MSI stays in the private
+folder and the dialog offers **Install now**. A verified MSI is not remembered across a
+restart: Download and install then finds the downloaded file, verifies the list and the
+file again and offers Install now without downloading it again.
+
+**Install now** closes the window the ordinary way. After every worker has stopped, the
+application copies its executable to `<private folder>/installer/` and starts the copy
+with `--install-update <msi> <sha256> <user|machine> <installation folder> <version>
+<private folder> <working folder> -- <original arguments>`, then exits. The copy runs
+because Windows Installer replaces the installation's own files, and opens no window. It:
+
+1. Waits up to 60 s for an exclusive lock on
+   `<private folder>/instances/<hash of the installation folder>.lock`, which every copy
+   of this user's started from that MSI folder holds shared for its life (an
+   installation for all users cannot keep the lock in its own folder). A window that
+   stays open ends the hand-off with "Another Midnight Explorer window of this
+   installation is still open"; copies of other accounts are left to Windows Installer,
+   which reports a needed restart when it must replace files in use.
+2. Opens the MSI for reading with read sharing only and its folder without delete
+   sharing (neither may be a link), so that no program can change, rename or delete the
+   MSI or rename its folder, and checks the MSI's SHA-256 against the signed digest
+   through that handle. A changed file is refused before `msiexec` starts.
+3. Starts `<system folder>\msiexec.exe` from the system folder, `/i "<msi>" /passive
+   /norestart INSTALLDIR="<installation folder>"` with the copy's scope:
+   `ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v "<private folder>\installer.log"` per user,
+   without elevation; `ALLUSERS=1` per machine, through `ShellExecuteExW` with the
+   `runas` verb, so Windows shows its UAC prompt (consent, or an administrator's
+   credentials for a standard user); the application never answers it. The elevated
+   `msiexec` writes no log: an elevated write to a path that the user's programs can
+   replace with a link could overwrite a system file. `/passive` shows Windows
+   Installer's progress window and asks nothing; `/norestart` never restarts Windows.
+   The MSI's major upgrade removes the installed version and installs the new one in
+   the same folder; Windows Installer rolls back completely on failure.
+4. Waits for `msiexec` to exit and only then closes the MSI and its folder.
+5. Writes `<private folder>/installer-result.json` (the installation folder and the
+   outcome), removes the MSI after a successful installation and starts
+   `<installation folder>\midnight-explorer.exe` with the original arguments in the
+   original working folder, with the user's rights: the new version, or the previous
+   one when nothing was installed.
+
+The started copy takes its instance lock, removes `installer/` and reads the outcome
+once (only the copy of the recorded folder does); the dialog's notice says:
+
+| `msiexec` status | Notice |
+| --- | --- |
+| 0 | "Updated to version Y." |
+| 3010, 1641 | "Version Y is installed. Restart Windows to finish the update." |
+| 1602 (cancelled), 1223 (UAC declined) | "The update to version Y was cancelled. Nothing changed." |
+| 1618 | "Version Y was not installed because another installation was in progress. Nothing changed; try again when it has finished." |
+| 1603, 1619, 1620, 1625, 1633, 1638, others | "Version Y was not installed." with the reason (and the log's path per user) and "Nothing changed." |
+
+The MSI runs no custom action that runs code, so the relaunch is the hand-off's, not
+the installer's: a relaunch from the MSI would need a code-running custom action, and
+the hand-off waits for `msiexec`'s status anyway, to tell the next start what happened. A computer that loses power during `msiexec` is
+Windows Installer's to recover; the hand-off's own state is only the result file,
+written after `msiexec` exits.
+
+Copies of 0.6.2 and earlier contain no hand-off: they offer the release page, and their
+users install the next release's MSI once by hand in the same scope.
+
 ## Keys
 
 The owner creates the key pair once, on their own machine:
@@ -302,6 +397,20 @@ injected):
 - `loopback`: the real system transport (WinHTTP or `ureq`) runs the whole flow against
   a local HTTP server through the debug-only test endpoint, and the GitHub policy
   refuses that server before connecting.
+- `installer`: detection through a fake product registry (either scope, a trailing
+  separator and case, another product elsewhere, no product, a release folder, another
+  executable, another recorded version, both scopes in one folder), the MSI's name and a
+  release without it, the `msiexec` parameters per scope and a refused quote, the
+  request's arguments, every exit status's outcome and notice, the hand-off's order with
+  a fake host (wait → pin and check → `msiexec` → release → record → relaunch; a changed
+  MSI or an open window never reaches `msiexec`; a declined prompt, a busy installer and
+  a needed restart), the executable copy, the instance locks, and the controller's MSI
+  flow (only the MSI downloaded, a changed or unlisted MSI refused, the notice at the
+  next start). On Windows the real pin refuses writing, renaming and deleting the MSI
+  and renaming its folder until released, and msi.dll is asked about an unused upgrade
+  code. Nothing starts `msiexec` or asks for elevation; that `msiexec` can read a
+  pinned package was checked by hand with an administrative extraction
+  (`msiexec /a`) of a stand-in MSI while pinned.
 
 `scripts/tests/test_release_signing.py` covers the release tool (its key tests point the
 tool at a stand-in repository folder of their own, because the tool refuses a secret

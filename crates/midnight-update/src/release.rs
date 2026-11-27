@@ -12,6 +12,8 @@ pub struct Platform {
     pub target: &'static str,
     /// `zip` or `tar.gz`.
     pub archive_suffix: &'static str,
+    /// Whether releases also carry a Windows Installer package (`.msi`) for it.
+    pub installer: bool,
 }
 
 /// The platform of this build, or `None` where no release archive is published.
@@ -22,6 +24,7 @@ const fn platform() -> Option<Platform> {
         Some(Platform {
             target: "x86_64-pc-windows-msvc",
             archive_suffix: "zip",
+            installer: true,
         })
     } else if cfg!(all(
         target_os = "linux",
@@ -31,6 +34,7 @@ const fn platform() -> Option<Platform> {
         Some(Platform {
             target: "x86_64-unknown-linux-gnu",
             archive_suffix: "tar.gz",
+            installer: false,
         })
     } else {
         None
@@ -44,6 +48,23 @@ impl Platform {
             "midnight-explorer-{version}-{}.{}",
             self.target, self.archive_suffix
         )
+    }
+
+    /// The Windows Installer package's file name for `version`, where releases carry one:
+    /// `midnight-explorer-<version>-<target>.msi` (`scripts/package-msi.py`).
+    pub fn installer_name(&self, version: &Version) -> Option<String> {
+        self.installer
+            .then(|| format!("midnight-explorer-{version}-{}.msi", self.target))
+    }
+
+    /// The file that updates a copy: the archive, or for a copy that Windows Installer
+    /// manages (`installer`) the MSI.
+    pub fn package_name(&self, version: &Version, installer: bool) -> Option<String> {
+        if installer {
+            self.installer_name(version)
+        } else {
+            Some(self.archive_name(version))
+        }
     }
 
     /// The single folder at the root of the release archive.
@@ -97,8 +118,16 @@ impl Release {
 
     /// Why this release cannot be installed automatically on `platform`, if it cannot.
     pub fn missing_files(&self, platform: &Platform) -> Option<String> {
-        let archive = platform.archive_name(&self.version);
-        let missing: Vec<&str> = [archive.as_str(), SUMS_NAME, SIGNATURE_NAME]
+        self.missing_package(platform, false)
+    }
+
+    /// Like `missing_files`, for the file that updates this copy: the archive, or the
+    /// MSI for a copy that Windows Installer manages (`installer`).
+    pub fn missing_package(&self, platform: &Platform, installer: bool) -> Option<String> {
+        let Some(package) = platform.package_name(&self.version, installer) else {
+            return Some("Releases carry no installer package for this system.".into());
+        };
+        let missing: Vec<&str> = [package.as_str(), SUMS_NAME, SIGNATURE_NAME]
             .into_iter()
             .filter(|name| self.asset(name).is_none())
             .collect();

@@ -29,13 +29,14 @@ How to read it:
   thumbnailer package.
 - **Windows installer:** from 0.6.1 an MSI made from the release ZIP's files, with a
   Start menu shortcut and an Add/Remove Programs entry; a newer MSI replaces an older
-  one, and it updates through a newer MSI rather than the update dialog. 0.6.1 and 0.6.2
-  install per user only. From the next release the installer asks: **Just for me** (the
+  one. 0.6.1 installs per user only; from 0.6.2 the installer asks: **Just for me** (the
   default, no administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`)
-  or **For all users** (UAC, `C:\Program Files\Midnight Explorer (MSI)`). Only the
-  built package is checked so far: CI's release job now installs, upgrades, repairs and
-  removes it in both scopes on a disposable runner and runs ICE validation, but no run of
-  those steps has passed yet (REL-05).
+  or **For all users** (UAC, `C:\Program Files\Midnight Explorer (MSI)`). Copies of
+  0.6.2 and earlier update through a newer MSI run by hand; later copies also from the
+  update dialog ([Updates](#updates)). Only the built package is checked so far: CI's
+  release job now installs, upgrades, repairs and removes it in both scopes on a
+  disposable runner and runs ICE validation, but no run of those steps has passed yet
+  (REL-05).
 - **Linux specifics:** native Wayland drag and drop with other applications is new, not
   yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On
   Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which it offers to
@@ -68,8 +69,21 @@ How to read it:
   startup (on; at most once every 20 hours) and Include preview releases (on); settings
   schema 40. Releases from 0.5.1 on are signed with the owner's release key, whose
   public half is built in; the published 0.5.1 carries `SHA256SUMS.minisig`.
-- **Open:** copies that only administrators can change are not updated in place; the
-  release-build check of the test endpoint is not run by CI (REL-04).
+- **Windows Installer copies (implemented after 0.6.2, not yet released):** a copy that
+  Windows Installer records in its folder (per user or per machine) downloads the
+  release's MSI, verifies it against the signed `SHA256SUMS`, and on Install now hands
+  it to `msiexec` from a copy of the executable in the private update folder, which
+  keeps the MSI pinned and checks it again, asks for UAC only for an all-users copy,
+  reports cancellation, a busy Windows Installer (1618), a needed restart (3010) and
+  failures, and starts the application again. Detection, the command line, the exit
+  statuses and the hand-off order are tested with fakes; `msiexec` opening a pinned
+  package was checked with an administrative extraction. An update through
+  `msiexec /i` of a real installation, in either scope, has not been run yet; the first
+  release that contains this change is the first that can do it (0.6.2 copies offer
+  the release page).
+- **Open:** extracted copies that only administrators can change are not updated in
+  place; the release-build check of the test endpoint is not run by CI (REL-04); an
+  end-to-end MSI update of an installed copy in both scopes (REL-05).
 - **Documents:** [updates](developer/UPDATES.md), [user guide](USER_GUIDE.md#updates),
   [security](../SECURITY.md#update-check), [release signing](RELEASE_BUILD.md#signing-the-release).
 - **Verified:** [update check record](verification/2026-11-23-update-check.md).

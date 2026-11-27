@@ -1655,6 +1655,15 @@ Click it, or **Check for updates** in About, to open the update dialog:
   first), installs the new version into the same folder and starts it again with the
   same panels and tabs. If the new version does not start correctly, the previous
   version is restored and started, and the dialog says why.
+- **Install now** (a copy installed with the Windows installer, the MSI): Download and
+  install fetches the new version's MSI and checks its signature; Install now closes
+  Midnight Explorer the usual way and hands the MSI to Windows Installer, which shows its
+  progress window and updates the installation where it is. A copy installed **For all
+  users** needs administrator approval: Windows shows its own prompt, and declining it
+  changes nothing. Midnight Explorer then opens again with the same panels and tabs, and
+  the dialog says how it went: updated, cancelled, not installed because another
+  installation was running (try again later), or installed but waiting for Windows to
+  restart.
 - **Skip this version** stops the startup check from mentioning that version; Check
   now still shows it.
 - **Open release page** shows the release on GitHub in your browser, with its full
@@ -1677,10 +1686,18 @@ check off, Midnight Explorer contacts no server unless you open the update dialo
 check, download or open the release page.
 
 **Which copies update themselves:** an extracted release folder that your account can
-change. A copy installed by an administrator (for example below `C:\Program Files` or
-`/opt`), a development build and a copy from another package manager show the reason
-and offer the release page instead; Midnight Explorer never asks for administrator
-rights to update. Builds made without the project's release key install no updates.
+change, and a copy installed with the release's MSI, Just for me or For all users (from
+the first release after 0.6.2; see below). A copy that an administrator extracted (for
+example below `C:\Program Files` or `/opt`), a development build and a copy from another
+package manager show the reason and offer the release page instead. Midnight Explorer
+itself never runs with administrator rights to update: only Windows Installer does, for
+an all-users MSI copy, after Windows asks you. Builds made without the project's release
+key install no updates.
+
+**MSI copies of 0.6.2 and earlier** cannot install updates themselves; their update
+dialog offers the release page. Install the next release's MSI once by hand, choosing
+the same scope as before (Just for me upgrades a just-for-you copy in place, For all
+users an all-users copy); from then on the update dialog installs new versions.
 The details, including the signature checks, are in
 [Updates](developer/UPDATES.md).
 

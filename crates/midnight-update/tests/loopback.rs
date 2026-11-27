@@ -161,6 +161,7 @@ fn the_system_transport_runs_the_whole_flow_against_a_local_server() {
             platform: Some(platform()),
             installation: Installation::detect(&installation.join("me.exe"), &platform()),
             private_folder: folder.path().join("private"),
+            installer: None,
             startup: StartupReport::default(),
         },
         Box::new(|_| {}),

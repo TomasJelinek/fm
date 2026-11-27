@@ -200,6 +200,11 @@ class Plan(Workspace):
             "code-running action": ("CustomAction", lambda rows: rows + [("Run", 34, "INSTALLDIR", "x.exe")]),
             "profile folder": ("Directory", lambda rows: rows + [("LocalAppDataFolder", "TARGETDIR", ".")]),
             "no machine folder": ("ControlEvent", lambda rows: [row for row in rows if "ProgramW6432" not in row[3]]),
+            # The application's updater finds an installed copy by its InstallLocation.
+            "no install location": ("CustomAction", lambda rows: [
+                row for row in rows if row[0] != "SetInstallLocation"]),
+            "install location not run": ("InstallExecuteSequence", lambda rows: [
+                row for row in rows if row[0] != "SetInstallLocation"]),
         }
         for label, (table, change) in cases.items():
             with self.subTest(label):

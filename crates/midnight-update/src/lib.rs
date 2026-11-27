@@ -10,6 +10,7 @@ pub mod archive;
 pub mod client;
 pub mod controller;
 pub mod install;
+pub mod installer;
 pub mod notes;
 pub mod release;
 pub mod state;
@@ -24,6 +25,9 @@ mod http;
 mod http;
 #[cfg(any(windows, target_os = "linux"))]
 pub use http::SystemTransport;
+
+#[cfg(windows)]
+mod installer_windows;
 
 #[cfg(windows)]
 #[path = "platform_windows.rs"]

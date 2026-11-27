@@ -69,7 +69,12 @@ with `openssl-probe` 0.2.2 (MIT OR Apache-2.0, which only locates certificate fi
 links no OpenSSL), `rustls-webpki` 0.103.17 and `untrusted` 0.9.0 (ISC), and
 `rustls-pki-types`, `http`, `httparse`, `ureq-proto`, `utf8-zero` and `getrandom` 0.2.17
 (MIT OR Apache-2.0). No certificate bundle (`webpki-roots`) and no OpenSSL are linked;
-Windows uses WinHTTP through the existing `windows-sys`. `semver`, `sha2`, `zip`,
+Windows uses WinHTTP through the existing `windows-sys`; the Windows Installer hand-off
+for MSI copies adds only `windows-sys` 0.61.2 features of the same crate and license
+(`Win32_System_ApplicationInstallationAndServicing` for msi.dll, `Win32_UI_Shell`,
+`Win32_System_Com`, `Win32_System_Registry`, `Win32_System_SystemInformation`,
+`Win32_System_Threading`, `Win32_Storage_FileSystem`, `Win32_UI_WindowsAndMessaging`),
+no new crate or lock-file entry. `semver`, `sha2`, `zip`,
 `flate2`, `tar` and `serde_json` were already in the lock file. Tests only:
 `ed25519-compact` 2.6.1 (MIT, default features off) and `blake2` 0.10.6 (MIT OR
 Apache-2.0) sign throwaway test keys. `schannel`, `security-framework` and

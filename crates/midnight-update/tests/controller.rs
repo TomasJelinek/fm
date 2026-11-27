@@ -54,6 +54,7 @@ fn fixture(key: Option<&TestKey>, configure: impl FnOnce(&FakeTransport)) -> Fix
         platform: Some(platform()),
         installation: Installation::detect(&installation.join("me.exe"), &platform()),
         private_folder: folder.path().join("private"),
+        installer: None,
         startup: StartupReport::default(),
     };
     assert!(environment.installation.is_ok());
@@ -371,6 +372,7 @@ fn nothing_newer_is_up_to_date_and_a_staged_update_survives_a_restart() {
             platform: Some(platform()),
             installation: Ok(installation),
             private_folder: fixture.folder.path().join("private"),
+            installer: None,
             startup: StartupReport::default(),
         },
         Box::new(|_| {}),
@@ -395,6 +397,7 @@ fn the_start_after_an_update_says_how_it_went() {
                 platform: Some(platform()),
                 installation: Err(midnight_update::install::NotUpdatable::NotAReleaseFolder),
                 private_folder: folder.path().to_path_buf(),
+                installer: None,
                 startup,
             },
             Box::new(|_| {}),
@@ -410,7 +413,8 @@ fn the_start_after_an_update_says_how_it_went() {
     assert_eq!(
         start(StartupReport {
             confirm: Some("0.5.1".into()),
-            outcome: None
+            outcome: None,
+            installer: None,
         })
         .as_deref(),
         Some("Updated to version 0.5.1.")
@@ -423,6 +427,7 @@ fn the_start_after_an_update_says_how_it_went() {
             to: "0.5.1".into(),
             reason: "The new version exited during its startup check (status 3).".into(),
         }),
+        installer: None,
     })
     .unwrap();
     assert!(
@@ -436,7 +441,8 @@ fn the_start_after_an_update_says_how_it_went() {
             outcome: Some(midnight_update::apply::Outcome::Updated {
                 from: "0.5.0".into(),
                 to: "0.5.1".into()
-            })
+            }),
+            installer: None,
         }),
         None
     );

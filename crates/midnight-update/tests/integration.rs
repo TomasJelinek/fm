@@ -7,6 +7,7 @@ mod apply_windows;
 mod archive;
 mod client;
 mod controller;
+mod installer;
 mod loopback;
 mod release;
 mod trust;

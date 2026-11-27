@@ -1,7 +1,8 @@
 //! The update check in the application (docs/developer/UPDATES.md): the update service
 //! runs on its own thread; this module connects it to the toolbar button, the dialog and
 //! the Options choices, runs the startup check and confirms a new version's start, and
-//! hands "Restart now" to the updater once the window has closed.
+//! hands "Restart now" to the updater (an extracted release folder) or "Install now" to
+//! the Windows Installer hand-off (an installed MSI) once the window has closed.
 use midnight_ui::{MainWindow, Presenter, UpdatePhase, UpdateState, UpdateView};
 use midnight_update::{
     SystemTransport, apply,
@@ -9,6 +10,7 @@ use midnight_update::{
     client::{Endpoints, UpdateClient},
     controller::{Environment, Phase, STARTUP_INTERVAL, Snapshot, UpdateController},
     install::{Installation, InstanceLock, NotUpdatable, Staged},
+    installer::{self, InstalledCopy, ReadyInstaller},
     release::{PLATFORM, current_version},
     trust::TrustAnchor,
 };
@@ -103,16 +105,23 @@ pub(crate) struct AtStart {
     report: apply::StartupReport,
 }
 
+/// The instance locks that the process holds for its whole life.
+pub(crate) struct Instance {
+    _folder: Option<InstanceLock>,
+    _installer: Option<installer::InstanceLock>,
+}
+
 /// Takes the instance lock, which the caller holds for the life of the process (the
 /// updater waits until no copy runs from the folder), and reads what an update left.
-pub(crate) fn at_start() -> (Option<InstanceLock>, AtStart) {
-    let installation = std::env::current_exe()
-        .ok()
+pub(crate) fn at_start() -> (Instance, AtStart) {
+    let executable = std::env::current_exe().ok();
+    let installation = executable
+        .as_deref()
         .and_then(|executable| executable.parent().map(Path::to_path_buf));
     let instance = installation.as_deref().and_then(InstanceLock::acquire);
     // The installed release's own version: the updater put this BUILD-INFO.json in place
     // with the executable it describes (checked against its `binary_sha256`).
-    let report = match (&installation, &instance) {
+    let mut report = match (&installation, &instance) {
         (Some(folder), Some(_)) => {
             let version = BuildInfo::read(folder)
                 .map(|info| info.version)
@@ -121,8 +130,22 @@ pub(crate) fn at_start() -> (Option<InstanceLock>, AtStart) {
         }
         _ => apply::StartupReport::default(),
     };
+    // A copy that Windows Installer may manage (no BUILD-INFO.json): its instance lock
+    // lives in the private folder, where the hand-off also leaves its outcome. Whether
+    // Windows Installer really manages it is asked later, on the update thread.
+    let mut installer_lock = None;
+    if let (Some(executable), Some(folder)) = (&executable, &installation)
+        && msi_candidate(executable, folder)
+        && let Some(private) = midnight_update::private_folder()
+    {
+        installer_lock = installer::InstanceLock::acquire(&private, folder);
+        report.installer = installer::startup(&private, folder);
+    }
     (
-        instance,
+        Instance {
+            _folder: instance,
+            _installer: installer_lock,
+        },
         AtStart {
             installation,
             report,
@@ -130,8 +153,27 @@ pub(crate) fn at_start() -> (Option<InstanceLock>, AtStart) {
     )
 }
 
-/// "Restart now" was chosen: what the updater installs once the window has closed.
-pub(crate) type RestartRequest = Rc<RefCell<Option<(Installation, Staged)>>>;
+/// Whether `executable` may be an MSI installation's: Windows, the MSI's executable
+/// name, and no `BUILD-INFO.json` beside it.
+fn msi_candidate(executable: &Path, folder: &Path) -> bool {
+    cfg!(windows)
+        && executable
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case(installer::EXECUTABLE))
+        && !folder.join(midnight_update::archive::BUILD_INFO).exists()
+}
+
+/// What "Restart now" or "Install now" hands over once the window has closed.
+pub(crate) enum Restart {
+    /// The staged release that the updater swaps into the release folder.
+    Swap(Installation, Staged),
+    /// The verified MSI that the hand-off gives to Windows Installer.
+    Installer(ReadyInstaller),
+}
+
+/// "Restart now" or "Install now" was chosen.
+pub(crate) type RestartRequest = Rc<RefCell<Option<Restart>>>;
 
 pub(crate) struct Updates {
     controller: RefCell<UpdateController>,
@@ -141,10 +183,12 @@ pub(crate) struct Updates {
 fn environment(installation: Option<PathBuf>, report: apply::StartupReport) -> Environment {
     let endpoints = Endpoints::from_environment();
     let transport = Arc::new(SystemTransport::new(endpoints.policy.clone()));
-    let installation = match (PLATFORM, std::env::current_exe(), installation) {
-        (Some(platform), Ok(executable), Some(_)) => Installation::detect(&executable, &platform),
+    let executable = std::env::current_exe().ok();
+    let installation = match (PLATFORM, &executable, installation) {
+        (Some(platform), Some(executable), Some(_)) => Installation::detect(executable, &platform),
         _ => Err(NotUpdatable::NotAReleaseFolder),
     };
+    let (installation, copy) = windows_installer(installation, executable.as_deref());
     let private_folder = midnight_update::private_folder()
         .unwrap_or_else(|| std::env::temp_dir().join("midnight-explorer-updates"));
     Environment {
@@ -153,9 +197,36 @@ fn environment(installation: Option<PathBuf>, report: apply::StartupReport) -> E
         current: current_version(),
         platform: PLATFORM,
         installation,
+        installer: copy,
         private_folder,
         startup: report,
     }
+}
+
+/// A copy without a release folder that Windows Installer installed updates with the
+/// release's MSI; a recorded mismatch replaces the generic reason.
+#[cfg(windows)]
+fn windows_installer(
+    installation: Result<Installation, NotUpdatable>,
+    executable: Option<&Path>,
+) -> (Result<Installation, NotUpdatable>, Option<InstalledCopy>) {
+    match (installation, executable) {
+        (Err(NotUpdatable::NotAReleaseFolder), Some(executable)) => {
+            match installer::detect_system(executable, &current_version()) {
+                Ok(copy) => (Err(NotUpdatable::NotAReleaseFolder), Some(copy)),
+                Err(reason) => (Err(reason), None),
+            }
+        }
+        (installation, _) => (installation, None),
+    }
+}
+
+#[cfg(not(windows))]
+fn windows_installer(
+    installation: Result<Installation, NotUpdatable>,
+    _executable: Option<&Path>,
+) -> (Result<Installation, NotUpdatable>, Option<InstalledCopy>) {
+    (installation, None)
 }
 
 /// The view of a snapshot, as the button and dialog show it.
@@ -198,6 +269,8 @@ pub(crate) fn view(snapshot: &Snapshot) -> UpdateView {
         page_url: offer
             .map(|offer| offer.page_url.clone())
             .unwrap_or_default(),
+        windows_installer: snapshot.installer.is_some(),
+        needs_approval: snapshot.installer == Some(installer::Scope::Machine),
     }
 }
 
@@ -295,10 +368,14 @@ impl Updates {
             let (Some(this), Some(window)) = (this.upgrade(), weak.upgrade()) else {
                 return;
             };
-            let Some(staged) = this.controller.borrow().staged() else {
-                return;
+            let controller = this.controller.borrow();
+            let chosen = match (controller.staged(), controller.installer_ready()) {
+                (Some((installation, staged)), _) => Restart::Swap(installation, staged),
+                (None, Some(ready)) => Restart::Installer(ready),
+                (None, None) => return,
             };
-            *restart.borrow_mut() = Some(staged);
+            drop(controller);
+            *restart.borrow_mut() = Some(chosen);
             midnight_ui::close_update_dialog(&window);
             // The ordinary close: running jobs are offered first, the session is saved.
             window.invoke_exit();
@@ -353,14 +430,26 @@ impl Updates {
     }
 }
 
-/// Starts the updater for `restart` and returns; the caller exits right after.
+/// Starts the updater or the Windows Installer hand-off for `restart` and returns; the
+/// caller exits right after.
 pub(crate) fn start_updater(
-    restart: (Installation, Staged),
+    restart: Restart,
     arguments: Vec<OsString>,
     working_folder: PathBuf,
 ) -> Result<(), String> {
-    let (installation, staged) = restart;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let (installation, staged) = match restart {
+        Restart::Swap(installation, staged) => (installation, staged),
+        Restart::Installer(ready) => {
+            let private = midnight_update::private_folder()
+                .ok_or_else(|| "The private update folder cannot be used.".to_owned())?;
+            let (helper, request) =
+                installer::prepare(&ready, &executable, &private, working_folder, arguments)
+                    .map_err(|error| format!("The installation cannot be started: {error}"))?;
+            return installer::start(&helper, &request)
+                .map_err(|error| format!("The installation cannot be started: {error}"));
+        }
+    };
     let (updater, request) = apply::prepare_restart(
         &installation,
         &staged.folder,

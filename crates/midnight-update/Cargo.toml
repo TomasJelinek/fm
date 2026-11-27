@@ -20,9 +20,21 @@ zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 tar = { version = "=0.4.46", default-features = false }
 
-# WinHTTP: the system's HTTPS stack and certificate store, no TLS crate.
+# WinHTTP: the system's HTTPS stack and certificate store, no TLS crate. Windows
+# Installer (msi.dll), ShellExecuteEx and process waits: the MSI hand-off (installer.rs).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinHttp",
+    "Win32_Storage_FileSystem",
+    "Win32_System_ApplicationInstallationAndServicing",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 # rustls with the ring provider and the distribution's certificate store; no OpenSSL.
 [target.'cfg(target_os = "linux")'.dependencies]

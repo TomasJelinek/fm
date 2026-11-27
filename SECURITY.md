@@ -1842,14 +1842,36 @@ network code; it lives in `crates/midnight-update` and runs on its own thread.
   offered version and target and matches every listed file. The private key is kept
   by the owner outside the repository. A compromised GitHub account or release page
   alone cannot deliver an installable update. A build without a key installs nothing.
-- **Installing:** never without the user's Download and install and Restart now. The
+  A copy that Windows Installer manages gets the release's MSI under the same rule:
+  the signed list must name exactly `midnight-explorer-<version>-<target>.msi` and the
+  download must match that line.
+- **Installing:** never without the user's Download and install and Restart now (or
+  Install now). The
   swap renames entries within the installation folder, which must be one the user can
-  change; the application never elevates to update, and copies that only
+  change; the application never elevates to update, and extracted copies that only
   administrators can change are referred to the release page. The updater is a copy of
   the previous executable, started from the installation's own `.update` folder with
   the user's rights; it waits until no copy runs from the folder, keeps the previous
   version until the new one confirms its start and restores it otherwise. Settings
   (outside the installation folder) are never touched.
+- **Windows Installer copies:** a copy counts as an MSI installation only when Windows
+  Installer (msi.dll) records exactly one product of the MSI's fixed `UpgradeCode` with
+  this folder as its `InstallLocation`, in the per-user or the per-machine context, at
+  the running version; a file in the folder cannot make it one. Install now copies the
+  executable to the private update folder and starts it with the user's rights; after
+  the application has exited, that copy opens the MSI for reading with read sharing only
+  (nothing can write, rename or delete it) and its folder without delete sharing (it
+  cannot be renamed), checks the MSI's SHA-256 against the signed digest again through
+  that handle, starts `%SystemRoot%\System32\msiexec.exe /i ... /passive /norestart` and
+  keeps both handles until `msiexec` exits, so the file Windows Installer reads is the
+  one that was checked. A per-user copy is updated without elevation
+  (`ALLUSERS=2 MSIINSTALLPERUSER=1`); an all-users copy needs `ALLUSERS=1`, and only
+  `msiexec` is started through UAC (`ShellExecuteEx` with `runas`): Windows shows its
+  consent or credential prompt, which the application never answers or bypasses, and
+  declining changes nothing. The elevated `msiexec` writes no log, because a log path in
+  the user's folder could be redirected to a system file; the per-user one logs to the
+  private folder. The MSI has no custom actions that run code, and the application
+  starts again from the copy's folder with the user's rights, never elevated.
 - **Test endpoint:** only debug builds accept `MIDNIGHT_UPDATE_TEST_SERVER` (plain HTTP
   to `127.0.0.1`), `MIDNIGHT_UPDATE_TEST_PUBLIC_KEY` and `MIDNIGHT_TEST_DATA_ROOT` (a
   test profile folder in place of the user's); release builds ignore them.
