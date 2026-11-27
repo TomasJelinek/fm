@@ -1,7 +1,9 @@
 # Documentation map
 
-This index lists the current documents of Midnight Explorer 0.5. What is implemented is
-in [feature status](FEATURE_STATUS.md), the remaining work in the
+This index lists the current documents of Midnight Explorer 0.6.3. Start with the
+[project README](../README.md) to install and run the application; when something goes
+wrong, see [Troubleshooting](TROUBLESHOOTING.md), and look up project terms in the
+[glossary](GLOSSARY.md). What is implemented is in [feature status](FEATURE_STATUS.md), the remaining work in the
 [implementation backlog](IMPLEMENTATION_BACKLOG.md) and the work in flight in
 [active work](ACTIVE_WORK.md). Dated records describe the commit and environment named
 in them; they are evidence, not current documentation, and a design or plan does not
@@ -11,11 +13,13 @@ show that a feature exists.
 
 | Document | Purpose |
 | --- | --- |
-| [Project README](../README.md) | Overview, downloads, building from source and the license. |
+| [Project README](../README.md) | Overview, downloads, the first run, building from source, releases, support and the license. |
+| [Troubleshooting](TROUBLESHOOTING.md) | The problems of a first start and their messages: missing runtime, denied folders, refused updates and plugins, renderer and Linux issues, and how to get help. |
+| [Glossary](GLOSSARY.md) | The project's terms, such as panel, Hot Paths, spool, worker and MSI installation. |
 | [User guide](USER_GUIDE.md) | Building, installing and running the application, and its controls. |
 | [Feature status](FEATURE_STATUS.md) | What each feature area implements on Windows and Linux, and where it is verified. |
-| [Keyboard shortcuts](KEYBOARD_SHORTCUTS.md) | The default shortcuts and the configurable actions. |
-| [System requirements](SYSTEM_REQUIREMENTS.md) | Supported systems, required packages and runtime prerequisites. |
+| [Keyboard shortcuts](KEYBOARD_SHORTCUTS.md) | The default shortcuts, the key-combination syntax and every configurable action ID. |
+| [System requirements](SYSTEM_REQUIREMENTS.md) | Supported systems, required packages, runtime prerequisites and environment variables. |
 | [Export and import configuration](SETTINGS_FILES.md) | Backing up and moving settings, and the settings file format. |
 | [Archive formats](ARCHIVE_FORMATS.md) | Archive formats, panel associations, passwords and operation limits. |
 | [Viewer file types](VIEWER_ASSOCIATIONS.md) | Options › Plugins: which viewer, filesystem, archive format and thumbnailer handles a file type. |
@@ -30,7 +34,7 @@ show that a feature exists.
 | --- | --- |
 | [Active work](ACTIVE_WORK.md) | The current checkpoint, the work in flight and where evidence is kept. |
 | [Implementation backlog](IMPLEMENTATION_BACKLOG.md) | Open work and known limits, by stable ID. |
-| [0.1.0 release notes](releases/0.1.0.md) | The notes of the 0.1.0 preview release. |
+| Release notes | The notes of each preview release: [0.1.0](releases/0.1.0.md), [0.5.0](releases/0.5.0.md), [0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md), [0.5.3](releases/0.5.3.md), [0.5.4](releases/0.5.4.md), [0.6.0](releases/0.6.0.md), [0.6.1](releases/0.6.1.md), [0.6.2](releases/0.6.2.md) and [0.6.3](releases/0.6.3.md). |
 
 ## Security, dependencies and provenance
 
@@ -39,17 +43,17 @@ show that a feature exists.
 | [Security requirements](../SECURITY.md) | Security, Unicode, identity, cancellation and integrity requirements. |
 | [Code style](../CODE_STYLE.md) | Rust style, platform separation, the source-size limit and the checks. |
 | [Dependency policy](DEPENDENCY_POLICY.md) | Rules for third-party dependencies, including no mandatory fees. |
-| [Third-party libraries](THIRD_PARTY.md) | Third-party code and data with their versions and licences. |
+| [Third-party libraries](THIRD_PARTY.md) | Third-party code and data with their versions and licenses. |
 | [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md) | The direct third-party dependencies of each workspace. |
 | [Cargo library inventory](dependencies/CARGO_LIBRARIES.md) | Every third-party Cargo package that the dependency trees select. |
-| [Lock file entries outside the inventory](dependencies/LOCKFILE_ONLY.md) | Lock file entries that the inventory leaves out, and why. |
+| [Lockfile entries outside the inventory](dependencies/LOCKFILE_ONLY.md) | Lockfile entries that the inventory leaves out, and why. |
 | [Machine-readable inventory](dependencies/cargo-licenses.csv) | The Cargo package inventory as CSV. |
 | [Office preview notices](dependencies/OFFICE_PREVIEW_NOTICES.md) | Dependency notices of the Office contents preview. |
 | [Executable-size diagnostic](dependencies/CARGO_BLOAT.md) | The optional `cargo-bloat` diagnostic. |
 | [Asset provenance](ASSET_PROVENANCE.md) | Where the application's artwork and runtime icons come from. |
 | [Action icon artwork](ACTION_ICON_PROVENANCE.md) | The origin of the command icons. |
 | [Theme provenance](THEME_PROVENANCE.md) | The origin of the theme palettes and their contrast contract. |
-| [Theme licences](licenses/themes/) | Licence texts of the palettes that themes adapt. |
+| [Theme licenses](licenses/themes/) | License texts of the palettes that themes adapt. |
 
 ## Building, testing and development
 
