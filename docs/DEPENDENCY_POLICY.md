@@ -107,6 +107,18 @@ that date:
   built and checked on Windows. It remains the fallback if the built-in route proves
   insufficient.
 
+**MSI validation and installation test (27 November 2026):** scripts/test-msi-install.py
+runs the Windows SDK's ICE rules (darice.cub) on the MSI through the same msi.dll
+API: it extracts darice.cub with xpand.exe from the SDK's own
+MsiVal2-x86_en-us.msi and cabinet in Windows Kits\10\bin\<version>\x86 (installs
+nothing, runs no msival2.exe), merges it into a copy of the MSI and runs its ICE
+actions. The Windows SDK is free with Windows development (Microsoft Software License
+Terms); it is used unmodified where it is already installed (CI's windows-latest
+image, a developer's Visual Studio), never downloaded by the script or shipped, and
+without it the check is skipped with a warning. The installation test itself uses only
+msiexec.exe, Windows PowerShell's UI Automation and the GitHub CLI already on the
+hosted runner, and the published MSIs it upgrades are checked against their signed
+SHA256SUMS with scripts/release-signing.py.
 **Native runtimes:** Windows/system graphics libraries remain governed by their
 vendors; their use does not make the operating system open source. Linux libraries
 retain their distribution's licenses. Rust bindings do not relicense native

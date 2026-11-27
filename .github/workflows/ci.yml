@@ -797,3 +797,52 @@ jobs:
             & $executable --smoke-test
             if ($LASTEXITCODE -ne 0) { throw 'Installed native filesystem smoke failed' }
           }
+      # The Windows MSI installed for real on this disposable runner (an administrator):
+      # built from a release-shaped ZIP of this build and its plugin packages, ICE-validated,
+      # then installed, upgraded, repaired and removed in both scopes, and over the
+      # published per-user MSIs (scripts/test-msi-install.py; RELEASE_BUILD.md).
+      - name: MSI of a release-shaped ZIP of this build and its ICE validation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -B scripts/test-msi-install.py stand-in --executable _build/release/midnight-explorer.exe `
+            --helper _build/release/midnight-elevated-listing.exe --viewers _build/viewer-packages `
+            --filesystems _build/filesystem-packages --output _build/msi-test/zip
+          if ($LASTEXITCODE -ne 0) { throw 'The release-shaped ZIP was refused' }
+          $zip = (Get-ChildItem -LiteralPath _build/msi-test/zip -Filter *.zip).FullName
+          python -B scripts/test-msi-install.py prepare --zip $zip --work _build/msi-test/work
+          if ($LASTEXITCODE -ne 0) { throw 'Building the MSIs failed' }
+          $msi = (Get-ChildItem -LiteralPath _build/msi-test/work/new -Filter *.msi).FullName
+          python -B scripts/test-msi-install.py ice --msi $msi --work _build/msi-test/ice
+          if ($LASTEXITCODE -ne 0) { throw 'ICE validation failed' }
+      - name: Published per-user MSIs for the upgrade test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python -B scripts/test-msi-install.py previous --repository $env:REPOSITORY --output _build/msi-test/previous
+          if ($LASTEXITCODE -ne 0) { throw 'The published MSIs are unavailable or not signed' }
+      - name: MSI install, upgrade, downgrade, repair and removal in both scopes
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -B scripts/test-msi-install.py run --disposable-machine --work _build/msi-test/work `
+            --previous _build/msi-test/previous --scenario scopes --scenario previous --ui-smoke
+          if ($LASTEXITCODE -ne 0) { throw 'The MSI installation test failed' }
+      # Not yet proven on the hosted runners, so it reports without failing the job.
+      - name: MSI dialogs driven by UI Automation
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          python -B scripts/test-msi-install.py run --disposable-machine --work _build/msi-test/work --scenario ui
+          if ($LASTEXITCODE -ne 0) { throw 'The MSI installation through its dialogs failed' }
+      - if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: msi-install-logs
+          path: _build/msi-test/work/run-*/logs
+          if-no-files-found: ignore
+          retention-days: 14

@@ -428,12 +428,12 @@ refuses an existing MSI.
   `ProgramMenuFolder`, exactly the package's own folders removed on uninstall, the
   dialog's scope and folder events, property-setting custom actions only), the
   installed paths, and every file of the embedded cabinet, extracted with `expand.exe`,
-  byte for byte against its ZIP entry. Windows SDK ICE validation (Orca, `msival2`) is
-  not run, and no install, upgrade or uninstall of the dual-purpose package has been
-  tested yet (REL-05); an administrative installation of an MSI made from the 0.6.0 ZIP
-  extracted every file unchanged ([record](verification/2026-11-26-release-msi.md)), as
-  did one of a dual-purpose stand-in, whose per-user costing resolved the per-user
-  folders ([record](verification/2026-11-26-dual-scope-msi.md)).
+  byte for byte against its ZIP entry. An administrative installation of an MSI made
+  from the 0.6.0 ZIP extracted every file unchanged
+  ([record](verification/2026-11-26-release-msi.md)), as did one of a dual-purpose
+  stand-in, whose per-user costing resolved the per-user folders
+  ([record](verification/2026-11-26-dual-scope-msi.md)). Real installations run in CI
+  (below).
 - **Release notes:** describe the one MSI with both choices: Just for me (no
   administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, updates an
   installed per-user MSI) and For all users (administrator approval,
@@ -442,6 +442,59 @@ refuses an existing MSI.
   Windows and Linux, checks the payload rules and the database plan on both and, on
   Windows, builds and verifies an MSI of a small stand-in release. CI does not package
   releases, so the release MSI itself is built on the owner's machine with the ZIP.
+- **Installation test (CI):** the Windows leg of CI's `release` job installs the MSI for
+  real on its disposable hosted runner (an administrator) with
+  `scripts/test-msi-install.py`, after the release build and this run's plugin
+  packages:
+  1. `stand-in` writes a release-shaped ZIP from the job's release
+     `midnight-explorer.exe` and `midnight-elevated-listing.exe` and its viewer and
+     filesystem packages (no thumbnailers and stand-in notices: CI does not build the
+     full release), with the checks of `package-release.py`'s layout that
+     `package-msi.py` applies; `prepare` builds its MSI and that of a copy versioned
+     0.0.1 (same files, README and `BUILD-INFO.json` rewritten).
+  2. `ice` runs the Windows SDK's ICE rules (`darice.cub`, see the
+     [dependency policy](DEPENDENCY_POLICY.md#current-decisions)). Errors beyond the
+     recorded findings fail the job. Recorded (REL-05): ICE03 for every column, as the
+     package has no `_Validation` table; ICE20 for the missing `FilesInUse` dialog,
+     `ErrorDialog` property and `AdminUISequence` closing dialogs; ICE57 for the
+     `StartMenuShortcut` component (per-user data, scope-dependent key path).
+  3. `previous` downloads the published per-user MSIs older than the workspace
+     version (0.6.1 now, 0.6.2 too once the version moves on) and checks each against its release's signed
+     `SHA256SUMS`.
+  4. `run --disposable-machine` refuses to start when any product with the MSI's
+     `UpgradeCode`, either install folder, shortcut or registry key exists, and then,
+     with `msiexec /qn /l*v`, for **Just for me** (`ALLUSERS=2 MSIINSTALLPERUSER=1`)
+     and then **For all users** (`ALLUSERS=1`): installs 0.0.1, upgrades it to the
+     release (0.0.1 removed), refuses 0.0.1 again (exit 1603 and the "A newer version"
+     message), starts the installed `midnight-explorer.exe --smoke-test` (which must
+     report a private installation) and `--ui-smoke-test --software`, deletes the
+     executable, `README.txt` and the deepest file and repairs (`/fomus`). After every
+     installation it checks Windows Installer's record of the scope and version, every
+     installed file against the ZIP (byte for byte, nothing extra), the
+     `Software\Midnight Explorer Installer` values in HKCU or HKLM, the Start menu
+     shortcut's target and start folder (the user's profile, or the literal
+     `%USERPROFILE%` for all users) and the Installed apps entry (name, version,
+     publisher, install location and existing icon). The all-users folder's permissions
+     may grant changes only to SYSTEM, Administrators, TrustedInstaller and CREATOR
+     OWNER or what Program Files itself grants. Just for me is removed before For all
+     users is installed, then installed again beside it: both are listed, and each
+     `msiexec /x` removes exactly one scope, leaving no files, folders, shortcut, key or
+     entry. Then each published MSI is installed and upgraded in place by the release
+     (per user) and removed. A marker in `%LOCALAPPDATA%\Midnight Explorer` must
+     survive every removal.
+  5. `run --scenario ui` installs through the dialogs: `scripts/msi-ui-install.ps1`
+     starts `msiexec /i` with its full UI, clicks Just for me or For all users in
+     ScopeDlg, presses the Install button that the choice shows and Finish, and the same
+     checks follow, then removal. It is new on the hosted runners and so does not fail
+     the job (`continue-on-error`) until it has passed there.
+
+  The logs of every `msiexec` run (and a screenshot of a UI failure) are uploaded as
+  the `msi-install-logs` artifact. `run --dry-run` prints the plan anywhere without
+  changing anything; never run the test without `--dry-run` on a machine whose
+  installation or settings matter. Not covered: the UAC prompt (the runner is already
+  elevated), a second account starting the all-users copy, **Retry with authorization**,
+  the thumbnailers and HTML viewer that a real release ZIP adds, and a ZIP made by
+  `package-release.py` itself.
 
 ### Signing the release
 

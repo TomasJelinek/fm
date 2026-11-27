@@ -324,6 +324,7 @@ their versions vary by installation.
 | CMake and Ninja | Build tools of the HTML viewer's CEF wrapper; not shipped | BSD-3-Clause and Apache-2.0 |
 | GNU binutils (strip) | Linux release build tool to strip staged CEF binaries; not shipped | GPL-3.0-or-later |
 | Windows Installer (`msi.dll`), `makecab.exe` and `expand.exe` | Windows release build tools of the MSI (`scripts/package-msi.py`); part of Windows, not shipped | Microsoft Windows license terms; no fee beyond Windows ([dependency policy](DEPENDENCY_POLICY.md#current-decisions)) |
+| Windows SDK ICE rules (`darice.cub` of `MsiVal2-x86_en-us.msi`) | Test tool: ICE validation of the MSI (`scripts/test-msi-install.py ice`) where the SDK is installed; not downloaded, not shipped | Microsoft Software License Terms of the Windows SDK; no fee ([dependency policy](DEPENDENCY_POLICY.md#current-decisions)) |
 | Fontconfig | Linux font discovery | MIT/X11-style notices |
 | FreeType | Linux font stack | FreeType License OR GPL-2.0; keep the FTL credit when choosing FTL ([terms](https://freetype.org/license.html)) |
 | GNU libc (`libc`, `libm`, loader) | Linux runtime | LGPL-2.1-or-later with exceptions ([upstream](https://sourceware.org/glibc/)) |

@@ -157,6 +157,33 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("'x86_64-pc-windows-msvc'", job)
         self.assertIn("'x86_64-unknown-linux-gnu'", job)
 
+    def test_release_job_installs_the_msi_for_real_only_on_the_disposable_windows_runner(self):
+        job = self.jobs["release"]
+        self.assertIn("os: [windows-latest, ubuntu-24.04]", job)
+        built = step(job, "MSI of a release-shaped ZIP of this build and its ICE validation")
+        published = step(job, "Published per-user MSIs for the upgrade test")
+        installed = step(job, "MSI install, upgrade, downgrade, repair and removal in both scopes")
+        dialogs = step(job, "MSI dialogs driven by UI Automation")
+        for text in (built, published, installed, dialogs):
+            self.assertIn("if: runner.os == 'Windows'\n", text)
+        # Built from this run's release executable and plugin packages, after they arrive.
+        self.assertLess(job.index("uses: ./.github/actions/plugin-packages"), job.index(built))
+        for argument in ("--executable _build/release/midnight-explorer.exe", "--viewers _build/viewer-packages",
+                         "--filesystems _build/filesystem-packages", "test-msi-install.py prepare",
+                         "test-msi-install.py ice"):
+            self.assertIn(argument, built)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", published)
+        for argument in ("--disposable-machine", "--scenario scopes", "--scenario previous", "--ui-smoke"):
+            self.assertIn(argument, installed)
+        self.assertNotIn("continue-on-error", installed)
+        self.assertIn("continue-on-error: true", dialogs)
+        self.assertIn("--disposable-machine --work _build/msi-test/work --scenario ui", dialogs)
+        logs = uses(job, "actions/upload-artifact@v7")
+        self.assertIn("if: always() && runner.os == 'Windows'", logs)
+        self.assertIn("path: _build/msi-test/work/run-*/logs", logs)
+        # The disposable-runner flag appears nowhere else.
+        self.assertEqual(self.text.count("--disposable-machine"), 2)
+
     def test_clippy_receives_the_sdk_configuration(self):
         # Cargo does not pass options given before the subcommand to an external
         # subcommand: `cargo --config X clippy` resolves without X (the video platform
