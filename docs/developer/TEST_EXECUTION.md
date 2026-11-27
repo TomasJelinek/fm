@@ -584,11 +584,16 @@ The commands below are PowerShell 7, run at the repository root; on Linux run th
   one or one that a normal build packaged. `build.bat` records the one it packaged as
   `config` in `sdk-state.json` in `_build/thumbnailers`, `_build/image-viewer` or
   `_build/pdf-viewer`; `./build.sh` writes its path into `linux-sdk-config` in the
-  same folders. For example:
+  same folders. For example, on Windows:
 
   ```powershell
-  $sdk = (Get-Content _build/thumbnailers/sdk-state.json -Raw | ConvertFrom-Json).config   # Windows
-  $sdk = Get-Content _build/thumbnailers/linux-sdk-config                                  # Linux
+  $sdk = (Get-Content _build/thumbnailers/sdk-state.json -Raw | ConvertFrom-Json).config
+  ```
+
+  On Linux:
+
+  ```powershell
+  $sdk = Get-Content _build/thumbnailers/linux-sdk-config
   ```
 
 Then:
