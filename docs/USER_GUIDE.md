@@ -2192,12 +2192,14 @@ profile folder (Just for me) or the Windows drive, such as `C:\` (For all users)
 in `%LOCALAPPDATA%\Midnight Explorer`. Running the installed version's MSI again offers
 **Repair** or **Remove**.
 
-- **Both kinds side by side:** the two are separate installations. Choosing For all users
-  while an earlier version is installed just for you (or the other way round) installs a
-  second copy; the installer says so, and Installed apps then lists Midnight Explorer
-  twice, as does the Start menu. Remove the one you no longer need there. The same
-  version cannot be installed both ways: running its MSI again offers Repair or Remove
-  of the installed copy. When only an all-users copy is
+- **One kind at a time:** keep either the Just for me or the For all users installation,
+  not both. To switch, remove the installed one in **Installed apps** first. The installer
+  still installs the other kind beside an earlier version (it says that the other copy
+  stays installed), but the two copies share Windows Installer's records of their files,
+  so removing one of them later leaves its files, Start menu entry and registry key
+  behind ([Troubleshooting](TROUBLESHOOTING.md#windows-removing-one-of-two-msi-installations-leaves-its-files)).
+  A later version refuses the second kind. The same version cannot be installed both
+  ways: running its MSI again offers Repair or Remove of the installed copy. When only an all-users copy is
   installed, the installer preselects For all users so that it updates that copy.
 - **Without the dialog:** `msiexec /i <file>.msi /qn` installs just for you. From a
   PowerShell started with **Run as administrator**, `msiexec /i <file>.msi /qn ALLUSERS=1`
