@@ -263,22 +263,26 @@ fn application_icon_picker_previews_restores_and_saves_the_selected_artwork() {
     let icon = || window.as_pin_ref().icon();
     let label = "Application icon";
     let chooser = AccessibleRole::Combobox;
+    let preview = |h: &Harness, name| {
+        h.item(name, AccessibleRole::Image)
+            .downcast::<i_slint_core::items::ImageItem>()
+            .unwrap()
+            .as_pin_ref()
+            .source()
+    };
     let saved = icon();
+    let saved_preview = preview(&h, "Origami Trail icon preview");
     assert_eq!(h.value(label, chooser), "Origami Trail");
+    assert_eq!(saved.size().to_tuple(), (256, 256));
+    assert_eq!(saved_preview.size().to_tuple(), (32, 32));
     // Picker steps are relative: one down from Origami Trail.
     h.choose(label, 1);
     assert_eq!(h.value(label, chooser), "Interleave");
     let interleave = icon();
     assert_ne!(interleave, saved);
-    let preview = h.item("Interleave icon preview", AccessibleRole::Image);
-    assert_eq!(
-        preview
-            .downcast::<i_slint_core::items::ImageItem>()
-            .unwrap()
-            .as_pin_ref()
-            .source(),
-        interleave
-    );
+    let interleave_preview = preview(&h, "Interleave icon preview");
+    assert_eq!(interleave_preview.size(), saved_preview.size());
+    assert_ne!(interleave_preview, saved_preview);
     h.activate("Reset to defaults", AccessibleRole::Button);
     assert_eq!(h.value(label, chooser), "Harvest Navigator");
     assert_ne!(icon(), interleave);
@@ -296,8 +300,13 @@ fn application_icon_picker_previews_restores_and_saves_the_selected_artwork() {
     h.window.set_options_topic_index(1);
     h.settle();
     assert_eq!(h.value(label, chooser), "Origami Trail");
+    assert_eq!(preview(&h, "Origami Trail icon preview"), saved_preview);
     h.choose(label, -1);
     assert_eq!(h.value(label, chooser), "Harvest Navigator");
+    let harvest_preview = preview(&h, "Harvest Navigator icon preview");
+    assert_eq!(harvest_preview.size(), saved_preview.size());
+    assert_ne!(harvest_preview, saved_preview);
+    assert_ne!(harvest_preview, interleave_preview);
     assert_ne!(icon(), saved);
     h.activate("OK", AccessibleRole::Button);
     let commands = h.sent.borrow();

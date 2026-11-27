@@ -1,5 +1,6 @@
 import { ScrollStrip } from "scroll-strip.slint";
 import { Theme } from "theme.slint";
+import { AppBranding } from "app-branding.slint";
 import { CompactPicker } from "controls.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
@@ -18,7 +19,6 @@ export component SharedToolbar inherits Rectangle {
     in property <bool> can-compare-directories;
     in property <bool> show-custom-commands;
     in property <ActionIcons> action-icons;
-    in property <image> application-icon;
     in property <[NavigationChoiceRow]> back-history;
     in property <[NavigationChoiceRow]> forward-history;
     in property <int> history-revision;
@@ -212,7 +212,7 @@ export component SharedToolbar inherits Rectangle {
     NavigationButton {
         x: root.width - root.tool-width - 4px; y: 3px;
         width: root.tool-width; height: root.control-height;
-        native-icon: root.application-icon;
+        native-icon: AppBranding.display-image(self.icon-size / 1phx);
         accessible-label: "About Midnight Explorer"; hint: "About Midnight Explorer";
         press-cancelled: root.press-cancelled;
         clicked => { root.about(); }

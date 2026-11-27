@@ -6,4 +6,65 @@ export global AppBranding {
             : index == 2 ? @image-url("../../../assets/branding/variants/interleave/midnight-explorer.png")
             : @image-url("../../../assets/branding/midnight-explorer.png")
     }
+
+    // Choose a prefiltered frame using the actual size on this monitor. Sampling the
+    // 256px window icon directly loses thin diagonals and coverage at the silhouette.
+    pure public function display-image(pixels: float) -> image {
+        if pixels < 18 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/16.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/16.png")
+                : @image-url("../../../assets/branding/ui/16.png");
+        }
+        if pixels < 22 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/20.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/20.png")
+                : @image-url("../../../assets/branding/ui/20.png");
+        }
+        if pixels < 28 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/24.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/24.png")
+                : @image-url("../../../assets/branding/ui/24.png");
+        }
+        if pixels < 36 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/32.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/32.png")
+                : @image-url("../../../assets/branding/ui/32.png");
+        }
+        if pixels < 44 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/40.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/40.png")
+                : @image-url("../../../assets/branding/ui/40.png");
+        }
+        if pixels < 56 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/48.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/48.png")
+                : @image-url("../../../assets/branding/ui/48.png");
+        }
+        if pixels < 68 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/64.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/64.png")
+                : @image-url("../../../assets/branding/ui/64.png");
+        }
+        if pixels < 84 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/72.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/72.png")
+                : @image-url("../../../assets/branding/ui/72.png");
+        }
+        if pixels < 112 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/96.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/96.png")
+                : @image-url("../../../assets/branding/ui/96.png");
+        }
+        if pixels < 136 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/128.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/128.png")
+                : @image-url("../../../assets/branding/ui/128.png");
+        }
+        if pixels < 192 {
+            return root.icon-index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/ui/144.png")
+                : root.icon-index == 2 ? @image-url("../../../assets/branding/variants/interleave/ui/144.png")
+                : @image-url("../../../assets/branding/ui/144.png");
+        }
+        return root.image-for(root.icon-index);
+    }
 }

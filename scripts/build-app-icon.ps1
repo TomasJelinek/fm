@@ -9,14 +9,15 @@ Add-Type -AssemblyName System.Drawing
 $project = Split-Path -Parent $PSScriptRoot
 $assets = Join-Path $project 'assets/branding'
 $frames = [Collections.Generic.List[byte[]]]::new()
-$sizes = @(16, 20, 24, 32, 40, 48, 64, 128, 256)
+$icoSizes = @(16, 20, 24, 32, 40, 48, 64, 128, 256)
 
 # Without -Variant: the default Harvest Navigator icon in assets/branding. With it: the
 # alternate design in assets/branding/variants/<name>. Each folder holds its master.png
-# and receives the 256-pixel PNG and the multi-resolution ICO.
+# and receives the window PNG, the app UI sizes and the multi-resolution ICO.
 if ($Variant) {
     $assets = Join-Path $assets "variants/$Variant"
 }
+$uiDir = [IO.Directory]::CreateDirectory((Join-Path $assets 'ui'))
 # Source rectangles in master-image pixels. The wider rectangles give the two
 # folders a taller profile when rendered into a square taskbar icon.
 $crop = switch ($Variant) {
@@ -26,7 +27,9 @@ $crop = switch ($Variant) {
 }
 $source = [Drawing.Image]::FromFile((Join-Path $assets 'master.png'))
 try {
-    foreach ($size in $sizes) {
+    # About uses a 72px logo, with larger sizes on scaled displays.
+    # Generate those extra UI sizes after the ICO frames to keep their order.
+    foreach ($size in ($icoSizes + @(72, 96, 144))) {
         $bitmap = [Drawing.Bitmap]::new($size, $size, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
         $graphics = [Drawing.Graphics]::FromImage($bitmap)
         $stream = [IO.MemoryStream]::new()
@@ -38,10 +41,16 @@ try {
             $destination = [Drawing.Rectangle]::new(0, 0, $size, $size)
             $graphics.DrawImage($source, $destination, $crop, [Drawing.GraphicsUnit]::Pixel)
             $bitmap.Save($stream, [Drawing.Imaging.ImageFormat]::Png)
-            $frames.Add($stream.ToArray())
-            if ($size -eq 256) {
-                [IO.File]::WriteAllBytes((Join-Path $assets 'midnight-explorer.png'), $frames[-1])
+            $png = $stream.ToArray()
+            if ($size -in $icoSizes) {
+                $frames.Add($png)
             }
+            if ($size -eq 256) {
+                $path = Join-Path $assets 'midnight-explorer.png'
+            } else {
+                $path = Join-Path $uiDir.FullName "$size.png"
+            }
+            [IO.File]::WriteAllBytes($path, $png)
         } finally {
             $stream.Dispose()
             $graphics.Dispose()
@@ -53,10 +62,10 @@ try {
     try {
         $writer.Write([uint16]0)
         $writer.Write([uint16]1)
-        $writer.Write([uint16]$sizes.Count)
-        $offset = 6 + 16 * $sizes.Count
-        for ($index = 0; $index -lt $sizes.Count; $index++) {
-            $dimension = if ($sizes[$index] -eq 256) { 0 } else { $sizes[$index] }
+        $writer.Write([uint16]$icoSizes.Count)
+        $offset = 6 + 16 * $icoSizes.Count
+        for ($index = 0; $index -lt $icoSizes.Count; $index++) {
+            $dimension = if ($icoSizes[$index] -eq 256) { 0 } else { $icoSizes[$index] }
             $writer.Write([byte]$dimension)
             $writer.Write([byte]$dimension)
             $writer.Write([uint16]0)

@@ -897,7 +897,6 @@ export component MainWindow inherits Window {
             can-compare-directories: root.left-native-filesystem && root.right-native-filesystem;
             show-custom-commands: root.compact-window && root.user-commands.length > 0;
             action-icons: root.action-icons;
-            application-icon: root.icon;
             back-history: root.active-pane == 0 ? root.left-back-history : root.right-back-history;
             forward-history: root.active-pane == 0 ? root.left-forward-history : root.right-forward-history;
             history-revision: root.history-revision;
@@ -1441,7 +1440,6 @@ export component MainWindow inherits Window {
             dismiss => { root.about-open = false; }
             AboutDialog {
                 application-version: root.application-version;
-                application-icon: root.icon;
                 reduce-motion: root.reduce-motion;
                 move-dialog(dx, dy) => { about-frame.move-by(dx, dy); }
                 close => { root.about-open = false; }

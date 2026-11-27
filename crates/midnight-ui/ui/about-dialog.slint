@@ -1,6 +1,7 @@
 import { AboutSlint } from "std-widgets.slint";
 import { ListView, VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
+import { AppBranding } from "app-branding.slint";
 import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
 import { UpdateState } from "update-controls.slint";
 import { FallbackIcons } from "action-icons.slint";
@@ -278,7 +279,6 @@ component SlintBadge inherits Rectangle {
 // offscreen layer of its own.
 component Sky inherits Rectangle {
     in property <float> phase;
-    in property <image> logo;
     in property <string> version;
     callback dragged(length, length);
     // The version pill: its text's line with 2 px above and below, at least 20 px.
@@ -347,7 +347,7 @@ component Sky inherits Rectangle {
     // own: in front of the stars, behind the clouds and the shooting stars, which are
     // nearer. A short dialog keeps only the title.
     Image {
-        source: root.logo; image-fit: contain; visible: !root.compact;
+        source: AppBranding.display-image(self.width / 1phx); image-fit: contain; visible: !root.compact;
         x: (parent.width - self.width) / 2; y: 28px + 2px * Math.sin(root.phase * 3rad); width: 72px; height: 72px;
         accessible-role: image; accessible-label: "Midnight Explorer icon";
     }
@@ -536,7 +536,6 @@ component Sky inherits Rectangle {
 
 export component AboutDialog inherits Rectangle {
     in property <string> application-version;
-    in property <image> application-icon;
     // The system asks for less motion (Windows: animation effects off). The sky then
     // holds still in the middle of its loop, where Cassiopeia, the satellite and a
     // shooting star show, and follows a change at once while About is open.
@@ -596,7 +595,7 @@ export component AboutDialog inherits Rectangle {
             // large font's taller version pill makes the sky taller by as much.
             Sky {
                 height: clamp(root.height - 250px, 40px, 176px + max(0px, self.pill-height - 20px));
-                phase: root.phase; logo: root.application-icon; version: root.application-version;
+                phase: root.phase; version: root.application-version;
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
             VerticalLayout {

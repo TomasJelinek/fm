@@ -595,7 +595,7 @@ export component OptionsBody inherits Rectangle {
                     }
                     Image {
                         width: max(32px, Theme.control-height); height: self.width; image-fit: contain;
-                        source: AppBranding.image-for(AppBranding.icon-index);
+                        source: AppBranding.display-image(self.width / 1phx);
                         accessible-role: image;
                         accessible-label: icon-picker.model[AppBranding.icon-index] + " icon preview";
                     }

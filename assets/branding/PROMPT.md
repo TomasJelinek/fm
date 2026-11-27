@@ -55,6 +55,11 @@ The final lighting pass adds a soft violet reflection to the blue enamel just ab
 
 The final Harvest Navigator edit recolored only the coral enamel of the two-point compass to saturated amethyst, retaining the ivory tail, pivot, facets and arc. Its tab uses the copper and peacock stripes sampled directly from Origami Trail and scaled together to fit the smaller blue tab.
 
+The blue face and tab were lightened for dark taskbars. An image-editing study supplied
+the color direction, then the brightness was checked in the 16-pixel export. A blue
+midtone on the upper right went from `#0058E3` to `#1C83F2`. The original master
+supplies the shading, silhouette and alpha channel.
+
 ### Interleave
 
 The family refinement lifts the shadowed sheet toward deep marine teal. Amber and mint stripes sit on the smooth turquoise fold. A tiny crescent is engraved in the central gold underside, next to a soft violet reflection.

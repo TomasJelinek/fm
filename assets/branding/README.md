@@ -11,6 +11,9 @@ and drive icons continue to come from the operating system.
   the compositor uses the installed desktop entry and this PNG instead; see the
   [Linux launcher instructions](../../docs/USER_GUIDE.md#linux-desktop-launcher).
   Linux release archives and `scripts/install-linux-desktop.py` install this file.
+- Each design's `ui/` folder holds transparent PNGs at 16, 20, 24, 32, 40, 48,
+  64, 72, 96, 128 and 144 pixels. The exporter samples the full artwork at each size so
+  the toolbar, icon picker and About logo can display smooth edges at their own scale.
 - `midnight-explorer.ico`: Windows executable icon with 16, 20, 24, 32, 40, 48, 64,
   128 and 256-pixel frames. Embedded at build time using the Windows SDK resource
   compiler; the application does not need to load an external icon file at runtime.
@@ -23,8 +26,7 @@ To regenerate the size exports on Windows, run `powershell -NoProfile -File
 scripts/build-app-icon.ps1` from the repository root. It scales `master.png` to each
 size and packages the frames; it does not call an image service. Normal project builds
 on Windows and Linux use the committed exports and do not run this maintenance step.
-No intermediate artwork is written outside `_build`; the three files here are
-intentional source assets. Future macOS application packaging can derive ICNS
+Future macOS application packaging can derive ICNS
 sizes from the same master once that platform is implemented.
 
 ## Icon shortlist
