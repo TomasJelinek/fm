@@ -115,7 +115,7 @@ async fn verified_copy_and_conflict(fixture: &Fixture, target: &std::path::Path)
         start_policy: Default::default(),
         verification: verify,
         clipboard: FileClipboard {
-            paths: vec![source.clone()].into(),
+            paths: vec![source.clone()],
             intent: FileClipboardIntent::Copy,
         },
         destination: target.into(),
