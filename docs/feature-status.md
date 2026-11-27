@@ -30,6 +30,19 @@ How to read it:
 - **Windows and Linux:** `build.bat` and `build.sh` build the application together with
   every plugin package; release packages contain every viewer, filesystem and
   thumbnailer package.
+- **No Visual C++ runtime on Windows (0.6.4):** the application and every plugin link
+  the C runtime statically, so a computer without the Visual C++ Redistributable runs
+  them; 0.6.3 did not start there (`VCRUNTIME140.dll` missing). Release packaging
+  refuses a file that imports a Visual C++ runtime DLL
+  ([Release file checks](release-build.md#release-file-checks)). In a local release
+  build none of the 27 executables and libraries of the Windows ZIP imports one (nor the
+  Universal CRT), the filesystem smoke test passes, and the native viewer plugins load
+  and render in the viewer engine's tests; a start on a clean Windows installation
+  without the redistributable has not been tried yet.
+- **Lowercase Markdown names in the downloads (0.6.4):** every `.md` file of the ZIP,
+  the MSI and the tar.gz has a lowercase name (`readme.md`, `third-party.md`,
+  `license-apache.md`), which packaging checks; measured on local release packages
+  (198 in the Windows ZIP, 197 in the Linux tar.gz).
 - **Windows installer:** from 0.6.1 an MSI made from the release ZIP's files, with a
   Start menu shortcut and an Add/Remove Programs entry; a newer MSI replaces an older
   one. 0.6.1 installs per user only; 0.6.2's MSI, the first that asks, stops with
