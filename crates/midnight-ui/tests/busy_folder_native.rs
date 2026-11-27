@@ -369,8 +369,13 @@ fn report_viewport(h: &native::Harness) {
 
 /// Settles until the left panel shows `main.rs` colored and the folder rows'
 /// presence resolved, then until no listing has started for a second.
+///
+/// The tests write `main.rs` right after the panel showed its folder, often
+/// before the folder's watch subscription took effect. The rows are then
+/// checked once the watch adopts them, so the file is shown well before the
+/// watch's periodic check (15 s), which this deadline stays below.
 fn settle_decorated(h: &mut native::Harness) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         report_viewport(h);
         h.settle();
@@ -385,12 +390,15 @@ fn settle_decorated(h: &mut native::Harness) {
         }
         assert!(
             Instant::now() < deadline,
-            "decorations never settled: {:?}",
+            "decorations never settled: {:?}; loading {}, {} listings, {} hints",
             ["main.rs", "inside", "nested"].map(|name| row(name).map(|row| (
                 row.name,
                 row.color_rule,
                 row.tree_disclosure
-            )))
+            ))),
+            h.ui.window.get_left_loading(),
+            h.listings[0],
+            h.hints[0],
         );
         h.idle(Duration::from_millis(10));
     }

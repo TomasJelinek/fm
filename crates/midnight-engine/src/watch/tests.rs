@@ -114,6 +114,11 @@ struct Native {
     fire_on_watch: AtomicBool,
     /// So many of the next registrations panic after recording their callback.
     panics: AtomicUsize,
+    /// The next registration waits for this channel, as the Windows watch
+    /// service's registration waits for its reply: the receive parks the
+    /// worker thread. `holding` tells that it waits.
+    hold: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    holding: Notify,
 }
 
 struct Guard {
@@ -147,6 +152,11 @@ impl WatchService for Native {
         path: &Path,
         changed: ChangeCallback,
     ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        let hold = self.hold.lock().unwrap().take();
+        if let Some(release) = hold {
+            self.holding.notify_one();
+            let _ = release.recv_timeout(Duration::from_secs(10));
+        }
         if self.fire_on_watch.swap(false, Ordering::SeqCst) {
             let newest = self
                 .callbacks

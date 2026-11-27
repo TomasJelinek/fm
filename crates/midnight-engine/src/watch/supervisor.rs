@@ -122,18 +122,15 @@ impl Supervision {
         false
     }
 
-    /// Parks until woken or `timeout`; while a status is unsent, at most
-    /// `UNSENT_RETRY`.
-    pub(super) fn park(&self, timeout: Option<Duration>) {
+    /// Parks until woken (`Shared::park`) or `timeout`; while a status is
+    /// unsent, at most `UNSENT_RETRY`.
+    pub(super) fn park(&self, shared: &Shared, timeout: Option<Duration>) {
         let timeout = if self.report.unsent() {
             Some(timeout.map_or(UNSENT_RETRY, |timeout| timeout.min(UNSENT_RETRY)))
         } else {
             timeout
         };
-        match timeout {
-            Some(timeout) => thread::park_timeout(timeout),
-            None => thread::park(),
-        }
+        shared.park(timeout);
     }
 
     pub(super) fn take_resumed(&mut self) -> bool {
@@ -228,7 +225,10 @@ fn wait_to_restart(worker: &Worker, supervision: &mut Supervision, resume_at: In
         if !supervision.flush(worker) {
             return false;
         }
-        supervision.park(Some(resume_at.saturating_duration_since(Instant::now())));
+        supervision.park(
+            &worker.shared,
+            Some(resume_at.saturating_duration_since(Instant::now())),
+        );
     }
 }
 

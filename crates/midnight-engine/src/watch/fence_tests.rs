@@ -669,3 +669,110 @@ async fn a_view_without_a_flat_listing_releases_the_watch_at_dispatch() {
     native.released(2).await;
     stop(&controller, &mut tasks).await;
 }
+
+/// Holds the next native registration until the returned sender sends or is
+/// dropped; `Native::holding` tells that it waits.
+fn hold_registration(native: &Native) -> std::sync::mpsc::Sender<()> {
+    let (release, held) = std::sync::mpsc::channel();
+    *native.hold.lock().unwrap() = Some(held);
+    release
+}
+
+/// Waits until `condition` holds for the pane's listing records.
+async fn listings_until(controller: &Controller, condition: impl Fn(&Listings) -> bool) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !condition(&controller.listings[0].lock().unwrap()) {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("the watch worker must record the step");
+}
+
+/// The Windows watch service answers a registration through a channel, and
+/// its receive parks the worker thread, which takes the thread's unpark token.
+/// A listing accepted while the worker registered the folder that listing
+/// read woke nothing then: the worker had no target yet and slept until the
+/// folder changed again, so the accepted rows were never checked and a file
+/// the listing missed was never shown. (CI: a file written right after the
+/// panel showed its folder never appeared.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_listing_accepted_while_its_folder_is_registered_is_watched() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let native = Arc::new(Native::default());
+    let release = hold_registration(&native);
+    let (_owner, controller, mut tasks, mut events) = controller(
+        files.clone(),
+        Some(native.clone()),
+        Duration::from_millis(100),
+    );
+    list(&controller, 1, "left");
+    let listed = files.visible(PaneId::Left, 1, "left");
+    controller
+        .reporter()
+        .listing_read(PaneId::Left, NavigationId(1));
+    native.holding.notified().await;
+    // Accepted while the registration waits; the folder changes before its
+    // subscription exists, so no notification counts the change.
+    controller.set_visible(listed);
+    files.put("left", 8);
+    release.send(()).unwrap();
+    // The worker adopts the accepted rows, and its periodic check finds the
+    // change.
+    hint_for(&mut events, 1).await;
+    stop(&controller, &mut tasks).await;
+}
+
+/// A small folder is read to its end before the subscription that its
+/// listing's first entries asked for takes effect. A file written meanwhile is
+/// counted by nothing, so the accepted rows are checked at once instead of at
+/// the periodic check (30 s here, 15 s in production).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rows_read_before_their_folder_was_subscribed_are_checked_once_shown() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
+    let release = hold_registration(&native);
+    list(&controller, 1, "left");
+    let listed = files.visible(PaneId::Left, 1, "left");
+    let reporter = controller.reporter();
+    reporter.listing_read(PaneId::Left, NavigationId(1));
+    native.holding.notified().await;
+    reporter.listing_done(PaneId::Left, NavigationId(1));
+    files.put("left", 8);
+    release.send(()).unwrap();
+    native.registrations(1).await;
+    controller.set_visible(listed);
+    hint_for(&mut events, 1).await;
+    assert_eq!(probes(&files), 1, "the accepted rows are checked once");
+    stop(&controller, &mut tasks).await;
+}
+
+/// Rows of a listing that was still reading when its folder's subscription
+/// took effect miss no uncounted change: they are not checked again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rows_read_while_their_folder_was_subscribed_are_not_checked_again() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
+    list(&controller, 1, "left");
+    let listed = files.visible(PaneId::Left, 1, "left");
+    let reporter = controller.reporter();
+    reporter.listing_read(PaneId::Left, NavigationId(1));
+    listings_until(&controller, |listings| {
+        listings
+            .prepared
+            .as_ref()
+            .is_some_and(|prepared| prepared.armed)
+    })
+    .await;
+    reporter.listing_done(PaneId::Left, NavigationId(1));
+    controller.set_visible(listed);
+    // Adopted once its counter is the target's.
+    listings_until(&controller, |listings| listings.counter.is_some()).await;
+    native.fire(0);
+    hint_for(&mut events, 1).await;
+    assert_eq!(probes(&files), 0, "a quiet listing is not checked again");
+    stop(&controller, &mut tasks).await;
+}

@@ -143,6 +143,39 @@ struct Visible {
     /// The rows leave hidden entries out (Show hidden files is off), as the
     /// listing that produced them did, so checks of them leave them out too.
     hide: bool,
+    /// How the listing that produced the rows was watched, if it read the
+    /// directory to its end (`Started::done`).
+    listed: Option<Listed>,
+}
+
+/// How a listing that read its directory to the end was watched: the counter
+/// of a subscription that was in place before it finished reading, if any.
+/// A change before a folder's subscription takes effect is never counted, so
+/// rows read before then may lack it, and only a check finds it (see
+/// `Visible::read_unwatched`).
+#[derive(Clone)]
+struct Listed {
+    counted: Option<Arc<AtomicU64>>,
+}
+
+impl Visible {
+    /// Whether the rows' listing finished reading the directory before the
+    /// subscription that counts `counter` took effect: they then may lack a
+    /// change that nothing counted, and are checked at once. A folder is
+    /// subscribed only after its listing read entries (`Prepared`) or once it
+    /// is accepted (`register`), so a small folder is often read completely
+    /// before that, and a file written right after it was listed was shown
+    /// only by the periodic check (`Timing::poll`). Without a watch service
+    /// nothing is counted, and the rows are checked periodically as before.
+    fn read_unwatched(&self, worker: &Worker, counter: &Arc<AtomicU64>) -> bool {
+        worker.native.is_some()
+            && self.listed.as_ref().is_some_and(|listed| {
+                !listed
+                    .counted
+                    .as_ref()
+                    .is_some_and(|counted| Arc::ptr_eq(counted, counter))
+            })
+    }
 }
 
 /// A flat change count when a listing of its directory started.
@@ -164,6 +197,12 @@ struct Started {
     hide: Option<bool>,
     /// The listing read entries of the directory (`Reporter::listing_read`).
     read: bool,
+    /// It read the directory to its end (`Reporter::listing_done`).
+    done: bool,
+    /// The counter of a subscription of the directory that was in place
+    /// before the listing finished reading: when it started, or taking effect
+    /// while it read (`Worker::subscribed`).
+    counted: Option<Arc<AtomicU64>>,
     /// It ended without rows to accept; the pane shows its previous rows.
     failed: bool,
 }
@@ -172,6 +211,8 @@ struct Started {
 struct Published {
     path: PathBuf,
     counter: Arc<AtomicU64>,
+    /// Its native subscription is in place (`Worker::subscribed`).
+    armed: bool,
 }
 
 /// Shared by the backend's command loop and one pane's flat worker.
@@ -191,6 +232,8 @@ struct Listings {
 struct Shared {
     state: Mutex<Control>,
     worker: OnceLock<Thread>,
+    /// The worker's wake permit (`wake`, `park`).
+    woken: AtomicBool,
     timing: Timing,
     /// When the worker restarted after a panic, oldest first.
     #[cfg(test)]
@@ -210,6 +253,7 @@ impl Shared {
                 tree: None,
             }),
             worker: OnceLock::new(),
+            woken: AtomicBool::new(false),
             timing,
             #[cfg(test)]
             restarts: Mutex::default(),
@@ -225,10 +269,32 @@ impl Shared {
     }
 
     fn wake(&self) {
+        // Set after the change it announces, so the worker sees that change.
+        self.woken.store(true, Ordering::Release);
         if let Some(worker) = self.worker.get() {
-            // Unpark retains its wake permit if a callback races with parking.
             worker.unpark();
         }
+    }
+
+    /// Waits on the worker thread until `wake` or `timeout`. A wake while the
+    /// worker is busy is kept by `woken`, not by the thread's own unpark token:
+    /// anything else that parks the thread takes that token, and the native
+    /// registration does (the Windows watch service's reply is a channel
+    /// receive). A wake taken that way was lost, and a worker that had no
+    /// target yet slept through the acceptance of its pane's listing until
+    /// the folder changed again; a change the listing missed was then never
+    /// shown.
+    fn park(&self, timeout: Option<Duration>) {
+        if self.woken.swap(false, Ordering::Acquire) {
+            return;
+        }
+        match timeout {
+            Some(timeout) => thread::park_timeout(timeout),
+            None => thread::park(),
+        }
+        // Taken with the wake that ended the wait, so the next wait sleeps; a
+        // later wake sets it again.
+        self.woken.swap(false, Ordering::Acquire);
     }
 
     fn is_current(&self, revision: u64) -> bool {
@@ -379,18 +445,22 @@ impl Controller {
         let mut listings = self.listings[pane.index()]
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let fence = listing
+        let published = listing
             .then(|| {
                 [&listings.prepared, &listings.counter]
                     .into_iter()
                     .flatten()
                     .find(|published| published.path == path)
-                    .map(|published| Fence {
-                        value: published.counter.load(Ordering::Acquire),
-                        counter: published.counter.clone(),
-                    })
             })
             .flatten();
+        let fence = published.map(|published| Fence {
+            value: published.counter.load(Ordering::Acquire),
+            counter: published.counter.clone(),
+        });
+        // A counter is published before its subscription exists.
+        let counted = published
+            .filter(|published| published.armed)
+            .map(|published| published.counter.clone());
         let hide = listing.then_some(listings.hide);
         listings.started = Some(Started {
             navigation,
@@ -398,6 +468,8 @@ impl Controller {
             fence,
             hide,
             read: false,
+            done: false,
+            counted,
             failed: false,
         });
     }
@@ -406,7 +478,7 @@ impl Controller {
     pub(crate) fn set_visible(&self, visible: VisibleDirectory) {
         // Left in place: until the worker sees this acceptance, it still tells
         // from that record whether the pane is listing its directory again.
-        let (fence, listed_hide, current_hide) = {
+        let (fence, listed_hide, listed, current_hide) = {
             let listings = self.listings[visible.pane.index()]
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -417,6 +489,11 @@ impl Controller {
             (
                 started.and_then(|started| started.fence.clone()),
                 started.and_then(|started| started.hide),
+                started
+                    .filter(|started| started.done)
+                    .map(|started| Listed {
+                        counted: started.counted.clone(),
+                    }),
                 listings.hide,
             )
         };
@@ -462,6 +539,7 @@ impl Controller {
             directory: visible,
             fence,
             hide,
+            listed,
         });
         drop(state);
         shared.wake();
@@ -501,6 +579,23 @@ impl Reporter {
         }
         if let Some(shared) = self.panes[index].upgrade() {
             shared.wake();
+        }
+    }
+
+    /// Called by a flat listing's task when it has read its directory to the
+    /// end, before it publishes the rows. A subscription that takes effect
+    /// after this cannot count a change the rows lack, so the rows are
+    /// checked once accepted (`Visible::read_unwatched`).
+    pub(crate) fn listing_done(&self, pane: PaneId, navigation: NavigationId) {
+        let mut listings = self.listings[pane.index()]
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(started) = listings
+            .started
+            .as_mut()
+            .filter(|started| started.navigation == navigation)
+        {
+            started.done = true;
         }
     }
 
@@ -714,7 +809,8 @@ impl Target {
     /// published its counter) are the accepted rows or were listed after them,
     /// so they keep `accepted_at`; they are no newer than a check that came due
     /// before this acceptance (one the dispatch superseded, or one due while
-    /// the target was parked), so that check runs at once.
+    /// the target was parked), so that check runs at once. So do rows read
+    /// while the target was not subscribed (`Visible::read_unwatched`).
     fn retarget(
         &mut self,
         worker: &Worker,
@@ -726,13 +822,14 @@ impl Target {
         // Read before subscribing again: a notification through the new
         // subscription is counted after this and reaches the debounce.
         let version = self.dirty.load(Ordering::Acquire);
+        let unwatched = visible.read_unwatched(worker, &self.dirty);
         let fence = visible
             .fence
             .filter(|fence| Arc::ptr_eq(&fence.counter, &self.dirty));
         if let Some(fence) = &fence {
             self.accepted_at = fence.value;
         }
-        let activity = version != self.accepted_at;
+        let activity = version != self.accepted_at || unwatched;
         let (subscription, retry, status) = outcome(
             subscribe(worker, supervision, &self.path, &self.dirty, &self.active),
             self.retry.as_ref(),
@@ -763,7 +860,9 @@ impl Target {
     /// counted may postdate that listing's read of an entry, unless the
     /// listing fenced against this counter (a later listing of the folder,
     /// dispatched while it was subscribed): the rows are probed at once if a
-    /// notification was counted after that fence, or at all without one.
+    /// notification was counted after that fence, or at all without one, and
+    /// if they were read before the subscription took effect
+    /// (`Visible::read_unwatched`).
     ///
     /// A failed preparation is registered once more, as acceptance registers a
     /// folder that was not prepared; the failure can be transient. A counted
@@ -785,6 +884,7 @@ impl Target {
         let active = prepared.active.clone();
         // Read before subscribing again, as `retarget` does.
         let version = dirty.load(Ordering::Acquire);
+        let unwatched = visible.read_unwatched(worker, &dirty);
         let accepted_at = visible
             .fence
             .filter(|fence| Arc::ptr_eq(&fence.counter, &dirty))
@@ -832,7 +932,7 @@ impl Target {
             hinted_at: None,
             probe_cost: Duration::ZERO,
         };
-        if version == accepted_at {
+        if version == accepted_at && !unwatched {
             target.poll_at = now + target.poll_interval(worker.timing);
         }
         (target, status)
@@ -899,23 +999,53 @@ impl Drop for Prepared {
 }
 
 impl Worker {
-    /// Publishes the counter of the target that watches `path`.
+    /// Publishes the counter of the target that watches `path`; a prepared
+    /// folder's counter keeps its subscription.
     fn publish(&self, path: &Path, counter: &Arc<AtomicU64>) {
         let mut listings = self
             .listings
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if listings
-            .prepared
-            .as_ref()
-            .is_some_and(|prepared| Arc::ptr_eq(&prepared.counter, counter))
-        {
-            listings.prepared = None;
-        }
+        let armed = match listings.prepared.take() {
+            Some(prepared) if Arc::ptr_eq(&prepared.counter, counter) => prepared.armed,
+            other => {
+                listings.prepared = other;
+                false
+            }
+        };
         listings.counter = Some(Published {
             path: path.to_path_buf(),
             counter: counter.clone(),
+            armed,
         });
+    }
+
+    /// Records the outcome of a registration of `path` that counts with
+    /// `counter`. Once it is in place, a listing that starts later, or the
+    /// listing of `path` still reading it, can lack only changes it counts.
+    fn subscribed(&self, path: &Path, counter: &Arc<AtomicU64>, armed: bool) {
+        let mut listings = self
+            .listings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Listings {
+            counter: published,
+            prepared,
+            started,
+            ..
+        } = &mut *listings;
+        for published in [published, prepared].into_iter().flatten() {
+            if Arc::ptr_eq(&published.counter, counter) {
+                published.armed = armed;
+            }
+        }
+        if armed
+            && let Some(started) = started
+                .as_mut()
+                .filter(|started| started.path == path && !started.done)
+        {
+            started.counted.get_or_insert_with(|| counter.clone());
+        }
     }
 
     /// Releases a prepared folder on this worker; its counter is no longer
@@ -965,11 +1095,11 @@ fn subscribe(
             }
         }
     });
-    Some(
-        supervision.register(Attempt::Flat(path.to_path_buf()), path, || {
-            native.watch_directory(path, callback)
-        }),
-    )
+    let registration = supervision.register(Attempt::Flat(path.to_path_buf()), path, || {
+        native.watch_directory(path, callback)
+    });
+    worker.subscribed(path, dirty, registration.is_ok());
+    Some(registration)
 }
 
 /// The subscription of a registration outcome, the retry a failure schedules
@@ -1006,26 +1136,28 @@ fn outcome(
 }
 
 /// A target for accepted rows of a folder that was not prepared. `check` probes
-/// the rows at once (after a restart lost the target's history).
+/// the rows at once (after a restart lost the target's history); so do rows
+/// that a listing read before this subscription (`Visible::read_unwatched`).
 fn register(
     worker: &Worker,
     supervision: &mut Supervision,
-    Visible {
-        directory: visible,
-        hide,
-        ..
-    }: Visible,
+    visible: Visible,
     revision: u64,
     cancel: Cancellation,
     check: bool,
 ) -> (Target, Option<WatchStatus>) {
     let dirty = Arc::new(AtomicU64::new(0));
+    let check = check || visible.read_unwatched(worker, &dirty);
+    let Visible {
+        directory: visible,
+        hide,
+        ..
+    } = visible;
     // Published before the subscription exists, so a listing that starts from
     // now on fences against this counter. A fence covers counted changes only:
     // a change before the subscription exists is never counted, and a listing
-    // that read the directory before then can lack it until the periodic check
-    // (as the listing this target starts from can, and the first listing of a
-    // folder that read the folder before its preparation took effect).
+    // that read the directory before then can lack it until a check (see
+    // `Visible::read_unwatched`).
     worker.publish(&visible.path, &dirty);
     let active = Arc::new(AtomicBool::new(true));
     let (subscription, retry, status) = outcome(
@@ -1071,6 +1203,7 @@ fn prepare(worker: &Worker, supervision: &mut Supervision, path: PathBuf) -> Pre
         .prepared = Some(Published {
         path: path.clone(),
         counter: dirty.clone(),
+        armed: false,
     });
     let active = Arc::new(AtomicBool::new(true));
     let subscription = subscribe(worker, supervision, &path, &dirty, &active);
@@ -1338,7 +1471,7 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
             let delay = runtime.step(shared, worker.filesystem.as_ref(), &worker.outbox, timing);
             supervision.completed();
             if !delay.is_zero() {
-                supervision.park(Some(delay));
+                supervision.park(shared, Some(delay));
             }
             continue;
         }
@@ -1402,7 +1535,7 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
                 // Counts the shown rows' notifications for the fence of a
                 // listing of their folder, without probes or hints, until a
                 // listing is accepted or fails.
-                supervision.park(None);
+                supervision.park(shared, None);
                 continue;
             }
             Some(Relisting::Failed(navigation)) => {
@@ -1415,7 +1548,7 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
             None => {}
         }
         let Some(target) = target.as_mut() else {
-            supervision.park(None);
+            supervision.park(shared, None);
             continue;
         };
         if let Some(status) = target.retry_registration(worker, supervision) {
@@ -1488,7 +1621,10 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
             .retry
             .as_ref()
             .map_or(deadline, |retry| deadline.min(retry.at));
-        supervision.park(Some(deadline.saturating_duration_since(Instant::now())));
+        supervision.park(
+            shared,
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
     }
     // Prefer normal scope destruction on this native worker. The startup-owned
     // Shared guard also covers a cancelled task or a panic outside this loop.

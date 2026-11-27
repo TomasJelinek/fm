@@ -1611,6 +1611,7 @@ fn list_directory(task: ListingTask) {
     let mut icon_types = std::collections::HashSet::new();
     let mut entries = Vec::new();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
+    let done = watch.clone();
     let mut watch = watch;
     let mut hidden = 0_usize;
     let mut emit = |mut entry: Entry| {
@@ -1660,6 +1661,13 @@ fn list_directory(task: ListingTask) {
     };
     if cancel.is_cancelled() {
         return;
+    }
+    // Before the rows are published: the pane's watch checks them once shown
+    // if its subscription took effect only after this.
+    if result.is_ok()
+        && let Some(done) = &done
+    {
+        done.listing_done(pane, navigation);
     }
     if let Err(error) = result {
         listing_failed(&snapshots, pane, navigation);
