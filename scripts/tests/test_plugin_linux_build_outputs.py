@@ -99,6 +99,7 @@ class PluginLinuxBuildOutputs(unittest.TestCase):
             (scripts.parent / "image-viewer.json").write_text('{"target": "template", "executable": "template"}\n')
             (scripts.parent / "notices").mkdir(exist_ok=True)
             (scripts.parent / "notices/dependency-LICENSE").write_text(f"{plugin} dependency notice\n")
+            (scripts.parent / "notices/UPSTREAM_NOTICE.md").write_text(f"{plugin} upstream notice\n")
             (scripts / "prepare-sdk.py").write_text("import sys\nprint(sys.argv[1])\n")
             (scripts / "notices.py").write_text(
                 "import pathlib, sys\n"
@@ -111,6 +112,7 @@ class PluginLinuxBuildOutputs(unittest.TestCase):
             (native / helper).write_text(f'printf "%s\\n" "{helper} $1" >> "$NATIVE_TEST_LOG"\n')
         (self.real / "plugins/image-decoder/notices").mkdir()
         (self.real / "plugins/image-decoder/notices/decoder-LICENSE").write_text("decoder notice\n")
+        (self.real / "plugins/image-decoder/notices/UPSTREAM_NOTICE.md").write_text("decoder upstream notice\n")
         self.checkout = self.owner / "home"
         self.checkout.symlink_to(self.real.parent, target_is_directory=True)
         self.checkout = self.checkout / "checkout"
@@ -132,6 +134,11 @@ class PluginLinuxBuildOutputs(unittest.TestCase):
                                 PLUGIN_TEST_LOG=str(self.log), NATIVE_TEST_LOG=str(self.owner / "native.log"))
         for name in ("CARGO_TARGET_DIR", "MIDNIGHT_IMAGE_NATIVE_OFFLINE", "MIDNIGHT_TEST_ARCHIVE_FILESYSTEM"):
             self.environment.pop(name, None)
+
+    def assert_lowercase_markdown(self, package):
+        """Markdown names in a package are lowercase, with '-' for '_' (README.md is readme.md)."""
+        names = {path.relative_to(package).as_posix() for path in package.rglob("*.md")}
+        self.assertEqual(names, {"readme.md", "third-party.md", "notices/upstream-notice.md"})
 
     def run_script(self, plugin, script, *arguments):
         if self.log.exists():
@@ -170,6 +177,7 @@ class PluginLinuxBuildOutputs(unittest.TestCase):
                         package = output or build_root / f"package/{plugin}"
                         self.assertEqual((package / plugin).read_bytes(), b"built")
                         self.assertTrue((package / "notices").is_dir())
+                        self.assert_lowercase_markdown(package)
                     else:
                         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                         self.assertIn(f"Generated output {outcome}", result.stderr)
@@ -212,7 +220,8 @@ class PluginLinuxBuildOutputs(unittest.TestCase):
                     if replaced:
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertEqual(sorted(path.name for path in (output / "notices").iterdir()),
-                                         [".midnight-generated", "dependency-LICENSE"])
+                                         [".midnight-generated", "dependency-LICENSE", "upstream-notice.md"])
+                        self.assert_lowercase_markdown(output)
                     else:
                         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                         self.assertIn("Refusing to replace notices", result.stderr)
