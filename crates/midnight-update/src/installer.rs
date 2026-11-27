@@ -485,6 +485,7 @@ fn install_steps(request: &InstallRequest, host: &dyn Host) -> InstallOutcome {
 }
 
 /// Checks the SHA-256 of the pinned `package` (read from its start) against `sha256`.
+#[cfg(windows)]
 pub(crate) fn check_digest(package: &File, sha256: &[u8; 32]) -> Result<(), String> {
     let mut reader = package;
     let actual = trust::sha256_reader(&mut reader)
