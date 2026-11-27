@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "authorized_tests.rs"]
+mod authorized_tests;
 #[path = "fence_tests.rs"]
 mod fence_tests;
 #[path = "hidden_tests.rs"]

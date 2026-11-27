@@ -4,6 +4,7 @@ mod archive_prompt;
 mod archive_sessions;
 mod archive_sizes;
 mod archives;
+mod authorized_listing;
 mod bookmarks;
 pub(crate) mod checksums;
 #[cfg(test)]
@@ -178,6 +179,13 @@ struct Request {
     /// An automatic re-read of the shown folder (`Reload::Background`); it
     /// shows no loading state (`row_continuity`).
     background: bool,
+    /// The authorization helper reads these rows: an authorized retry, or a
+    /// re-sort of rows it read (`authorized_listing`).
+    authorized: bool,
+    /// A Refresh of rows the authorization helper read, sent as a navigation:
+    /// its denial is presented as one (Cannot open folder), which offers Retry
+    /// with authorization again (`authorized_listing`).
+    reopens_authorized: bool,
     /// The backend's row edits from the shown rows to this listing.
     changes: Option<row_continuity::PendingChanges>,
 }
@@ -270,6 +278,9 @@ pub(crate) struct Pane {
     elevation_retry: Option<(NavigationId, PathBuf)>,
     /// The navigation that the last authorized retry started.
     authorized_retry: Option<NavigationId>,
+    /// The committed navigation whose rows the authorization helper read: an
+    /// authorized retry, or a re-sort of its rows (`authorized_listing`).
+    authorized_rows: Option<NavigationId>,
     error_details: Option<panel_warnings::PanelError>,
     error_revision: u64,
     pub(crate) loading: bool,
@@ -484,6 +495,10 @@ impl Presenter {
             return false;
         }
         p.refresh_hint = false;
+        // This process may not read that folder (`authorized_listing`).
+        if p.shows_authorized_rows() {
+            return false;
+        }
         if self.request_native_tree_refresh(pane, send) {
             return true;
         }
@@ -711,6 +726,9 @@ impl Presenter {
             let p = &mut self.panes[pane.index()];
             p.elevation_retry = None;
             p.authorized_retry = retry.get();
+            if let Some(request) = &mut p.pending {
+                request.authorized = true;
+            }
         }
     }
 
@@ -747,7 +765,13 @@ impl Presenter {
                 sort: p.sort,
                 source,
             }
-        } else if p.archive.is_none() && path == p.path && p.successful_generation.is_some() {
+        } else if p.archive.is_none()
+            && path == p.path
+            && p.successful_generation.is_some()
+            // Refresh of rows the authorization helper read asks as a navigation,
+            // whose denial offers authorization again (`authorized_listing`).
+            && !(mode == Reload::Navigate && p.shows_authorized_rows())
+        {
             Command::Refresh {
                 pane,
                 navigation,
@@ -907,6 +931,9 @@ impl Presenter {
         }
         p.retire_stream(&mut self.retired);
         let keep_rows = same_location;
+        // A re-sort keeps rows the authorization helper read; a Refresh of them
+        // asks again (`authorized_listing`).
+        let authorized_rows = keep_rows && p.shows_authorized_rows();
         let previous_cursor = if keep_rows { p.cursor } else { p.cursor.take() };
         let previous_parent_cursor = p.parent_cursor;
         p.parent_cursor =
@@ -941,6 +968,8 @@ impl Presenter {
             accepts_file: false,
             keep_rows,
             background: mode == Reload::Background && keep_rows,
+            authorized: authorized_rows && matches!(mode, Reload::Resort | Reload::SizeResort),
+            reopens_authorized: authorized_rows && mode == Reload::Navigate,
             changes: None,
         });
         p.rows_navigation_accepted(navigation, mode == Reload::Background && keep_rows);
@@ -1624,6 +1653,7 @@ impl Presenter {
                 self.retired
                     .push(Box::new(mem::replace(&mut p.index, index)));
                 self.retired.push(Box::new(p.folder_errors.take()));
+                p.authorized_rows = request.authorized.then_some(navigation);
                 self.retired.push(Box::new(request));
                 p.retire_stream(&mut self.retired);
                 p.successful_generation = Some(navigation);
@@ -1634,7 +1664,7 @@ impl Presenter {
             }
             Event::ListingFailed { error, .. } => {
                 let mut request = p.pending.take().expect("validated pending generation");
-                let show_modal = !request.keep_rows;
+                let show_modal = !request.keep_rows || request.reopens_authorized;
                 let requested_path = request.path.clone();
                 if !request.keep_rows {
                     // The failed destination still shares this navigation ID
@@ -2132,6 +2162,7 @@ impl Pane {
             error: String::new(),
             elevation_retry: None,
             authorized_retry: None,
+            authorized_rows: None,
             error_details: None,
             error_revision: 0,
             loading: false,

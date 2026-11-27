@@ -1,7 +1,8 @@
 use midnight_core::{
     Cancellation, Command, DirectoryService, ElevatedDirectoryService, ElevationAvailability,
     Entry, EntryId, EntryKind, EntryMetadata, Event, FsError, NavigationFallbackService,
-    NavigationId, PaneId, SortSpec, SpaceInfo, StorageService, Volume, VolumeService,
+    NavigationId, PaneId, SortSpec, SpaceInfo, StorageService, VisibleDirectory, Volume,
+    VolumeService, WatchService, WatchSubscription,
 };
 use midnight_engine::Engine;
 use std::{
@@ -496,4 +497,202 @@ async fn unavailable_authorization_explains_the_denial_without_a_retry_receipt()
     }
     assert_eq!(*service.checks.lock().unwrap(), 1);
     assert_eq!(*service.reads.lock().unwrap(), 0);
+}
+
+/// A native watch of a folder that this process may not read is refused too, as
+/// `ReadDirectoryChangesW` refuses it.
+#[derive(Default)]
+struct DeniedWatch(Mutex<Vec<PathBuf>>);
+impl WatchService for DeniedWatch {
+    fn watch_directory(
+        &self,
+        path: &Path,
+        _: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Box<dyn WatchSubscription>, FsError> {
+        self.0.lock().unwrap().push(path.to_owned());
+        Err(FsError::from_io(
+            "watch directory",
+            path,
+            io::ErrorKind::PermissionDenied.into(),
+        ))
+    }
+}
+
+/// The rows of the listing dispatched as `navigation`.
+async fn finished(events: &mut mpsc::Receiver<Event>, navigation: u64) -> Arc<[Entry]> {
+    loop {
+        match next(events).await {
+            Event::ListingFinished {
+                navigation: finished,
+                entries,
+                ..
+            } if finished == NavigationId(navigation) => break entries,
+            Event::ListingFailed { error, .. } => panic!("{error}"),
+            _ => {}
+        }
+    }
+}
+
+/// Events until `deadline`; a hint or a recovery to another folder fails the test.
+async fn quiet_until(events: &mut mpsc::Receiver<Event>, deadline: tokio::time::Instant) {
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, events.recv()).await {
+        match event {
+            Event::DirectoryChanged { navigation, .. } => panic!(
+                "the authorized rows of navigation {navigation:?} were checked with ordinary \
+                 rights, and the denial was hinted as a change (its re-read moved the pane \
+                 to the parent folder)"
+            ),
+            Event::ListingFallback { path, .. } => panic!("the pane moved to {path:?}"),
+            _ => {}
+        }
+    }
+}
+
+/// The panel showed an authorized listing and then went back to the previous folder:
+/// the pane's watch checked the folder with this process's own rights, counted the
+/// denied check as a change and hinted it; the hint's re-read was denied and recovered
+/// to the parent. The rows the authorization helper read, and a re-sort of them, are
+/// neither subscribed nor checked. Listing the folder again (the UI's Refresh sends a
+/// Navigate) asks with ordinary rights first and offers authorization again; only the
+/// explicit retry prompts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_authorized_listing_is_neither_watched_nor_checked_with_ordinary_rights() {
+    let path = std::env::current_dir().unwrap().join("denied-watched-監視");
+    let (sender, mut events) = mpsc::channel(32);
+    let filesystem = Arc::new(Denied::default());
+    let service = Arc::new(Authorized::default());
+    let watch = Arc::new(DeniedWatch::default());
+    let fallback = Arc::new(Fallback {
+        root: path.ancestors().last().unwrap().to_owned(),
+        calls: Mutex::new(0),
+    });
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        filesystem.clone(),
+        sender,
+    );
+    let (commands, receiver) = engine.command_channel(16).unwrap();
+    engine
+        .configure_elevated_directories()
+        .unwrap()
+        .install(service.clone());
+    engine
+        .configure_navigation_fallback()
+        .unwrap()
+        .install(fallback.clone());
+    engine.configure_watch().unwrap().install(watch.clone());
+    let task = tokio::spawn(engine.run(receiver));
+    let navigate = |navigation| Command::Navigate {
+        pane: PaneId::Left,
+        navigation: NavigationId(navigation),
+        path: path.clone(),
+        sort: SortSpec::default(),
+    };
+    commands.send(navigate(1)).await.unwrap();
+    while !matches!(
+        next(&mut events).await,
+        Event::DirectoryElevationAvailable {
+            navigation: NavigationId(1),
+            ..
+        }
+    ) {}
+    commands
+        .send(Command::RetryDirectoryWithElevation {
+            pane: PaneId::Left,
+            denied_navigation: NavigationId(1),
+            navigation: NavigationId(2),
+        })
+        .await
+        .unwrap();
+    let entries = finished(&mut events, 2).await;
+    let visible = |navigation, entries| {
+        Command::PaneCommitted(VisibleDirectory {
+            pane: PaneId::Left,
+            navigation: NavigationId(navigation),
+            path: path.clone(),
+            entries,
+        })
+    };
+    commands.send(visible(2, entries.clone())).await.unwrap();
+    // A re-sort shows the same rows without reading the folder.
+    commands
+        .send(Command::Resort {
+            pane: PaneId::Left,
+            navigation: NavigationId(3),
+            path: path.clone(),
+            sort: SortSpec::default(),
+            source: Some(VisibleDirectory {
+                pane: PaneId::Left,
+                navigation: NavigationId(2),
+                path: path.clone(),
+                entries,
+            }),
+        })
+        .await
+        .unwrap();
+    let resorted = finished(&mut events, 3).await;
+    commands.send(visible(3, resorted)).await.unwrap();
+    // A folder without notifications is checked about a second after acceptance;
+    // the denied check was hinted about 150 ms later.
+    quiet_until(
+        &mut events,
+        tokio::time::Instant::now() + Duration::from_millis(2_500),
+    )
+    .await;
+    // Refresh: ordinary rights first, then the offer, never another folder.
+    commands.send(navigate(4)).await.unwrap();
+    let mut failed = false;
+    loop {
+        match next(&mut events).await {
+            Event::ListingFailed {
+                navigation: NavigationId(4),
+                error,
+                ..
+            } => {
+                assert_eq!(error.kind, io::ErrorKind::PermissionDenied);
+                failed = true;
+            }
+            Event::DirectoryElevationAvailable {
+                navigation: NavigationId(4),
+                availability,
+                ..
+            } => {
+                assert!(failed, "the offer follows the reported denial");
+                assert_eq!(availability, ElevationAvailability::Available);
+                break;
+            }
+            Event::ListingFallback { path, .. } => panic!("Refresh moved the pane to {path:?}"),
+            Event::DirectoryChanged { .. } => panic!("authorized rows were hinted"),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        service.0.lock().unwrap().len(),
+        1,
+        "only the explicit retry prompts"
+    );
+    commands
+        .send(Command::RetryDirectoryWithElevation {
+            pane: PaneId::Left,
+            denied_navigation: NavigationId(4),
+            navigation: NavigationId(5),
+        })
+        .await
+        .unwrap();
+    finished(&mut events, 5).await;
+    commands.send(Command::Shutdown).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(*service.0.lock().unwrap(), vec![path.clone(), path.clone()]);
+    assert_eq!(
+        *filesystem.0.lock().unwrap(),
+        vec![path.clone(), path],
+        "only the two navigations read the folder with ordinary rights"
+    );
+    assert!(
+        watch.0.lock().unwrap().is_empty(),
+        "an authorized listing's folder is never subscribed"
+    );
 }

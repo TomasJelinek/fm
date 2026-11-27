@@ -258,6 +258,27 @@ diagnostic icon also shows it. Contract:
 [directory authorization helper](../../SECURITY.md#directory-authorization-helper).
 Evidence: [authorization record](../verification/2026-11-11-directory-authorization.md).
 
+The rows of an authorized listing are a static snapshot of a folder that the host
+cannot read. In 0.6.3 and earlier the pane's watch subscribed and checked that folder like any
+other; the check was denied, a failed check counts as a change, the hint re-read the
+folder with ordinary rights, and the backend's recovery of that denial
+(`navigation_fallback`) moved the panel to the parent folder about a second after the
+listing appeared. Now the engine dispatches the retry with
+`watch::Controller::authorized_listing_started` (a re-sort of its rows carries the mark,
+`rows_resorted`), the listing reports no read, and the watch keeps no target, check or
+status for those rows once accepted (`Visible::authorized`). The presenter
+(`presenter/authorized_listing.rs`) records them per committed navigation: automatic
+re-reads (`refresh_if_changed` for watch hints, Show hidden files, removed drives and
+dropped trees; post-operation re-reads) skip them, the status row says *Listed with
+authorization; not updated automatically. Refresh offers authorization again.*, Refresh
+sends a `Navigate` (only a navigation's denial is offered a retry) whose denial opens
+**Cannot open folder** while the rows stay, and a denied re-read never follows the
+backend's parent fallback. Opening a subfolder is an ordinary navigation with its own
+offer. Tests: `crates/midnight-engine/tests/elevation.rs`
+(`an_authorized_listing_is_neither_watched_nor_checked_with_ordinary_rights`),
+`crates/midnight-engine/src/watch/authorized_tests.rs` and
+`crates/midnight-ui/src/presenter/tests/elevation.rs`.
+
 A generated report title is only a display label and never authority to reopen a
 native path. Missing size-report viewer support and diagnostic read failures are
 reported explicitly. If the initial settings read failed, the disabled-viewer

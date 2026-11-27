@@ -994,7 +994,11 @@ impl Presenter {
         let mut revealed = Vec::new();
         for (pane, directory, destination) in changes {
             let p = &self.panes[pane.index()];
-            if !p.native_capabilities() || p.display_path() != directory {
+            // Rows the authorization helper read are not re-read (`authorized_listing`).
+            if !p.native_capabilities()
+                || p.display_path() != directory
+                || p.shows_authorized_rows()
+            {
                 continue;
             }
             // A completed change must not wait for a same-folder re-read (a watch

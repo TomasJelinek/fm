@@ -459,7 +459,11 @@ inspected as possibly holding the item; neither is described as unneeded.
   navigation can offer **Retry with authorization**. Only that explicit action
   consumes a backend-retained denied-navigation receipt and invokes the OS prompt
   for one read-only directory listing in a separate helper. Refresh, metadata and
-  background tree probes never prompt. The helper loads no plugins, changes no
+  background tree probes never prompt. The listing it returns stays a static
+  snapshot: the host neither watches nor checks that folder with its own rights and
+  re-reads it only on Refresh, which asks with ordinary rights and, while still
+  denied, offers the retry again (another receipt, another explicit action); a
+  denied re-read never moves the panel to another folder. The helper loads no plugins, changes no
   ACLs, stores no passwords, and grants no file mutation or content-read authority
   to the host. Native operation capture/revalidation remains unelevated. It runs
   only from an installation that standard users cannot change; see

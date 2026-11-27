@@ -899,9 +899,14 @@ impl EngineServices {
                         // without the UI's rows lists the directory again.
                         if let Some(watcher) = &watcher {
                             match &command {
+                                // This process may not read what the authorization helper lists.
+                                Some(Command::Navigate { path, .. }) if elevated.is_some() => watcher.authorized_listing_started(pane, navigation, path),
                                 Some(Command::Navigate { path, .. } | Command::Refresh { path, .. }
                                     | Command::Resort { path, source: None, .. }) => watcher.listing_started(pane, navigation, path),
-                                Some(Command::Resort { path, .. }) => watcher.resort_started(pane, navigation, path),
+                                Some(Command::Resort { path, source: Some(source), .. }) => {
+                                    watcher.resort_started(pane, navigation, path);
+                                    watcher.rows_resorted(pane, source.navigation, navigation);
+                                }
                                 _ => {}
                             }
                         }
@@ -1611,8 +1616,10 @@ fn list_directory(task: ListingTask) {
     let mut icon_types = std::collections::HashSet::new();
     let mut entries = Vec::new();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
+    // What the authorization helper reads, this process may not: its folder is
+    // never subscribed or checked (`watch::Controller::authorized_listing_started`).
+    let mut watch = watch.filter(|_| elevated.is_none());
     let done = watch.clone();
-    let mut watch = watch;
     let mut hidden = 0_usize;
     let mut emit = |mut entry: Entry| {
         if cancel.is_cancelled() {

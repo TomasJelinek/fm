@@ -146,6 +146,11 @@ struct Visible {
     /// How the listing that produced the rows was watched, if it read the
     /// directory to its end (`Started::done`).
     listed: Option<Listed>,
+    /// The authorization helper read the rows (`Listings::authorized`): this
+    /// process may not read their folder, so they have no target. A check would
+    /// fail, a failed check counts as a change, and the re-read that its hint
+    /// starts would be denied and recover to another folder.
+    authorized: bool,
 }
 
 /// How a listing that read its directory to the end was watched: the counter
@@ -227,6 +232,11 @@ struct Listings {
     /// Listings dispatched from now on leave hidden entries out
     /// (`Controller::set_hide_hidden`).
     hide: bool,
+    /// The newest dispatch whose rows the authorization helper read: an
+    /// authorized retry (`Controller::authorized_listing_started`) or a resort
+    /// of its rows (`Controller::rows_resorted`). Navigation identities only
+    /// grow, so a later dispatch never matches it.
+    authorized: Option<NavigationId>,
 }
 
 struct Shared {
@@ -419,6 +429,42 @@ impl Controller {
         self.started(pane, navigation, path, false);
     }
 
+    /// Like `listing_started` for a listing that the authorization helper
+    /// reads (`Command::RetryDirectoryWithElevation`). This process may not
+    /// read the folder, so once its rows are accepted the pane watches nothing
+    /// (`Visible::authorized`). The listing reports no read
+    /// (`Reporter::listing_read`), so the folder is not subscribed while it is
+    /// listed either.
+    pub(crate) fn authorized_listing_started(
+        &self,
+        pane: PaneId,
+        navigation: NavigationId,
+        path: &Path,
+    ) {
+        self.started(pane, navigation, path, true);
+        self.listings[pane.index()]
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .authorized = Some(navigation);
+    }
+
+    /// Called with `resort_started` for a Resort that shows the UI's rows of
+    /// `source` in another order: rows the authorization helper read stay
+    /// unwatched.
+    pub(crate) fn rows_resorted(
+        &self,
+        pane: PaneId,
+        source: NavigationId,
+        navigation: NavigationId,
+    ) {
+        let mut listings = self.listings[pane.index()]
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if listings.authorized == Some(source) {
+            listings.authorized = Some(navigation);
+        }
+    }
+
     /// Called by the backend when Show hidden files changes
     /// (`Command::ShowHiddenEntries`), before it dispatches a listing with the
     /// new choice. A check compares the folder with the accepted rows, so it
@@ -478,7 +524,7 @@ impl Controller {
     pub(crate) fn set_visible(&self, visible: VisibleDirectory) {
         // Left in place: until the worker sees this acceptance, it still tells
         // from that record whether the pane is listing its directory again.
-        let (fence, listed_hide, listed, current_hide) = {
+        let (fence, listed_hide, listed, current_hide, authorized) = {
             let listings = self.listings[visible.pane.index()]
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -495,6 +541,7 @@ impl Controller {
                         counted: started.counted.clone(),
                     }),
                 listings.hide,
+                listings.authorized == Some(visible.navigation),
             )
         };
         let shared = &self.panes[visible.pane.index()];
@@ -540,6 +587,7 @@ impl Controller {
             fence,
             hide,
             listed,
+            authorized,
         });
         drop(state);
         shared.wake();
@@ -1376,10 +1424,12 @@ fn shown(worker: &Worker) -> Option<Shown> {
     }
 }
 
-/// The view whose rows the pane shows (`shown`).
+/// The view whose rows the pane shows (`shown`). Rows the authorization helper
+/// read are not watched, so no status describes them.
 fn shown_view(worker: &Worker) -> Option<WatchedView> {
     Some(match shown(worker)? {
         Shown::Tree(stamp) => WatchedView::Tree(stamp),
+        Shown::Flat(rows) if rows.visible.authorized => return None,
         Shown::Flat(rows) => WatchedView::Flat {
             pane: worker.pane,
             navigation: rows.visible.directory.navigation,
@@ -1389,18 +1439,18 @@ fn shown_view(worker: &Worker) -> Option<WatchedView> {
 
 /// The flat rows the pane shows (`shown`) when the target does not watch them
 /// yet: current rows the target has no current revision for, or shown rows of
-/// another navigation than the target's.
+/// another navigation than the target's. Rows the authorization helper read
+/// are settled once no target is left.
 fn flat_update(worker: &Worker, target: Option<&Target>) -> Option<(Visible, u64, Cancellation)> {
     let Shown::Flat(rows) = shown(worker)? else {
         return None;
     };
-    let watched = target.is_some_and(|target| {
-        if rows.current {
-            target.revision == rows.revision
-        } else {
-            target.navigation == rows.visible.directory.navigation
-        }
-    });
+    let watched = match target {
+        _ if rows.visible.authorized => target.is_none(),
+        None => false,
+        Some(target) if rows.current => target.revision == rows.revision,
+        Some(target) => target.navigation == rows.visible.directory.navigation,
+    };
     (!watched).then_some((rows.visible, rows.revision, rows.cancel))
 }
 
@@ -1477,6 +1527,13 @@ fn serve(worker: &Worker, supervision: &mut Supervision) {
         }
         drop(tree_target.take());
         if let Some((visible, revision, cancel)) = flat_update(worker, target.as_ref()) {
+            if visible.authorized {
+                // Neither subscribed nor checked (`Visible::authorized`). The
+                // rows of the previous target are no longer shown; destruction
+                // can join native watcher threads, so it stays on this worker.
+                drop(target.take());
+                continue;
+            }
             let view = WatchedView::Flat {
                 pane: worker.pane,
                 navigation: visible.directory.navigation,

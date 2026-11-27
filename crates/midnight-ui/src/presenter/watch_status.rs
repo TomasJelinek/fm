@@ -27,8 +27,12 @@ impl Presenter {
 
     /// The pane's watch status while the reported view is the pane's current
     /// view (a flat navigation without a tree, or the tree's navigation and
-    /// session) and it is not watched natively.
+    /// session) and it is not watched natively. Rows the authorization helper
+    /// read are not watched at all (`authorized_listing`).
     pub(crate) fn watch_notice(&self, pane: PaneId) -> Option<WatchNotice> {
+        if let Some(notice) = self.authorized_notice(pane) {
+            return Some(notice);
+        }
         let p = &self.panes[pane.index()];
         let (view, status) = p.watch_status.as_ref()?;
         let current = match view {

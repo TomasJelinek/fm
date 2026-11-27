@@ -510,3 +510,228 @@ fn unavailable_authorization_leaves_other_notices_unchanged() {
         assert!(!p.notice_can_authorize());
     }
 }
+
+/// A pane that shows the rows an authorized retry of the denied folder listed.
+fn authorized_listing() -> (Presenter, NavigationId, PathBuf) {
+    let (mut p, denied, path) = denied_notice();
+    offer(&mut p, denied, &path);
+    p.retry_notice_authorized(p.desktop.notice_generation, &|_| true);
+    let retry = NavigationId(p.panes[0].generation);
+    finish(
+        &mut p,
+        PaneId::Left,
+        retry,
+        vec![Entry::new(
+            EntryId(7),
+            path.join("private.txt"),
+            EntryKind::File,
+        )],
+    );
+    assert_eq!(p.panes[0].path, path);
+    assert_eq!(p.panes[0].successful_generation, Some(retry));
+    (p, retry, path)
+}
+
+/// The native directory requests that `sent` holds.
+fn listings(sent: &[Command]) -> Vec<(NavigationId, PathBuf, &'static str)> {
+    sent.iter()
+        .filter_map(|command| match command {
+            Command::Navigate {
+                navigation, path, ..
+            } => Some((*navigation, path.clone(), "Navigate")),
+            Command::Refresh {
+                navigation, path, ..
+            } => Some((*navigation, path.clone(), "Refresh")),
+            Command::Resort {
+                navigation, path, ..
+            } => Some((*navigation, path.clone(), "Resort")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The reported bug: the panel showed the authorized listing and then went back to
+/// the previous folder. The pane's watch checked the folder with ordinary rights,
+/// hinted the denied check as a change, the hint re-read the folder, and the
+/// backend's recovery of that denial named the parent folder. Automatic re-reads
+/// (a watch hint, Show hidden files, a removed drive, a finished operation) leave
+/// the rows as listed, and a denied re-read never moves the pane.
+#[test]
+fn an_authorized_listing_stays_shown_without_automatic_re_reads() {
+    let (mut p, listed, path) = authorized_listing();
+    let rows = p.panes[0].entries.clone();
+    assert!(!p.refresh_if_changed(PaneId::Left, listed, &|_| {
+        panic!("a watch hint re-read the authorized listing with ordinary rights")
+    }));
+    p.operations
+        .refresh
+        .push((PaneId::Left, path.clone(), None));
+    let sent = RefCell::new(Vec::new());
+    p.refresh_operation_paths(&|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert!(
+        listings(&sent.borrow()).is_empty(),
+        "a finished operation re-read the authorized listing"
+    );
+    assert!(p.operations.refresh.is_empty(), "and owes no re-read");
+    assert!(!p.panes[0].loading);
+    assert!(Arc::ptr_eq(&p.panes[0].entries, &rows));
+
+    // A re-read started any other way: its denial is reported in place.
+    assert!(p.navigate_impl(
+        PaneId::Left,
+        path.clone(),
+        None,
+        Reload::Background,
+        &|_| true
+    ));
+    let reread = NavigationId(p.panes[0].generation);
+    let sent = RefCell::new(Vec::new());
+    p.apply_with_sender(
+        Event::ListingFallback {
+            pane: PaneId::Left,
+            navigation: reread,
+            path: path.parent().unwrap().to_owned(),
+            error: FsError::from_io("list", &path, io::ErrorKind::PermissionDenied.into()),
+        },
+        &|command| {
+            sent.borrow_mut().push(command);
+            true
+        },
+    );
+    let requests = listings(&sent.borrow());
+    assert!(
+        requests.is_empty(),
+        "the pane went back to the parent folder: {requests:?}"
+    );
+    assert!(!p.panes[0].loading);
+    assert_eq!(p.panes[0].path, path);
+    assert!(Arc::ptr_eq(&p.panes[0].entries, &rows));
+    assert_eq!(p.panes[0].successful_generation, Some(listed));
+}
+
+/// Refresh lists the folder again with ordinary rights, as a navigation: while access
+/// is still denied, the rows stay and the denial offers authorization again, which
+/// only the explicit retry uses.
+#[test]
+fn refresh_of_an_authorized_listing_offers_authorization_again() {
+    let (mut p, listed, path) = authorized_listing();
+    let rows = p.panes[0].entries.clone();
+    let sent = RefCell::new(Vec::new());
+    assert!(p.refresh_location(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    let requests = listings(&sent.borrow());
+    let [(refresh, ref refreshed, kind)] = requests[..] else {
+        panic!("Refresh lists the folder once: {requests:?}");
+    };
+    assert_eq!(
+        (refreshed.as_path(), kind),
+        (path.as_path(), "Navigate"),
+        "a denied Refresh offers no authorization"
+    );
+    assert!(Arc::ptr_eq(&p.panes[0].entries, &rows));
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: refresh,
+        error: FsError::from_io("list", &path, io::ErrorKind::PermissionDenied.into()),
+    });
+    assert_eq!(p.panes[0].path, path);
+    assert!(Arc::ptr_eq(&p.panes[0].entries, &rows));
+    assert_eq!(p.panes[0].successful_generation, Some(listed));
+    let (title, body) = p
+        .desktop
+        .notice
+        .clone()
+        .expect("the denial is presented as when the folder was opened");
+    assert_eq!(title, "Cannot open folder");
+    assert_eq!(body, "Access to this folder was denied.");
+    assert!(!p.notice_can_authorize(), "only the backend's offer");
+    offer(&mut p, refresh, &path);
+    assert!(p.notice_can_authorize());
+    let sent = RefCell::new(Vec::new());
+    p.retry_notice_authorized(p.desktop.notice_generation, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    let retry = sent
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::RetryDirectoryWithElevation {
+                denied_navigation,
+                navigation,
+                ..
+            } if *denied_navigation == refresh => Some(*navigation),
+            _ => None,
+        })
+        .expect("the explicit retry");
+    finish(
+        &mut p,
+        PaneId::Left,
+        retry,
+        vec![Entry::new(
+            EntryId(8),
+            path.join("new.txt"),
+            EntryKind::File,
+        )],
+    );
+    assert_eq!(p.panes[0].entries[0].path, path.join("new.txt"));
+    assert!(!p.refresh_if_changed(PaneId::Left, retry, &|_| {
+        panic!("the new authorized listing is re-read automatically")
+    }));
+}
+
+/// The status row says how the rows were listed; a re-sort keeps them, a subfolder's
+/// denial offers authorization for that subfolder, and leaving the folder ends it.
+#[test]
+fn an_authorized_listing_says_so_until_the_pane_leaves_it() {
+    let (mut p, _, path) = authorized_listing();
+    let notice = p
+        .watch_notice(PaneId::Left)
+        .expect("the status row says that the rows are not updated");
+    assert!(
+        notice.text.starts_with("Listed with authorization"),
+        "{}",
+        notice.text
+    );
+    let sent = RefCell::new(Vec::new());
+    assert!(p.sort(PaneId::Left, SortColumn::Size, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    let requests = listings(&sent.borrow());
+    let [(resort, _, "Resort")] = requests[..] else {
+        panic!("a re-sort uses the shown rows: {requests:?}");
+    };
+    let rows = p.panes[0].entries.to_vec();
+    finish(&mut p, PaneId::Left, resort, rows);
+    assert!(p.watch_notice(PaneId::Left).is_some());
+    assert!(!p.refresh_if_changed(PaneId::Left, resort, &|_| {
+        panic!("re-sorted authorized rows are re-read automatically")
+    }));
+
+    let child = path.join("private");
+    assert!(p.navigate(PaneId::Left, child.clone(), None, &|_| true));
+    let opened = NavigationId(p.panes[0].generation);
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: opened,
+        error: FsError::from_io("list", &child, io::ErrorKind::PermissionDenied.into()),
+    });
+    offer(&mut p, opened, &child);
+    assert!(p.notice_can_authorize());
+    assert_eq!(p.panes[0].path, path);
+    assert!(p.watch_notice(PaneId::Left).is_some());
+
+    let parent = begin(
+        &mut p,
+        PaneId::Left,
+        path.parent().unwrap().to_str().unwrap(),
+    );
+    finish(&mut p, PaneId::Left, parent, vec![]);
+    assert!(p.watch_notice(PaneId::Left).is_none());
+}

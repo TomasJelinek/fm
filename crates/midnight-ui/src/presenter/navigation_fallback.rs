@@ -19,7 +19,10 @@ impl Presenter {
         let remaining = request
             .fallback_remaining
             .unwrap_or_else(|| request.path.ancestors().skip(1).count().saturating_add(1));
-        let retry = remaining > 0 && path.is_absolute() && path != request.path;
+        let retry = remaining > 0
+            && path.is_absolute()
+            && path != request.path
+            && !self.keeps_authorized_rows(pane, &error);
         self.apply_with_sender(
             Event::ListingFailed {
                 pane,

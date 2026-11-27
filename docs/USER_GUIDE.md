@@ -381,6 +381,18 @@ Copy-Item -LiteralPath _build\release\midnight-explorer.exe, _build\release\midn
 Copy-Item -Recurse -Force -LiteralPath _build\release\viewers, _build\release\filesystems, _build\release\thumbnailers -Destination $target
 ```
 
+A folder listed with authorization stays in the panel as it was listed. Your account
+still cannot read it, so the panel's status row says *Listed with authorization; not
+updated automatically. Refresh offers authorization again.*: changes in the folder are
+not shown, and nothing lists it again on its own (not a change in the folder, **Show
+hidden files**, a finished job or a drive list change). Sorting keeps the listed rows.
+**Refresh** (Ctrl+R) lists the folder again with your account's rights; while access is
+still denied, the rows stay and **Cannot open folder** offers **Retry with authorization**
+again, which asks your operating system once more. Opening a subfolder that you may not
+read offers its own retry the same way; going up or elsewhere leaves the listing. Actions
+on its entries (copying, viewing, folder sizes) run with your account's rights and can be
+denied. Nothing asks for permission unless you choose **Retry with authorization**.
+
 ### Windows x64
 
 Install 64-bit PowerShell 7 (`pwsh.exe`) and Python 3.12 or later with its `py`

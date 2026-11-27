@@ -88,7 +88,9 @@ within a few tens of milliseconds of the system's notice.
   are read again.
 - **A panel on a removed drive** reads its folder again at once. The folder no longer
   opens, so the panel goes to the nearest parent folder that opens, or to the system
-  drive (Windows) or `/` (Linux), and says why, as for any folder that disappears.
+  drive (Windows) or `/` (Linux), and says why, as for any folder that disappears. A
+  folder listed with authorization is not read again on its own: it stays until
+  Refresh or another navigation.
 
 ## The drive list on Linux
 
