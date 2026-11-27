@@ -10,7 +10,7 @@ same-volume Move renames without reading contents. See
 [verification and ownership](docs/developer/TRANSFERS.md#verification-and-ownership).
 UI code handles input and presentation only. Filesystem
 access, large sorts/indexes, checksum work, large-object reclamation and diagnostic
-file encoding/writes execute in backend workers.
+file encoding/writes execute in backend [workers](docs/GLOSSARY.md#worker).
 
 Copy stages are owned temporary objects on the destination filesystem: Windows uses
 an exclusive, directory-handle-relative `.me-` plus sixteen random hex characters;
@@ -28,7 +28,10 @@ path, including when cancellation or construction failure was the original cause
 Existing destination originals, unfinished sources and earlier completed files are
 preserved; a filesystem refusal cannot be reported as successful cleanup.
 
-The Chromium HTML viewer has a separate browser-process profile. CEF's renderer sandbox
+<a id="html-viewer-sandbox"></a>
+
+The Chromium HTML viewer has a separate browser-process profile. The renderer sandbox of
+[CEF](docs/GLOSSARY.md#cef) (the Chromium Embedded Framework)
 remains enabled, without any unsandboxed fallback; the decoder's single-process policy is
 not weakened. HTML starts offline with its JavaScript running (a deliberate change of
 0.5.1; the JavaScript box turns it off for the page and the following pages of its
@@ -107,9 +110,12 @@ to a directory service, or files that include one (lines starting with `+` or `-
 no private group. With a POSIX ACL the group permission bits are the ACL's mask, which can
 let named users or groups write, so any ACL that `ls -l` marks with `+` (a POSIX access or,
 on a folder, default ACL, or an NFSv4 ACL) refuses group write; without group write the
-mask lets nobody but the owner write, whatever the ACL names. **Install…** below applies the
-same rule (`scripts/install-html-viewer-apparmor.sh` and
+mask lets nobody but the owner write, whatever the ACL names. The viewer's own
+**Install…** ([Installing the profile from the viewer](#installing-the-profile-from-the-viewer))
+applies the same rule (`scripts/install-html-viewer-apparmor.sh` and
 `crates/midnight-elevation/src/sandbox_profile_linux.rs`).
+
+<a id="installing-the-profile-from-the-viewer"></a>
 
 The viewer can also install that profile itself, but only after the browser of an HTML
 document or an Office preview was refused for exactly this reason (a typed refusal,
@@ -118,10 +124,13 @@ checked, offered or installed at startup, by packaging or for any other document
 button is offered only when
 `/usr/bin/pkexec` and every folder above it are no links, belong to root and are neither
 group- nor other-writable (the check the authorized listing uses; it is repeated right
-before pkexec runs) and the installation's canonical path qualifies (below), including
+before pkexec runs) and the installation's canonical path qualifies (it may contain only
+ASCII letters, digits, spaces and `._+-@:`), including
 that users other than its owner can write to nothing on the way from `/` down to the
 viewer (for a checkout, to the viewer of each of its builds), as the script requires;
-otherwise the viewer shows the manual instructions above. Before anyone is asked, the
+otherwise the viewer shows the manual instructions of the
+[HTML viewer sandbox](#html-viewer-sandbox) (the `sudo` command or a request to an
+administrator). Before anyone is asked, the
 notice names the viewer path the permission is for and that one installation at a time
 has it, and, where someone other than root owns a folder or viewer on that way (a per-user
 installation, an extracted package or a checkout), warns that a program put at that path
@@ -155,6 +164,8 @@ nor add rules. Polkit authorizes that constant command, not the text, and a prog
 running as the user could ask polkit for any root command itself, so the text gives such
 a program nothing beyond what the administrator authorizes. Unlike the script, the
 button does not remove other files that define the same profile.
+
+<a id="links-in-viewed-documents"></a>
 
 Links in viewed Markdown and HTML documents never run a program, and only an explicit
 action follows one: a press and release on the same link without a drag, or Enter on a
@@ -209,8 +220,10 @@ F5/F6 capture exact acknowledged tree occurrences, an immutable Copy/Move intent
 and provider registrations before the dialog. Display paths and row numbers are never reinterpreted as operation
 authority. Four shared capture permits bound live drafts/in-flight ownership;
 confirmation separately enters the ordinary 32-job copy queue. Native identity
-is pinned during normal preparation and retained across Retry, not frozen at
-dialog creation. Archive revisions are checked through retained provider sources.
+is pinned (held through an open native handle or descriptor; see
+[Windows namespace pins](docs/developer/TRANSFERS.md#windows-namespace-pins) and
+[Linux namespace pins](docs/developer/TRANSFERS.md#linux-namespace-pins)) during
+normal preparation and retained across Retry, not frozen at dialog creation. Archive revisions are checked through retained provider sources.
 Duplicate/overlapping roots and native destination ancestry are rejected before
 writes. The frozen verification policy and ordinary publication guarantees apply
 to copied data; same-volume native rename reads no file contents.
@@ -220,7 +233,8 @@ release final provider ownership on backend workers. F6 accepts only native
 captures and uses native rename when qualified on the same volume. Cross-volume
 or merged children use verified per-file Move and postorder empty-directory cleanup. Mixed/virtual
 Move roots fail before source preparation or destination mutation. Native pins
-are dropped before their retained provider lease, including failed preparation;
+are dropped before their retained provider [lease](docs/GLOSSARY.md#lease), including
+failed preparation;
 stage-cleanup tickets retain the provider without retaining source handles.
 
 Terminal transfers request read-only reconciliation of the native root and its already
@@ -229,10 +243,11 @@ temporary Move staging cannot become a published tree. Original admission snapsh
 remain immutable; current root file actions use a separate backend-built snapshot with
 validated identities. Failed listings retain known rows and show an error.
 Reconciliation grants no authority to display paths. Tree Delete, Rename, attribute
-edits and custom commands act only on exact captured native occurrences, through their
+edits and Custom Commands act only on exact captured native occurrences, through their
 own captures ([inline trees](docs/developer/INLINE_TREES.md)). Native tree clipboard
-publication uses the separate captured-source contract below; virtual exports remain
-unsupported.
+publication uses the separate captured-source contract of
+[Verified clipboard copying and the copy contract](#verified-clipboard-copying-and-the-copy-contract);
+virtual exports remain unsupported.
 
 Native manual refresh and batched filesystem notifications share that maintenance
 path. Parent-first reconciliation includes already-loaded provider-resolved
@@ -361,7 +376,9 @@ it again fails too, the entry stays without Read-only and the error that pauses 
 says so after the reason the entry stays. A file with other names (hard links), which
 may lie outside the confirmed tree, is not changed: its removal pauses the job with the
 same choices. Move applies the same
-rule to the tree it moves (below).
+rule to the tree it moves ([Move permissions on Linux](#move-permissions-on-linux)).
+
+<a id="move-permissions-on-linux"></a>
 
 A same-volume Move on Linux renames a folder into another folder, which changes its
 `..` entry and so needs write permission on the folder itself. A folder the current
@@ -493,7 +510,7 @@ inspected as possibly holding the item; neither is described as unneeded.
   against external filesystem replacement; future writes need stronger contracts.
 - The command editor is a separate explicit shell action. Only submitting Enter
   starts the configured system terminal on a backend worker, using the active
-  pane's captured working directory. At the user's explicit request, path/name
+  panel's captured working directory. At the user's explicit request, path/name
   shortcuts insert raw text with no generated quotes, escaping or separator
   spaces. Actual filename spaces and shell characters are preserved. This is
   editor insertion, not a shell-literal guarantee: the whole draft is intentional
@@ -508,7 +525,7 @@ inspected as possibly holding the item; neither is described as unneeded.
   own terminal interaction. No password or elevated-mode preference is stored.
   The terminal button's Ctrl+click (Ctrl+Enter or Ctrl+Space on the focused button,
   or the unbound "Open terminal as administrator" command) opens the selected shell
-  elevated in the active pane's folder, with no command. Midnight Explorer itself
+  elevated in the active panel's folder, with no command. Midnight Explorer itself
   never elevates for it; only the launched shell runs elevated, after the system's
   own consent. On Windows the Shell's `runas` verb (`ShellExecuteExW`) receives the
   absolute path of the system's PowerShell or cmd (cmd from the system directory,
@@ -536,7 +553,7 @@ inspected as possibly holding the item; neither is described as unneeded.
   file links, directory links and junctions are counted as skipped without
   resolving their targets, so aliases cannot double-count or escape the measured
   folder. Only a scanned root that is itself a directory link (a selected row,
-  or any row of a full-pane scan without a selection) is resolved through its
+  or any row of a full-panel scan without a selection) is resolved through its
   OS-resolved target. Stable volume/file identities and an active
   ancestry set still stop non-link cycles (for example bind mounts) before
   recounting contents. Special-file contents are skipped. Resolution acquires the
@@ -550,7 +567,7 @@ inspected as possibly holding the item; neither is described as unneeded.
   snapshots: the current path-based read-only interface cannot exclude races
   with concurrent path replacement. This interface must not be reused as a
   security contract for future destructive traversal.
-- Folder scans share weighted capacity across panes. Only a positive local SSD
+- Folder scans share weighted capacity across panels. Only a positive local SSD
   hint allows up to four I/O streams; HDD/network/unknown takes exclusive scan
   capacity. Hints are conservative and do not prove immutable physical topology.
   Linux recognizes local LVM/device-mapper and md stacks only when every backing
@@ -559,17 +576,21 @@ inspected as possibly holding the item; neither is described as unneeded.
   the sysfs walk. Any missing, remote, virtual, removable or unknown leaf keeps
   the result unknown; network preview opt-in is unchanged.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Supported schemas through version 43 include window geometry, monitor identity and a
+  Supported schemas through version 45
+  ([settings file format](docs/SETTINGS_FILES.md#file-format)) include window
+  geometry, monitor identity and a
   validated integer panel split ratio, typed Network tabs, panel modes, native and
-  archive bookmarks, fonts, command history, shortcuts, filters, editor, viewer,
+  archive [Hot Paths](docs/GLOSSARY.md#hot-paths), fonts, command history, shortcuts,
+  filters, editor, viewer,
   archive, preview size, archive-preview and filename-color choices, file comparator
   rules (version 33), the text rendering choice (version 34), the hidden-files and
   selection-by-mask choices (version 35), the document layout chosen last in the
   viewer, Paged or Continuous (version 36), the scrolling glide and speed (versions 37
   and 38), a Run directly command's output mode (version 39), the two update choices
   (version 40), Find's mask history and window placement (version 41), saved
-  locations inside archives inside an archive (version 42) and Preserve times and
-  attributes (version 43). Earlier schemas migrate with explicit
+  locations inside archives inside an archive (version 42), Preserve times and
+  attributes (version 43), the application icon (version 44) and separate dark and
+  light palettes (version 45). Earlier schemas migrate with explicit
   defaults; unsupported fields and versions fail atomically. Viewer options store
   presentation choices, never query text, document contents or per-file reading
   positions. Archive previews have a separate default-on preference, while their network
@@ -597,7 +618,8 @@ inspected as possibly holding the item; neither is described as unneeded.
   grammar and standard privileges, never executes and never restores elevation.
   History is not written to diagnostic logs.
 - Status-field clicks copy only the current value of the clicked field, with raw
-  names (see below), via a backend clipboard service. A dedicated lazy worker retains
+  names ([raw names and display text](#raw-names-and-display-text)), via a backend
+  clipboard service. A dedicated lazy worker retains
   native clipboard ownership; the UI never opens the OS clipboard. Copied text has no
   size budget: the worker reserves its memory fallibly (also before the native copy),
   so a text too large for the memory left fails with an error instead of ending the
@@ -607,7 +629,8 @@ inspected as possibly holding the item; neither is described as unneeded.
   Clipboard managers may retain copied data. Breadcrumb/history/detail tokens
   reject stale clicks after navigation or updates;
   displayed paths are never parsed to construct a clicked filesystem identity.
-- Raw `PathBuf`/`OsString` identities are kept separately from visible text.
+- <a id="raw-names-and-display-text"></a>Raw `PathBuf`/`OsString` identities are kept
+  separately from visible text.
   Valid Unicode is not converted through an ANSI code page or normalized into a
   different filename. Names that are not valid Unicode on their host remain
   addressable by their original raw paths. Names and paths shown in the main window
@@ -622,9 +645,9 @@ inspected as possibly holding the item; neither is described as unneeded.
 - Volume labels and tooltip content are plain Unicode text, never Markdown,
   links, shell commands or navigation identities. Label/capacity lookup runs on
   separately bounded backend workers; hover reads cached data. Slow/offline
-  volumes do not hold discovery or pane-listing capacity. Unavailable values
+  volumes do not hold discovery or panel-listing capacity. Unavailable values
   remain explicitly unavailable rather than appearing as zero free bytes.
-- Tab/bookmark captions are not identities. Stable typed IDs and raw paths are
+- Tab and Hot Path captions are not identities. Stable typed IDs and raw paths are
   authoritative; results are generation-tagged across tab switches. Inactive
   tabs release large data on backend workers. Drive icons use root-specific
   cache keys; Windows Shell root queries are restricted to validated local fixed
@@ -687,7 +710,7 @@ inspected as possibly holding the item; neither is described as unneeded.
   block carries a `SAFETY` explanation; review enforces this, not the compiler.
 - Potentially blocking calls are bounded and run on workers. Navigation results
   are generation-tagged, command/result queues are bounded, and cancellation does
-  not pretend a still-running OS call has stopped. One pane reserves its own
+  not pretend a still-running OS call has stopped. One panel reserves its own
   listing capacity. Large retired buffers are handed to backend reclamation with
   backpressure rather than destroyed on the UI thread.
 - Bulk selection and Properties path expansion run on bounded backend workers.
@@ -715,7 +738,8 @@ fit in RAM. Precise latency and memory targets require measured workloads.
 
 ## Directory authorization helper
 
-**Retry with authorization** runs `midnight-elevated-listing` as a different,
+**Retry with authorization** runs `midnight-elevated-listing`, the
+[elevated listing helper](docs/GLOSSARY.md#elevated-listing-helper), as a different,
 more privileged identity: Administrator through UAC (`ShellExecuteExW` with the
 `runas` verb, on its own COM single-threaded apartment) or root through
 `/usr/bin/pkexec --disable-internal-agent` and the desktop polkit agent. The host
@@ -731,11 +755,14 @@ digest:
   TrustedInstaller (on Linux, the current user and root) may own and change the helper
   and its folders, and the helper's content must have exactly that digest. Per-user
   installations (the per-user MSI, a ZIP extracted into the profile) qualify. On Windows
-  the digest is computed through the helper's pin (below), which shares only reading,
+  the digest is computed through the helper's pin
+  ([helper checks on Windows](#helper-checks-on-windows)), which shares only reading,
   and the pin stays open until `ShellExecuteExW` has started the elevated process, so
   the started image is the verified content.
 - **Without the digest** (ordinary build output), only SYSTEM, Administrators or
-  TrustedInstaller (on Linux, root) may own or change them, as below.
+  TrustedInstaller (on Linux, root) may own or change them, as the
+  [helper checks on Windows](#helper-checks-on-windows) and
+  [on Linux](#helper-checks-on-linux) require.
 
 Every other identity stays refused in both cases: another user, Users, Authenticated
 Users or Everyone with delete, rename, write, attribute, permission or ownership rights
@@ -743,7 +770,8 @@ on the helper or an ancestor, or with the right to add entries to the helper's o
 folder, which the elevated loader searches first for DLLs, could otherwise turn this
 user's consent into their own administrator code.
 
-- Windows: the helper and every ancestor are ordinary objects on a local fixed drive,
+- <a id="helper-checks-on-windows"></a>Windows: the helper and every ancestor are
+  ordinary objects on a local fixed drive,
   owned by SYSTEM, Administrators or TrustedInstaller (or, with the digest, the current
   user). They carry no link or other
   reparse point, except the storage-only tags of WOF compression (CompactOS,
@@ -756,13 +784,15 @@ user's consent into their own administrator code.
   rename or deletion until the elevated process has started; the folder pins still let
   other processes add entries. The Shell receives the
   plain drive spelling of the path only when it opens the same pinned file.
-- Linux: the helper is an executable regular file; it and every ancestor are owned by
+- <a id="helper-checks-on-linux"></a>Linux: the helper is an executable regular file;
+  it and every ancestor are owned by
   root (or, with the digest, the current user), are not symbolic links and are writable
   by neither group nor others, and its filesystem is not mounted `nosuid` (removable or
   user-mounted storage). With the digest the helper is read (opened without following a
   link) and compared before pkexec starts it. pkexec starts it by path, so unlike on
   Windows the content is not pinned between the check and the start: only code running
-  as the user (or root) could exchange it there, see the residual risk below.
+  as the user (or root) could exchange it there, see
+  [Residual risk of per-user installations](#residual-risk-of-per-user-installations).
 
 **Availability before the offer.** When a navigation is denied, the backend runs the
 same checks once per process on a worker thread, without starting a process or prompt
@@ -775,6 +805,7 @@ helper, a refused location, no trusted pkexec) the message offers no retry and s
 why, with the refused file and reason in its details. Whether a polkit agent runs is
 known only when pkexec is asked. The retry itself runs every check again.
 
+<a id="residual-risk-of-per-user-installations"></a>
 **Residual risk of per-user installations.** With the digest, code already running as
 the user can replace both `midnight-explorer` and the helper (then the recorded digest
 is its own), or plant a DLL beside the helper in a folder the user can change. Such code
@@ -816,8 +847,8 @@ The helper ends its own process when the requester disconnects, sends further da
 exits or the deadline passes, even while a directory read is blocked. At most two
 authorization processes, helpers or the HTML viewer's **Install…** on Linux, can be
 pending or live per process. Actual UAC/polkit consent is not exercised by automated
-tests; see the [verification
-record](docs/verification/2026-11-11-directory-authorization.md).
+tests; see the [directory authorization
+verification](docs/verification/2026-11-11-directory-authorization.md).
 
 ## Verified clipboard copying and the copy contract
 
@@ -876,7 +907,8 @@ works item by item: across volumes it removes an item's source only after that i
 is verified, and a skipped or failed item keeps its source. Archive members and
 unsupported locations are rejected before mutation; duplicate and overlapping sources
 are rejected before writes in a selection of at most 64 items, and checked item by item
-as the job takes them in a larger one; links follow the link rules below. Qualified same-volume native Move uses held
+as the job takes them in a larger one; links follow the
+[link rules](#links-in-copy-and-move). Qualified same-volume native Move uses held
 source/destination identities and no-replace rename without content reads, CRC or SHA
 computation. Whether a Move stays on one volume is one determination for the Copy/Move
 dialog, drops and Move jobs (`TransferLinkDestination::same_volume_as`): the same volume
@@ -884,13 +916,16 @@ reached the same way, both locally or both through the same network location, so
 of a local drive (`\\localhost\D$`) counts as another volume, and an unknown volume is
 never the same. Whole-directory rename does not enumerate descendants. Same-volume
 errors never silently fall back to copying. Proven cross-volume moves and explicit
-directory merges use the per-file proof and postorder directory contract below, with
+directory merges use the per-file proof and postorder directory contract of
+[Move proof and directory removal](#move-proof-and-directory-removal), with
 explicit live-namespace and durability limits. F6 consumes native tree captures as well
 as flat selections; native tree Cut publishes Move intent through the clipboard capture
-contract above. Cut itself removes nothing. Copy remains available where Move is
+contract of
+[Verified clipboard copying and the copy contract](#verified-clipboard-copying-and-the-copy-contract). Cut itself removes nothing. Copy remains available where Move is
 unsupported, without silent fallback. Copy supports files and ordinary directories;
 special files are rejected.
 
+<a id="links-in-copy-and-move"></a>
 Links. The Copy/Move dialog's link choice (named **Links** for screen readers) is the
 same on both platforms and for Copy and Move: copy the files links point to
 (`FollowLinks`) or keep links as links
@@ -925,7 +960,7 @@ open-file limit at three descriptors per level, between 32 and 4,096 levels. A f
 past it is refused with a clear error long before the process could run out of
 descriptors (EMFILE) and fail whatever else opens a file. At start the application
 raises its soft open-file limit to the hard limit, at most 65,536 (4,096 levels), and
-gives the programs it starts for the user (an editor, a terminal, a custom command, a
+gives the programs it starts for the user (an editor, a terminal, a Custom Command, a
 document's application) the original limit back, as programs that use select() expect.
 Reading a link revalidates its parent binding, identity, revision and text,
 so a link replaced after preparation is refused. A recreated link is created only as
@@ -981,6 +1016,7 @@ original and staged replacement data remain in protected recovery after a partia
 commit. Structured outcomes preserve actual publication, recovery paths and known
 identities even on errors. No recovery object is automatically deleted on Drop.
 
+<a id="linux-copy-staging"></a>
 Linux uses anonymous O_TMPFILE staging and descriptor-based no-replace publication;
 filesystems without that capability return Unsupported, so Linux Copy and cross-volume
 Move cannot write to FAT/exFAT/NTFS media, NFS/SMB, sshfs or GVfs FUSE shares. A
@@ -1016,6 +1052,7 @@ xattrs, sparse allocation, timestamps or links. Windows file sync does not promi
 power-loss durability of the parent entry; Linux separately reports parent-sync
 failure even if publication succeeded.
 
+<a id="preserve-times-and-attributes"></a>
 **Preserve times and attributes** (`PreserveTimesAndAttributes`, the Copy/Move dialog's
 option) is best effort and never weakens the content contract: content is staged,
 verified and published exactly as without it, and only then are the source's times and
@@ -1052,7 +1089,8 @@ and attributes. Source/destination times supplement, never
 replace, the selected content checks and fresh native read guards. Published targets are
 never rewritten to hide a mismatch; late pre-deletion errors restore originals without
 replacement. Access and creation times and attributes are the separate best-effort
-option above; ACLs, xattrs, streams and link times are not preserved.
+option [Preserve times and attributes](#preserve-times-and-attributes); ACLs, xattrs,
+streams and link times are not preserved.
 
 Copy-fallback Move preflight obtains source mutation authority separately from Copy,
 retains every actual source reader and empty stage, and verifies native source
@@ -1069,11 +1107,13 @@ removes a folder, after 64 renames, and when the job ends); the handles grant no
 more than the Move's pins. A folder that cannot be opened so
 leaves the Move's durability unconfirmed and never refuses or undoes the rename
 ([Move durability on Windows](docs/developer/TRANSFERS.md#move-durability-on-windows)). Linux
-requires protected source parents (the Copy parent rule above) and effective
+requires protected source parents (the Copy parent rule of
+[Linux Copy staging](#linux-copy-staging)) and effective
 mutation permissions.
 Shared inherited directories can be unsupported even on a supported filesystem;
 the failure suggests Copy and retains every source rather than weakening rights.
 
+<a id="move-proof-and-directory-removal"></a>
 The following proof rules concern copied source removal, not native rename.
 Only complete successful publication with every required durability step yields
 a Move proof. Per the explicit user policy, each file finishes before the next
@@ -1126,7 +1166,7 @@ immutable snapshot or batch rollback. Windows ADS sharing/oplocks apply per stre
 late qualification refuses unseen streams but does not claim whole-file CAS or
 isolation from malicious same-user/admin mutation. Raw residual mappings and
 changed parents are reported with bounded display samples and exact counts.
-There is no selectable source recovery product, catalogue or journal. Recursive
+There is no selectable source recovery product, catalog or journal. Recursive
 copy-fallback/merge Move grants each child separate source-removal authority through its
 held parent. Verified regular files are removed individually; directories are
 removed postorder only after fresh source/destination identity checks and an
@@ -1146,45 +1186,58 @@ copy, is never removed; a read-only file or folder is removed as Delete removes 
 ignored, never cleared), and a file with several names (hard links) loses only the moved
 name. On Linux a source is removed only on a local filesystem (ext2/3/4, XFS, Btrfs, F2FS,
 tmpfs) and only when the user owns it, because the read lease that keeps writers out
-until the removal needs ownership; other items fail alone and keep their sources. Links move as links (above); mount crossings and generic provider Move remain
+until the removal needs ownership; other items fail alone and keep their sources. Links
+move as links ([link rules](#links-in-copy-and-move)); mount crossings and generic provider
+Move remain
 unsupported.
 Directory identity validation is live on Linux, not atomic compare-and-unlink;
 see [recursive Move evidence](docs/verification/2026-11-08-recursive-move.md).
 
-1. Only supported ordinary file types are copied. Opened file identities and
-   source/destination alias checks are used; no unchecked traversal of recursive
-   links, junctions, named pipes or devices is permitted.
-2. Use an exclusively created temporary destination on the target filesystem.
-   Handle short reads/writes, propagate errors and retain ownership through
-   outstanding I/O and cancellation. Never delete the existing target first.
-3. By default hash the exact source bytes using SHA-256, synchronize writes and
-   independently read/hash the entire destination; compare length and digest.
-   Explicit quick mode instead captures first/middle/last64 KiB during source
-   streaming and compares those bytes after sync, plus exact length. Up to 192 KiB
-   is compared entirely. Checking only size or hashing an outgoing buffer twice
-   does not satisfy either policy. Native same-volume rename copies no data.
-4. Reject any detected source change. Source metadata checks do not prove a
-   point-in-time snapshot against concurrent writers; a stronger snapshot promise
-   requires supported write exclusion or filesystem snapshots. In particular,
-   same-length rewrites within one filesystem timestamp quantum can retain both
-   modification and change times and evade metadata revalidation. Copy and Move
-   also accept a pinned source, conflict target or Move capture whose change time
-   alone moved (VIEW-05), so a same-length rewrite that restores the modification
-   time goes undetected by them; a Windows source file's handle denies write sharing
-   from when its job opens it to read it, before the copy is staged (while a Copy waits
-   for admission it holds no handle on its selected items, and a change before that
-   open is only detected through identity, size and times), Linux Move removal keeps
-   its read lease and a replaced target stays in recovery. User commands, checksums and Rename keep the change time. The digest
-   proves the destination matches the source byte stream that was read, not the
-   source's later contents. Report what was
-   actually verified, never an unsupported stronger guarantee.
+Every copy follows this contract:
+
+1. Copy only supported ordinary file types.
+   - Use opened file identities and source/destination alias checks.
+   - Never traverse recursive links, junctions, named pipes or devices unchecked.
+2. Write to an exclusively created temporary destination on the target filesystem.
+   - Handle short reads and writes, propagate errors and retain ownership through
+     outstanding I/O and cancellation.
+   - Never delete the existing target first.
+3. Verify the written copy with the job's verification policy.
+   - By default, hash the exact source bytes using SHA-256, synchronize writes,
+     independently read and hash the entire destination, and compare length and
+     digest.
+   - Explicit quick mode instead captures the first, middle and last 64 KiB during
+     source streaming and compares those bytes after sync, plus the exact length. Up
+     to 192 KiB is compared entirely.
+   - Checking only size or hashing an outgoing buffer twice does not satisfy either
+     policy. Native same-volume rename copies no data.
+4. Reject any detected source change.
+   - Source metadata checks do not prove a point-in-time snapshot against concurrent
+     writers; a stronger snapshot promise requires supported write exclusion or
+     filesystem snapshots. In particular, same-length rewrites within one filesystem
+     timestamp quantum can retain both modification and change times and evade
+     metadata revalidation.
+   - Copy and Move also accept a pinned source, conflict target or Move capture whose
+     change time alone moved (VIEW-05), so a same-length rewrite that restores the
+     modification time goes undetected by them; a Windows source file's handle denies
+     write sharing from when its job opens it to read it, before the copy is staged
+     (while a Copy waits for admission it holds no handle on its selected items, and a
+     change before that open is only detected through identity, size and times), Linux
+     Move removal keeps its read lease and a replaced target stays in recovery. Custom
+     Commands, checksums and Rename keep the change time.
+   - The digest proves the destination matches the source byte stream that was read,
+     not the source's later contents. Report what was actually verified, never an
+     unsupported stronger guarantee.
 5. Publish only after successful verification, using the target platform's tested
-   no-replace/replacement contract. Unsupported atomicity must cause an explicit
-   failure, not a silent destructive fallback. Preserve the existing destination
-   when any pre-publication step fails.
-6. Distinguish verified content, namespace publication and power-loss durability.
-   A cached readback is not necessarily a physical-media reread. Hashes do not
-   establish ACL/ADS/xattr/link preservation; those have separate declared rules.
+   no-replace/replacement contract.
+   - Unsupported atomicity must cause an explicit failure, not a silent destructive
+     fallback.
+   - Preserve the existing destination when any pre-publication step fails.
+6. Report verified content, namespace publication and power-loss durability
+   separately.
+   - A cached readback is not necessarily a physical-media reread.
+   - Hashes do not establish ACL/ADS/xattr/link preservation; those have separate
+     declared rules.
 
 Multi-file Copy/Delete requests share the engine's mutation exclusion. Capture
 selection and destination paths when accepting a request; later navigation
@@ -1261,7 +1314,8 @@ impersonate the application. A reparse point whose tag cannot be read is treated
 link. Native Windows link
 icons use system overlays on cached generic types, without sending untrusted
 link paths to the Shell or opening targets. Linux icons reuse the listing's
-directory-link label (above) and open no target. Recursive sizing
+directory-link label ([Browsing and explicit operations](#browsing-and-explicit-operations))
+and open no target. Recursive sizing
 continues to accept only ordinary directories; a folder-looking icon must never
 turn a link into a traversable directory.
 
@@ -1342,7 +1396,7 @@ Linux creation timestamps are not editable. Unsupported operations fail explicit
 Incoming native drops enter the same Copy service as clipboard paste. Internal
 folder drops also support Move through the ordinary transfer service: the backend
 resolves exact entry/provider captures and volume evidence, never UI path strings.
-In flat native panels, hovering an ordinary file resolves to the current pane
+In flat native panels, hovering an ordinary file resolves to the current panel
 root after identity/navigation checks; the file itself is not a write target.
 Folder targets and tree occurrence authority retain their existing validation.
 Automatic drops move on a proven same volume and otherwise copy; Ctrl forces Copy,
@@ -1476,10 +1530,12 @@ classifications.
   installation), that is owned by an account other than the user, SYSTEM,
   Administrators or TrustedInstaller (Linux: the user or root), or whose Windows ACL holds
   an entry the check does not interpret (a conditional or object entry). Package
-  descriptors, pins, the workers' AppContainer/sandbox and their process and job limits
+  descriptors, pins, the workers' [AppContainer](docs/GLOSSARY.md#appcontainer)/sandbox
+  and their process and job limits
   apply as before. This does not turn trusted native code into a sandbox or authenticate
   a publisher's identity.
-- **Shared installations.** Write or replace permissions that other accounts hold only
+- <a id="shared-installations"></a>**Shared installations.** Write or replace
+  permissions that other accounts hold only
   through the ACL (Windows) or group/other mode bits (Linux) do not refuse plugins. A
   folder extracted directly below a Windows drive root inherits Modify for Authenticated
   Users, so every account on the PC can change it. Whoever can change those files can
@@ -1564,7 +1620,8 @@ classifications.
   pointer and the hash only match builds; they do **not** authenticate a publisher
   or make an already launched shared executable safe. Release packages need no
   registration: without one, a shared installation runs from its own folder (see
-  shared installations above), and an installation refused for another reason explains
+  [Shared installations](#shared-installations)), and an installation refused for
+  another reason explains
   itself without developer instructions. See [runtime discovery](docs/developer/RUNTIME_DISCOVERY.md).
 - Host-owned leases scope content services; no Rust allocator, future, Tokio
   runtime or Slint object crosses the ABI. Buffers have explicit ownership and
@@ -1596,12 +1653,14 @@ classifications.
   how many viewer windows are open); decoded pages, wire items, retained service replies
   and raster surfaces have separate explicit budgets. Selection/copy is limited to the loaded page.
 - Markdown returns semantic text blocks and inert link metadata; a link is followed only
-  on an explicit action, through the host link policy described above. The host does not
+  on an explicit action, through the host link policy of
+  [Links in viewed documents](#links-in-viewed-documents). The host does not
   execute HTML/scripts or load remote images, styles or fonts. Source syntax definitions
   are packaged code, never executable configuration from the opened folder.
 - Archive browsing is read-only. Names, links and declared sizes are untrusted.
   Decompressed content has no artificial size ceiling: it is bounded by the free space
-  of the host's private spool volume, and disk-full or short writes discard the staging
+  of the host's private [spool](docs/GLOSSARY.md#spool) volume, and disk-full or short
+  writes discard the staging
   and fail the request. Staging also stops with a disk-full error before that volume's
   free space falls below max(1 GiB, 2% of capacity), so a decompression bomb cannot fill
   the spool volume. The host queries the volume on each stage's first append and at
@@ -1621,7 +1680,7 @@ classifications.
   run at once (`NativeAllowance` in
   `crates/midnight-filesystem-host/src/session_allowance.rs`), beside two private Find
   sessions and three archives inside archives; a third is refused and names the open
-  ones. A pane that opens another archive or Network lets go of the session it showed;
+  ones. A panel that opens another archive or Network lets go of the session it showed;
   when both slots are taken and no other tab, panel or viewer holds that session, the
   next archive waits, at most 10 seconds and without blocking a thread, for its teardown
   to hand over the slot, which no other open can take meanwhile, so no more than two
@@ -1723,7 +1782,7 @@ classifications.
   custom AVIO context over the brokered capture with an empty protocol whitelist and a
   refusing `io_open`; the GStreamer graph has no URL source, is driven on the helper's
   one thread by pushes of brokered bytes, and seeks through byte seeks the helper serves
-  within the capture. Pictures and colour follow the bundled profile's rules (HDR and
+  within the capture. Pictures and color follow the bundled profile's rules (HDR and
   BT.2020 refused). Two consequences of the unchanged sandbox are handled before
   lockdown: GLib's first shared thread pool reads the scheduler settings then (after
   lockdown it would abort trying to start a thread), and GStreamer buffer pools, which
@@ -1806,15 +1865,15 @@ Escape, Cancel or the dialog's × leave the archive locked and close the dialog 
 notice: F3, Enter and a listing with encrypted names stop, and only a copy goes on
 without the password, skipping each encrypted member with that reason. The dialog's
 action (`PasswordAction` in `crates/midnight-ui/src/presenter/archive_password.rs`) is
-bound to the pane, to the archive session that the pane showed and to the target
+bound to the panel, to the archive session that the panel showed and to the target
 captured when the dialog opened (F3's viewer launch, Enter's member, F5's Copy draft or
-a locked listing's folder), never to the row under the cursor. If the pane has left that
+a locked listing's folder), never to the row under the cursor. If the panel has left that
 session meanwhile, for example through Find's Go to file, OK sends nothing, an accepted
 password opens nothing, and the status line says that the archive was left.
 
 ## Update check
 
-The update check ([design](docs/developer/UPDATES.md)) is the application's only
+The update check ([update design](docs/developer/UPDATES.md)) is the application's only
 network code; it lives in `crates/midnight-update` and runs on its own thread.
 
 - **When it connects:** only while "Check for updates at startup" is on (shortly after
@@ -1854,7 +1913,7 @@ network code; it lives in `crates/midnight-update` and runs on its own thread.
   the user's rights; it waits until no copy runs from the folder, keeps the previous
   version until the new one confirms its start and restores it otherwise. Settings
   (outside the installation folder) are never touched.
-- **Windows Installer copies:** a copy counts as an MSI installation only when Windows
+- **MSI installations:** a copy counts as an MSI installation only when Windows
   Installer (msi.dll) records exactly one product of the MSI's fixed `UpgradeCode` with
   this folder as its `InstallLocation`, in the per-user or the per-machine context, at
   the running version; a file in the folder cannot make it one. Install now copies the
@@ -1882,4 +1941,6 @@ Keep `Cargo.lock`, check advisories against the actual lockfile, and record the
 database revision and warnings. A clean advisory scan means no matching known
 vulnerabilities in that database; it does not prove the absence of unknown bugs.
 Do not adopt source or dependencies merely because they look similar to reference
-code. Salamander code/assets are not copied into this implementation.
+code. Open Salamander, the file manager whose separately supplied sources are a
+behavioral reference only ([Design and scope](docs/USER_GUIDE.md#design-and-scope)),
+has none of its code or assets copied into this implementation.
