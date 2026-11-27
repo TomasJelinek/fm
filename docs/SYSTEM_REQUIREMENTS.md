@@ -1,7 +1,9 @@
 # System requirements
 
-Applies to Midnight Explorer **0.6.3**. Build and run commands are in the
-[user guide](USER_GUIDE.md#build-and-run).
+Applies to Midnight Explorer **0.6.3**. Build and run commands are in the user guide's
+[Build and run](USER_GUIDE.md#build-and-run); problems at the first start are in
+[Troubleshooting](TROUBLESHOOTING.md). Project terms are defined in the
+[glossary](GLOSSARY.md).
 
 ## Operating systems and support status
 
@@ -16,7 +18,7 @@ PLAT-02 in the [implementation backlog](IMPLEMENTATION_BACKLOG.md).
 | Linux Mint | Mint **22.x**, **x86-64**, Ubuntu-based edition | Same Linux adapter and Ubuntu 24.04 library baseline. Not yet tested on a native Cinnamon, MATE or Xfce desktop; LMDE is not tested separately. |
 | Fedora | **Fedora 44** and newer maintained releases, **x86-64**, GNU/glibc | Same Linux adapter. Native build, GNOME/KDE, SELinux-enabled operation and graphics tests are pending; Rawhide is not a target. |
 | openSUSE | **Leap 16.x** and current **Tumbleweed**, **x86-64**, GNU/glibc | Same Linux adapter. Build, desktop, graphics and filesystem tests are pending; a test records the Tumbleweed snapshot it used, not a lasting guarantee for a rolling release. SUSE Linux Enterprise is not a target. |
-| Other Linux | x86-64 GNU/glibc desktop with the dependencies below | Source builds may work; there is no distribution-independent binary guarantee. Older Ubuntu/Mint, musl/Alpine and ARM64 are not targets. |
+| Other Linux | x86-64 GNU/glibc desktop with the dependencies in [Runtime software](#runtime-software) | Source builds may work; there is no distribution-independent binary guarantee. Older Ubuntu/Mint, musl/Alpine and ARM64 are not targets. |
 | macOS | **Planned (PLAT-01); no supported version or architecture** | There is no macOS platform adapter, so the application does not build or run there. Versions, architectures and the RAM minimum will be set with that port. Slint's own macOS support does not change this. |
 
 The Windows baseline also satisfies the Rust toolchain's Windows 10-or-newer
@@ -41,15 +43,15 @@ after the desktop and other applications are running.
 | Ubuntu 26.04 desktop x86-64 | **6 GB** | **8 GB or more** | Same allowance, in addition to sufficient desktop headroom |
 | Mint 22.x x86-64 | **4 GB** | **8 GB or more** | Same 1 GiB / 2 GiB provisional allowance; not measured on Mint yet |
 | Fedora / openSUSE x86-64 | **4 GB or the desktop's minimum, whichever is higher** | **8 GB or more** | Same 1 GiB / 2 GiB provisional allowance; not measured natively yet |
-| Other Linux | At least the desktop's own requirement and the application headroom above | **8 GB** is a practical starting point | Depends on the desktop and workload; untested |
+| Other Linux | At least the desktop's own requirement and the application headroom of the other rows | **8 GB** is a practical starting point | Depends on the desktop and workload; untested |
 | macOS | **Not established** | To be measured when the adapter exists | Not a supported configuration |
 
 Windows 11 itself requires 4 GB
 ([Microsoft requirements](https://learn.microsoft.com/en-us/windows/whats-new/windows-11-requirements)).
 Canonical specifies 6 GB for Ubuntu Desktop 26.04
 ([release requirements](https://documentation.ubuntu.com/release-notes/26.04/#requirements-and-compatibility)).
-Mint's own minimum is 2 GB, with 4 GB recommended; the 4 GB row above is a more
-conservative product target, not Mint's minimum
+Mint's own minimum is 2 GB, with 4 GB recommended; the table's 4 GB for Mint 22.x is a
+more conservative product target, not Mint's minimum
 ([Mint FAQ](https://www.linuxmint.com/faq.php)).
 
 Use a 64-bit processor that meets the chosen OS's requirements; two CPU cores are a
@@ -66,26 +68,28 @@ pixels; font size, scaling and touch density affect how much fits.
 
 Memory use depends on directory entry counts, native icons, cached tabs, searches and
 queued jobs. Copy and checksums stream file contents, so copying a 100 GB file does not
-need 100 GB of memory; queues, worker pools and caches are bounded. The headroom above
-is neither a process-memory cap nor a guarantee for arbitrarily large directories.
+need 100 GB of memory; queues, worker pools and caches are bounded. The application
+headroom in the RAM table is neither a process-memory cap nor a guarantee for arbitrarily large directories.
 
 One dated measurement: a short Windows 11 release startup on 2026-11-06 peaked at
 **399 MiB working set** and **611 MiB sampled private memory**, with a large window,
 the repository root and a three-entry Unicode fixture
-([record](verification/2026-11-06-themes-and-commander-tools.md)). It shows that
+([themes and commander tools record of 2026-11-06](verification/2026-11-06-themes-and-commander-tools.md)). It shows that
 512 MiB is not an established available-memory minimum, but it does not establish
 worst-case use or a Linux result.
 
 ## Runtime software
 
-Normal builds and distributions include all six viewers (basic, source, Markdown,
-image, PDF and the Chromium HTML viewer), the platform's native and network
-filesystem providers, the archive worker and both thumbnailers. Keep the complete
+Normal builds and distributions include all six [viewers](GLOSSARY.md#viewer) (basic,
+source, Markdown, image, PDF and the Chromium HTML viewer), the platform's native and
+network [filesystem plugins](GLOSSARY.md#filesystem-plugin), the archive
+[worker](GLOSSARY.md#worker) and both [thumbnailers](GLOSSARY.md#thumbnailer). Keep the complete
 module folders (`viewers/`, `filesystems/`, `thumbnailers/`) beside the executable.
 
 **All platforms:** a graphical desktop and readable system fonts that cover the
 scripts being displayed. **Hardware GPU acceleration is optional.** The normal
-renderer is Slint FemtoVG-WGPU:
+renderer is Slint's FemtoVG-WGPU renderer (FemtoVG vector drawing on wgpu, the Rust
+library for Vulkan, Direct3D 12 and OpenGL):
 
 - On Windows it allows Vulkan and Direct3D 12 and uses Vulkan when a Vulkan driver is
   present. The application sets no power preference, so wgpu takes the first suitable
@@ -98,14 +102,16 @@ renderer is Slint FemtoVG-WGPU:
 - An explicit `WGPU_BACKEND` (for example `dx12`, or `gl` for OpenGL on Linux) replaces
   the backend choice, for driver diagnosis.
 
-The CPU renderer is available through `--software` and through automatic startup
-recovery when the default GPU setup fails. The recovery makes one attempt, before the
+[Environment variables](#environment-variables) lists these settings.
+
+The software renderer, which draws on the CPU, is available through `--software` and
+through automatic startup recovery when the default GPU setup fails. The recovery makes one attempt, before the
 first window is shown; it keeps the original paths, arguments and working directory.
-A failed hidden attempt cannot save preferences or window geometry, and no visible
+A failed hidden attempt cannot save settings or window geometry, and no visible
 session or file operation is repeated. An explicit `SLINT_BACKEND` choice is never
-replaced. CPU rendering still needs a graphical display; there is no headless mode.
-CPU scrolling uses the same pixel scrolling and bounded loading, with performance that
-depends on the hardware.
+replaced. The software renderer still needs a graphical display; there is no headless
+mode. Its scrolling uses the same pixel scrolling and bounded loading, with performance
+that depends on the hardware.
 
 The Slint software renderer does not draw bitmap (color) emoji even when the font is
 installed, so a passing smoke test does not prove complete Unicode rendering. For WGPU
@@ -116,7 +122,7 @@ it is distinct from `--software` and says nothing about GPU performance. See the
 
 The update check, at startup or on request, needs HTTPS access to `api.github.com`,
 `github.com` and GitHub's download servers; without that access only the check fails
-([updates](USER_GUIDE.md#updates)).
+([Updates](USER_GUIDE.md#updates)).
 
 **Windows:** install the Microsoft Visual C++ x64 runtime if it is not already
 present; the MSVC release executable uses `VCRUNTIME140.dll` and the Windows Universal
@@ -148,7 +154,8 @@ libcairo2 libxcomposite1 libxdamage1 libxext6 libxfixes3
 
 On Fedora and openSUSE the script installs the same libraries by soname (the user guide
 lists the [package commands](USER_GUIDE.md#linux--ubuntu--mint)). The second half of the
-list is what the HTML viewer's Chromium (CEF) loads: NSS/NSPR, ALSA, ATK/AT-SPI, CUPS,
+list is what the HTML viewer's Chromium ([CEF](GLOSSARY.md#cef), the Chromium Embedded
+Framework) loads: NSS/NSPR, ALSA, ATK/AT-SPI, CUPS,
 D-Bus, DRM/GBM, Expat, GLib, Pango/Cairo and X11/XCB with its extensions. Desktop
 installations normally have them. When one is missing, the dynamic loader stops the
 viewer's browser before it starts, and the viewer names the missing libraries in the
@@ -158,7 +165,8 @@ ELF dynamic sections of the viewer's executable and of the libraries it needs, a
 loader looks them up; nothing is executed. CMake and Ninja are build tools, not
 runtime requirements.
 
-Local Network Neighborhood browsing additionally needs GIO/GVfs discovery and SMB
+Local Network Neighborhood browsing (the computers and shares of the local network)
+additionally needs GIO/GVfs (GNOME's virtual filesystem layer) discovery and SMB
 backends, and opening shares as native paths needs the GVfs FUSE bridge. On
 Ubuntu/Mint, install `gvfs-backends gvfs-fuse wsdd`. The `wsdd` helper finds Windows
 computers; an advertised GVfs backend alone does not prove that it is installed. A
@@ -243,8 +251,8 @@ needs no system FFmpeg and no libclang; compilers, GPG and libclang are build
 prerequisites only. On Windows the video helpers' sandbox must be allowed to read these
 libraries and the playback helpers; the application grants that on those files in an
 installation that only you (and administrators) can change, such as an extracted folder
-in your profile. In a folder that other accounts can change, secure it or move it to
-your profile first ([shared installations](USER_GUIDE.md#shared-installations)); in a
+in your profile; Windows runs them in an [AppContainer](GLOSSARY.md#appcontainer). In a
+folder that other accounts can change, secure it or move it to your profile first ([shared installations](USER_GUIDE.md#shared-installations)); in a
 folder that only administrators can change and that does not already allow it, an
 administrator grants it with `icacls` as
 [SECURITY.md](../SECURITY.md#the-workers-grant-on-installed-files) describes. The bundled FFmpeg profile decodes VP8/VP9, Theora, FFV1 and raw
@@ -271,7 +279,7 @@ add for MP4/M4V/MOV/3GP, Matroska, AVI, Ogg and ASF (`.wmv`, `.asf`) files:
 | --- | --- | --- |
 | Debian, Ubuntu and derivatives | `ffmpeg` (pulls `libavcodecNN`, `libavformatNN`, `libswscaleNN`, `libswresampleNN`) | H.264, HEVC, MPEG-4 Part 2, MPEG-1/2, AV1, VC-1/Windows Media, MJPEG, H.263, ProRes video; AAC, MP3, AC-3, E-AC-3, DTS, Vorbis, FLAC, Windows Media audio |
 | | or `gstreamer1.0-libav` with `gstreamer1.0-plugins-base`, `-good` and `-bad` (and `-ugly` for ASF/WMV files) | The same through GStreamer (used when the FFmpeg libraries are absent); `-bad` adds OpenH264 and libde265, `-ugly` the ASF demuxer |
-| Fedora, RHEL family | `ffmpeg-libs` from RPM Fusion (the full FFmpeg) | As above; Fedora's own `ffmpeg-free` omits some of these decoders, such as HEVC |
+| Fedora, RHEL family | `ffmpeg-libs` from RPM Fusion (the full FFmpeg) | The same as Debian's `ffmpeg`; Fedora's own `ffmpeg-free` omits some of these decoders, such as HEVC |
 | | `gstreamer1-plugin-openh264` (Fedora's Cisco OpenH264 repository), `gstreamer1-plugin-libav` | H.264 through OpenH264; others through GStreamer's FFmpeg plugin |
 | openSUSE | `ffmpeg` and `gstreamer-plugins-libav` from Packman | As for Debian; openSUSE's own FFmpeg omits patent-encumbered decoders |
 | Arch and derivatives | `ffmpeg`, or `gst-libav` with `gst-plugins-good` | As for Debian |
@@ -280,7 +288,7 @@ The table names what these packages provide. Tested so far on Ubuntu 24.04 (FFmp
 6.1, GStreamer 1.24): H.264, HEVC and MPEG-4 Part 2 video with AAC and MP3 audio
 ([Linux system decoders record](verification/2026-11-21-linux-system-video-decoders.md)),
 and Windows Media Video 7 and 8 with Windows Media Audio 1 and 2 in ASF (`.wmv`, `.asf`)
-through FFmpeg ([record](verification/2026-11-22-linux-html-libraries-and-asf.md));
+through FFmpeg ([Linux HTML libraries and ASF record](verification/2026-11-22-linux-html-libraries-and-asf.md));
 WMV 9 and VC-1, which FFmpeg decodes but cannot encode, were not tested. GStreamer
 also needs `gst-plugins-base` (typefinding and converters), `gst-plugins-good` (the
 MP4, Matroska and AVI demuxers) and, for ASF/WMV files, `gst-plugins-ugly` (the ASF
@@ -334,6 +342,33 @@ Unsupported operations fail explicitly rather than weakening identity checks or
 checksum verification. Newer optional metadata system calls have guarded fallbacks;
 they do not raise the minimum kernel to the newest call's version.
 
+## Environment variables
+
+These variables change how the application starts, for one run; none is needed
+normally. Set them in the environment of the process that starts Midnight Explorer, for
+example `MIDNIGHT_SHARED_WGPU=0 ./midnight-explorer` on Linux or
+`$env:MIDNIGHT_SHARED_WGPU = '0'` in PowerShell before starting `midnight-explorer.exe`.
+The application reads the `MIDNIGHT_` variables itself; Slint, the UI toolkit, and
+wgpu, its graphics library, read the others.
+
+| Variable | Values | Unset | Effect | Platform |
+| --- | --- | --- | --- | --- |
+| `MIDNIGHT_SHARED_WGPU` | `0` | One GPU device shared by every window | `0` gives each window its own device, as Slint does by default; any other value keeps sharing | Windows, Linux |
+| `WGPU_BACKEND` | Comma-separated `vulkan` (`vk`), `dx12` (`d3d12`), `gl` (`gles`, `opengl`) | Windows: Vulkan and Direct3D 12; Linux: Vulkan | Restricts the graphics interfaces that wgpu may use, for driver diagnosis | Windows, Linux |
+| `WGPU_POWER_PREF` | `high`, `low`, `none` | No preference: the first suitable adapter | `high` prefers a discrete GPU, `low` an integrated one | Windows, Linux |
+| `WGPU_DEBUG`, `WGPU_VALIDATION` | `0` turns off, any other value on | Windows: off; Linux: wgpu's build default, on in debug builds | The graphics driver's debug layer and wgpu's API validation, for driver diagnosis | Windows, Linux |
+| `SLINT_BACKEND` | Slint backend and renderer, such as `winit-software` | The application chooses FemtoVG-WGPU | Replaces the application's renderer choice and turns off the automatic retry with the software renderer | Windows, Linux |
+| `SLINT_WGPU_CPU` | Any value, such as `1` | Off | Lets the WGPU renderer use a CPU adapter, for diagnostics; unlike `--software`, it keeps the WGPU renderer | Windows, Linux |
+| `MIDNIGHT_GLYPH_FITTING` | `fitted`, `snapped`, `subpixel` | The **Text rendering** choice in Options › Appearance | Overrides how glyphs meet the pixel grid; other values are ignored | Windows, Linux |
+| `MIDNIGHT_WAYLAND_DND` | `1` | Off | Turns on drag and drop with other applications through the native Wayland data device, which is not yet qualified on a compositor (PLAT-03); X11 and XWayland need nothing | Linux (Wayland) |
+| `MIDNIGHT_VERIFY_RUNTIME_SHA256` | `0` or `1` | `0` | `1` hashes the running executable at startup to select a [private installation](GLOSSARY.md#private-installation-root) registered by `build.bat`; any other value is refused with `MIDNIGHT_VERIFY_RUNTIME_SHA256 must be exactly 0 or 1; unset defaults to 0` | Windows |
+
+The `--software` command-line option starts with the software renderer without any
+variable. Build and test variables (`CARGO_TARGET_DIR`, `MIDNIGHT_HTML_TARGET_DIR`,
+`MIDNIGHT_FFMPEG_PREFIX` and others) are described where they apply: in
+[Build and run](USER_GUIDE.md#build-and-run) and
+[test execution](developer/TEST_EXECUTION.md).
+
 ## Building and testing
 
 Build machines need much more than the runtime:
@@ -345,8 +380,9 @@ Build machines need much more than the runtime:
 | macOS | Not established; a future port needs Rust, the Xcode Command Line Tools and a native adapter (PLAT-01) | No verified build or RAM minimum. |
 
 An **8 GB** development machine with `-j 1` and adequate pagefile or swap is a
-low-memory configuration to try, **not a tested minimum**. Fat LTO can still need
-substantial RAM for a single link; lowering Cargo's parallelism cannot remove that cost.
+low-memory configuration to try, **not a tested minimum**. Fat
+[LTO](GLOSSARY.md#lto) (link-time optimization) can still need substantial RAM for a
+single link; lowering Cargo's parallelism cannot remove that cost.
 Cargo runs as many jobs as there are logical CPUs unless `-j N` or `CARGO_BUILD_JOBS`
 limits them, and [full validation](USER_GUIDE.md#full-validation) takes `--jobs N`. See
 [release settings](RELEASE_BUILD.md).
