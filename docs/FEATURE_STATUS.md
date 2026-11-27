@@ -41,8 +41,8 @@ How to read it:
   also from the update dialog ([Updates](#updates)). Only the built package is checked so far: CI's
   release job now installs, upgrades, repairs and removes it in both scopes on a
   disposable runner and runs [ICE](GLOSSARY.md#ice) (Internal Consistency Evaluators)
-  validation, but no run of those steps has passed yet
-  (REL-05). Keep one kind of installation at a time: with both installed, removing one
+  validation; those steps first passed at `7ce68224`, the 0.6.3 tag
+  ([release record](verification/2026-11-27-release-0.6.3.md#msi-installation-test); REL-05). Keep one kind of installation at a time: with both installed, removing one
   leaves its files ([Troubleshooting](TROUBLESHOOTING.md#windows-removing-one-of-two-msi-installations-leaves-its-files)).
 - **Linux specifics:** native Wayland drag and drop with other applications is new, not
   yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On
@@ -51,15 +51,15 @@ How to read it:
 - **Open:** macOS (PLAT-01); native and manual qualification on other distributions,
   desktops, physical GPUs and live removable or network mounts (PLAT-02); CI jobs for
   the HTML viewer and the bundled-FFmpeg video helper (CI-01); native tests in the
-  release profile (REL-02); signed Windows release binaries and MSI (REL-03); a tested
-  MSI install in both scopes, upgrade and uninstall (in CI, not yet passed) and the ICE
-  findings (REL-05).
+  release profile (REL-02); signed Windows release binaries and MSI (REL-03); the
+  installer refusing a second scope while the other is installed, and the ICE findings
+  (REL-05).
 - **Documents:** [user guide](USER_GUIDE.md#build-and-run) (Build and run),
   [system requirements](SYSTEM_REQUIREMENTS.md), [release build](RELEASE_BUILD.md),
   [test execution](developer/TEST_EXECUTION.md).
 - **Verified:** the last hosted CI runs recorded as passing every job on Windows and
-  Linux are at `029cdfff` (the `v0.6.2` tag)
-  ([release record](verification/2026-11-27-release-0.6.2.md#ci));
+  Linux are at `7ce68224` (the `v0.6.3` tag)
+  ([release record](verification/2026-11-27-release-0.6.3.md#ci));
   CI times are in the [CI time record](verification/2026-11-21-ci-time.md).
   Acceptance runs on Windows are listed in the
   [Windows acceptance record](developer/acceptance/windows.md); the area records linked
