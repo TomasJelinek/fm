@@ -49,6 +49,8 @@ impl Drop for Release {
 struct Files {
     roots: Mutex<Vec<Volume>>,
     discovery_gate: Option<Arc<Gate>>,
+    /// Armed by a test while it runs: the next discoveries wait on it.
+    held_discovery: Mutex<Option<Arc<Gate>>>,
     metadata_gate: Option<Arc<Gate>>,
     discovery_calls: AtomicUsize,
     label_calls: AtomicUsize,
@@ -68,6 +70,7 @@ impl Files {
         Self {
             roots: Mutex::new(names.iter().map(|name| volume(name)).collect()),
             discovery_gate: None,
+            held_discovery: Mutex::new(None),
             metadata_gate: None,
             discovery_calls: AtomicUsize::new(0),
             label_calls: AtomicUsize::new(0),
@@ -95,6 +98,10 @@ impl VolumeService for Files {
         self.discovery_calls.fetch_add(1, Ordering::SeqCst);
         let roots = self.roots.lock().unwrap().clone();
         if let Some(gate) = &self.discovery_gate {
+            gate.wait();
+        }
+        let held = self.held_discovery.lock().unwrap().clone();
+        if let Some(gate) = held {
             gate.wait();
         }
         Ok(roots)
@@ -503,9 +510,21 @@ async fn unchanged_hints_publish_nothing_and_a_burst_coalesces() {
         1
     );
     let before = files.discovery_calls.load(Ordering::SeqCst);
-    for _ in 0..500 {
+    // The burst arrives while the discovery that its first hint starts is held, so a
+    // runner that stalls between hints cannot spread it over several discoveries
+    // (CI once counted 3): one discovery and at most one more for the hints after it.
+    let held = Arc::new(Gate::default());
+    let _release = Release(held.clone());
+    *files.held_discovery.lock().unwrap() = Some(held.clone());
+    hint();
+    tokio::time::timeout(Duration::from_secs(3), held.entered.notified())
+        .await
+        .expect("the burst's first discovery starts");
+    for _ in 1..500 {
         hint();
     }
+    *files.held_discovery.lock().unwrap() = None;
+    held.release();
     let quiet = drain(&mut events, Duration::from_millis(300)).await;
     assert!(
         quiet
