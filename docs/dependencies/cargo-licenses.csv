@@ -454,7 +454,7 @@ sevenz-rust2,0.23.0,Apache-2.0,registry+https://github.com/rust-lang/crates.io-i
 sha1,0.10.6,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,midnight-engine
 sha1,0.11.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,archive,Linux; Windows,
 sha1_smol,1.0.1,BSD-3-Clause,registry+https://github.com/rust-lang/crates.io-index,html-viewer,Linux; Windows,
-sha2,0.10.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app,Linux; Windows,midnight-api-package; midnight-engine; midnight-platform-common; midnight-plugin-host; midnight-update
+sha2,0.10.9,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,api; app,Linux; Windows,midnight-api-package; midnight-elevation; midnight-engine; midnight-explorer; midnight-platform-common; midnight-plugin-host; midnight-update
 sha2,0.11.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,archive,Linux; Windows,
 sharded-slab,0.1.7,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 shlex,2.0.1,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app; html-viewer; renderer-tests; thumbnail-video,Linux; Windows,
