@@ -1,16 +1,15 @@
 //! UAC launches a dedicated helper; a local named pipe is bound to both process identities.
+//! After its first listing the helper serves the authorization session over the same pipe.
 use crate::{
-    HelperDigest, cancelled,
+    HelperDigest, cancelled, helper,
     protocol::{self, Reply, Request},
 };
 use midnight_core::Cancellation;
 use std::{
     ffi::{OsStr, OsString},
-    fs::{self, DirEntry, FileType},
     io::{self, Read, Write},
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
-        fs::{FileTypeExt, MetadataExt},
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Path, PathBuf},
@@ -54,14 +53,22 @@ use windows_sys::Win32::{
 mod channel;
 #[path = "windows_children.rs"]
 mod children;
+#[path = "windows_listing.rs"]
+mod listing;
 #[path = "windows_trust.rs"]
 mod trust;
 use channel::{Channel, Monitor};
+pub(crate) use listing::{Location, list_directory, open_directory};
 pub(crate) use trust::requirement;
 
-const TIMEOUT: Duration = Duration::from_secs(300);
+const TIMEOUT: Duration = protocol::REQUEST_TIMEOUT;
 /// Wait between attempts while another client holds the single pipe instance.
 const BUSY_WAIT: Duration = Duration::from_millis(50);
+/// How long a cancelled session request still waits for its reply, which keeps the session's
+/// channel in step; a reply that takes longer ends the session.
+const CANCEL_GRACE: Duration = Duration::from_secs(2);
+/// How long ending a session waits to hand the helper its close request.
+const CLOSE_WAIT: Duration = Duration::from_millis(200);
 
 pub(crate) fn encode_path(path: &Path) -> Vec<u8> {
     path.as_os_str()
@@ -84,14 +91,6 @@ pub(crate) fn decode_path(bytes: &[u8]) -> io::Result<PathBuf> {
         return Err(protocol::invalid("NUL in native path"));
     }
     Ok(PathBuf::from(OsString::from_wide(&units)))
-}
-pub(crate) fn metadata(value: &fs::Metadata) -> (Option<u32>, Option<u32>) {
-    (Some(value.file_attributes()), None)
-}
-/// Directory symbolic links and junctions are directory links by their own attributes. The
-/// elevated helper never opens a link target: a target could be another process's pipe server.
-pub(crate) fn is_directory_link(_: &DirEntry, file_type: &FileType) -> bool {
-    file_type.is_symlink_dir()
 }
 /// Refuse a helper that another account could change before it runs elevated, or (with the
 /// shipped digest) whose content differs from the shipped helper.
@@ -250,12 +249,47 @@ fn launch_elevated(
         .map_err(|_| io::Error::other("Authorization launch failed"))?
 }
 
-pub(crate) fn list(
+/// The requester's end of a helper's session. Dropping it hands the helper a close request,
+/// closes the pipe (the helper ends on either) and then releases its authorization slot.
+pub(crate) struct Connection {
+    io: Channel,
+    /// `None` only for an in-process test helper, which takes no slot.
+    _child: Option<children::Reservation>,
+}
+
+impl Connection {
+    /// One more request of the session. Cancellation is honoured once the reply has not
+    /// arrived within a short grace, which ends the session.
+    pub(crate) fn exchange(
+        &mut self,
+        request: &Request,
+        cancel: &Cancellation,
+    ) -> io::Result<Reply> {
+        self.io
+            .begin(cancel.clone(), Instant::now() + TIMEOUT, CANCEL_GRACE);
+        protocol::write_request(&mut self.io, request)?;
+        protocol::read_reply(&mut self.io)
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.io.begin(
+            Cancellation::default(),
+            Instant::now() + CLOSE_WAIT,
+            Duration::ZERO,
+        );
+        let _ = protocol::write_request(&mut self.io, &Request::Close);
+    }
+}
+
+/// Ask for consent, start the helper and send it the session's first request.
+pub(crate) fn start(
     helper: &Path,
     request: &Request,
     cancel: &Cancellation,
     shipped: Option<&HelperDigest>,
-) -> io::Result<Reply> {
+) -> io::Result<(Connection, Reply)> {
     if cancel.is_cancelled() {
         return Err(cancelled());
     }
@@ -304,9 +338,15 @@ pub(crate) fn list(
         return Err(protocol::invalid("Helper nonce mismatch"));
     }
     protocol::write_request(&mut io, request)?;
-    let reply = protocol::read_reply(&mut io);
+    let reply = protocol::read_reply(&mut io)?;
     drop(pins);
-    reply
+    Ok((
+        Connection {
+            io,
+            _child: Some(child),
+        },
+        reply,
+    ))
 }
 
 /// Open the requester's pipe as an elevated client. Identification-only quality of service
@@ -348,9 +388,46 @@ fn connect_client(name: &[u16], requester: HANDLE, deadline: Instant) -> io::Res
 }
 
 pub(crate) fn serve(args: &[OsString]) -> io::Result<()> {
-    serve_with_monitor(args, || std::process::exit(1))
+    serve_with(args, || std::process::exit(1), &helper::Limits::SESSION)
 }
-fn serve_with_monitor(args: &[OsString], terminate: fn()) -> io::Result<()> {
+
+/// The helper's end of the pipe, with the requester's process for its watch.
+struct PipeRequester {
+    io: Channel,
+    peer: OwnedHandle,
+    terminate: fn(),
+}
+impl Read for PipeRequester {
+    fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
+        self.io.read(data)
+    }
+}
+impl Write for PipeRequester {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.io.write(data)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.io.flush()
+    }
+}
+impl helper::Requester for PipeRequester {
+    type Watch = Monitor;
+    fn set_deadline(&mut self, deadline: Instant) {
+        self.io
+            .begin(Cancellation::default(), deadline, Duration::ZERO);
+    }
+    fn watch(&self, deadline: Instant, cancel: &Cancellation) -> io::Result<Monitor> {
+        Monitor::start(
+            self.io.pipe(),
+            self.peer.try_clone()?,
+            deadline,
+            cancel.clone(),
+            self.terminate,
+        )
+    }
+}
+
+fn serve_with(args: &[OsString], terminate: fn(), limits: &helper::Limits) -> io::Result<()> {
     if args.len() != 4 || args[0] != "--pipe" {
         return Err(protocol::invalid("Invalid helper arguments"));
     }
@@ -371,7 +448,8 @@ fn serve_with_monitor(args: &[OsString], terminate: fn()) -> io::Result<()> {
             "Parent process changed",
         ));
     }
-    let deadline = Instant::now() + TIMEOUT;
+    let started = Instant::now();
+    let deadline = started + limits.request;
     let pipe = connect_client(&pipe_name(&text)?, peer.as_raw_handle(), deadline)?;
     let mut server_pid = 0;
     // SAFETY: the live pipe handle and an initialized output.
@@ -383,19 +461,19 @@ fn serve_with_monitor(args: &[OsString], terminate: fn()) -> io::Result<()> {
             "Unexpected requesting process",
         ));
     }
-    let cancel = Cancellation::default();
-    let mut io = Channel::new(pipe, cancel.clone(), deadline)?;
+    let mut io = Channel::new(pipe, Cancellation::default(), deadline)?;
     let mut challenge = [0; 32];
     io.read_exact(&mut challenge)?;
     if challenge != nonce {
         return Err(protocol::invalid("Request nonce mismatch"));
     }
     io.write_all(&nonce)?;
-    let request = protocol::read_request(&mut io)?;
-    let monitor = Monitor::start(io.pipe(), peer, deadline, cancel.clone(), terminate)?;
-    let reply = crate::helper::reply(request, &cancel);
-    monitor.stop();
-    protocol::write_reply(&mut io, &reply)
+    let mut requester = PipeRequester {
+        io,
+        peer,
+        terminate,
+    };
+    helper::serve_session(&mut requester, started, deadline, limits)
 }
 
 #[cfg(test)]

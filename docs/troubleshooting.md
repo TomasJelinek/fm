@@ -143,7 +143,16 @@ denied.`
 `Your operating system will ask for permission to read this folder.` Choose **Retry
 with authorization** and accept the UAC prompt (Windows) or the polkit password prompt
 (Linux). The [elevated listing helper](glossary.md#elevated-listing-helper) lists that
-one folder; it changes nothing.
+folder and, while the panel stays inside it, its subfolders without asking again for up
+to 30 minutes (5 minutes after the last listing); it opens no file and changes nothing.
+Files in the folder still cannot be opened, viewed or copied: only the listing is
+authorized.
+
+**When the message says** `Access to this folder was denied. This folder is outside the
+authorized folder …: it is reached through a link or mount point that leads elsewhere.`:
+the folder's name lies inside a folder you authorized, but it is a link, junction or
+mount point to another place, which that authorization does not cover. **Retry with
+authorization** asks for that folder on its own.
 
 **When the retry is not offered,** the message says why after
 `Opening it needs administrator permission, which this installation cannot ask for:`
@@ -174,10 +183,22 @@ check counted as a change, and the automatic re-read that followed was denied to
 went back to the parent folder.
 
 **Fix:** use 0.6.3 or later. A folder listed with authorization stays as listed, and the
-status row says `Listed with authorization; not updated automatically. Refresh offers
-authorization again.` Refresh (Ctrl+R) lists it with your own rights first; while access
-is still denied, the files stay and **Cannot open folder** offers **Retry with
-authorization** again.
+status row says that it was listed with authorization and is not updated automatically.
+Refresh (Ctrl+R) lists it again without leaving it: through the same authorization while
+it lasts, otherwise with your own rights first, and while access is still denied the
+files stay and **Cannot open folder** offers **Retry with authorization** again.
+
+### Every subfolder of an authorized folder asks for authorization again
+
+**Symptom (0.6.3 and earlier):** after **Retry with authorization** listed a folder,
+entering each of its subfolders that your account may not read showed **Cannot open
+folder** and asked for authorization again.
+
+**Fix:** use a later version. One consent covers the folder and its subfolders while the
+panel stays inside it, for up to 30 minutes (5 minutes after the last listing), see
+[Build and run](user-guide.md#build-and-run). When a subfolder asks again within that
+time, the panel left the authorized folder in between, the authorization expired, or the
+subfolder is a link or mount point that leads elsewhere (the message then says so).
 
 ### Delete or F8 asks to delete permanently instead of moving to the Trash
 

@@ -735,3 +735,207 @@ fn an_authorized_listing_says_so_until_the_pane_leaves_it() {
     finish(&mut p, PaneId::Left, parent, vec![]);
     assert!(p.watch_notice(PaneId::Left).is_none());
 }
+
+/// The rows of a subfolder that the backend listed through the pane's authorization
+/// session (`ListingAuthorized` before its rows), as the pane shows after entering it.
+fn session_listing(p: &mut Presenter, path: &Path, name: &str) -> NavigationId {
+    let sent = RefCell::new(Vec::new());
+    assert!(p.navigate(PaneId::Left, path.to_owned(), None, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    let requests = listings(&sent.borrow());
+    let [(navigation, ref listed, "Navigate")] = requests[..] else {
+        panic!("entering a folder sends one navigation: {requests:?}");
+    };
+    assert_eq!(listed, path);
+    p.apply(Event::ListingAuthorized {
+        pane: PaneId::Left,
+        navigation,
+    });
+    finish(
+        p,
+        PaneId::Left,
+        navigation,
+        vec![Entry::new(EntryId(9), path.join(name), EntryKind::File)],
+    );
+    navigation
+}
+
+/// One consent covers the subfolders: entering one inside the authorized folder shows its
+/// rows as an authorized listing, without any dialog or prompt.
+#[test]
+fn entering_a_subfolder_of_an_authorized_folder_shows_its_rows_without_a_dialog() {
+    let (mut p, _, path) = authorized_listing();
+    let notices = p.desktop.notice_generation;
+    let child = path.join("private");
+    let entered = session_listing(&mut p, &child, "inner.txt");
+    assert_eq!(p.panes[0].path, child);
+    assert_eq!(p.panes[0].successful_generation, Some(entered));
+    assert_eq!(p.panes[0].entries[0].path, child.join("inner.txt"));
+    assert_eq!(
+        p.desktop.notice_generation, notices,
+        "entering the subfolder opened a dialog"
+    );
+    assert!(!p.can_retry_directory_elevated(PaneId::Left));
+    let notice = p
+        .watch_notice(PaneId::Left)
+        .expect("the status row says so");
+    assert!(
+        notice.text.starts_with("Listed with authorization"),
+        "{}",
+        notice.text
+    );
+    assert!(notice.text.contains("Subfolders"), "{}", notice.text);
+    assert!(
+        notice.details.contains("cannot be opened"),
+        "{}",
+        notice.details
+    );
+    assert!(!p.refresh_if_changed(PaneId::Left, entered, &|_| {
+        panic!("a subfolder listed with authorization is re-read automatically")
+    }));
+    // A deeper level too.
+    let grandchild = child.join("deeper");
+    session_listing(&mut p, &grandchild, "deepest.txt");
+    assert_eq!(p.panes[0].path, grandchild);
+    assert!(p.watch_notice(PaneId::Left).is_some());
+    assert_eq!(p.desktop.notice_generation, notices);
+}
+
+/// Ctrl+R of a folder listed through the session lists it again as a navigation, which
+/// the backend serves through the session: the rows are replaced without a prompt.
+#[test]
+fn refresh_of_an_authorized_subfolder_re_lists_it_through_the_session() {
+    let (mut p, _, path) = authorized_listing();
+    let child = path.join("private");
+    session_listing(&mut p, &child, "inner.txt");
+    let notices = p.desktop.notice_generation;
+    let sent = RefCell::new(Vec::new());
+    assert!(p.refresh_location(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    let requests = listings(&sent.borrow());
+    let [(refresh, ref refreshed, "Navigate")] = requests[..] else {
+        panic!("Refresh lists the folder once, as a navigation: {requests:?}");
+    };
+    assert_eq!(refreshed, &child);
+    p.apply(Event::ListingAuthorized {
+        pane: PaneId::Left,
+        navigation: refresh,
+    });
+    finish(
+        &mut p,
+        PaneId::Left,
+        refresh,
+        vec![Entry::new(
+            EntryId(10),
+            child.join("changed.txt"),
+            EntryKind::File,
+        )],
+    );
+    assert_eq!(p.panes[0].successful_generation, Some(refresh));
+    assert_eq!(p.panes[0].entries[0].path, child.join("changed.txt"));
+    assert_eq!(p.desktop.notice_generation, notices);
+    assert!(p.watch_notice(PaneId::Left).is_some());
+    assert!(!p.refresh_if_changed(PaneId::Left, refresh, &|_| {
+        panic!("re-listed authorized rows are re-read automatically")
+    }));
+    // A stale mark for another navigation changes nothing.
+    p.apply(Event::ListingAuthorized {
+        pane: PaneId::Left,
+        navigation: NavigationId(refresh.0 - 1),
+    });
+    assert!(!p.panes[0].loading);
+}
+
+/// Backspace above the authorized folder lists its parent with ordinary rights: the pane
+/// shows those rows as an ordinary listing, and a later denial of the folder offers
+/// authorization again instead of reusing the ended authorization.
+#[test]
+fn backspace_above_the_authorized_folder_ends_the_authorized_state() {
+    let (mut p, _, path) = authorized_listing();
+    let child = path.join("private");
+    session_listing(&mut p, &child, "inner.txt");
+    // Up to the authorized folder: still inside, still authorized.
+    let sent = RefCell::new(Vec::new());
+    assert!(p.up(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    let requests = listings(&sent.borrow());
+    let [(to_root, ref listed, "Navigate")] = requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(listed, &path);
+    p.apply(Event::ListingAuthorized {
+        pane: PaneId::Left,
+        navigation: to_root,
+    });
+    finish(&mut p, PaneId::Left, to_root, vec![]);
+    assert!(p.watch_notice(PaneId::Left).is_some());
+    // Above it: an ordinary listing.
+    let sent = RefCell::new(Vec::new());
+    assert!(p.up(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    let requests = listings(&sent.borrow());
+    let [(above, ref listed, "Navigate")] = requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(listed.as_path(), path.parent().unwrap());
+    finish(
+        &mut p,
+        PaneId::Left,
+        above,
+        vec![Entry::new(EntryId(1), path.clone(), EntryKind::Directory)],
+    );
+    assert_eq!(p.panes[0].path, path.parent().unwrap());
+    assert!(p.watch_notice(PaneId::Left).is_none());
+    assert!(!p.panes[0].shows_authorized_rows());
+    // Entering the folder again is denied with ordinary rights; the backend offers a new
+    // authorization, and nothing is listed through the ended one.
+    assert!(p.navigate(PaneId::Left, path.clone(), None, &|_| true));
+    let again = NavigationId(p.panes[0].generation);
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: again,
+        error: FsError::from_io("list", &path, io::ErrorKind::PermissionDenied.into()),
+    });
+    let (title, body) = p.desktop.notice.clone().unwrap();
+    assert_eq!(title, "Cannot open folder");
+    assert_eq!(body, "Access to this folder was denied.");
+    offer(&mut p, again, &path);
+    assert!(p.notice_can_authorize());
+}
+
+/// A link inside the authorized folder that leads elsewhere is refused by the helper; the
+/// notice says why, and the backend's offer authorizes that folder on its own.
+#[test]
+fn a_link_that_leads_outside_the_authorized_folder_says_so_and_offers_its_own_retry() {
+    let (mut p, _, path) = authorized_listing();
+    let link = path.join("link");
+    assert!(p.navigate(PaneId::Left, link.clone(), None, &|_| true));
+    let opened = NavigationId(p.panes[0].generation);
+    p.apply(Event::ListingFailed {
+        pane: PaneId::Left,
+        navigation: opened,
+        error: FsError::outside_authorization(&link, &path, "The helper refused it."),
+    });
+    let (title, body) = p.desktop.notice.clone().unwrap();
+    assert_eq!(title, "Cannot open folder");
+    assert!(
+        body.starts_with(
+            "Access to this folder was denied. This folder is outside the authorized folder"
+        ),
+        "{body}"
+    );
+    assert!(body.contains(path.to_str().unwrap()), "{body}");
+    assert!(!body.contains("The helper refused it."), "{body}");
+    assert!(p.desktop.notice_details.contains("The helper refused it."));
+    offer(&mut p, opened, &link);
+    assert!(p.notice_can_authorize());
+    assert_eq!(p.panes[0].path, path, "the authorized rows stay shown");
+}

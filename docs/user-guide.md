@@ -344,11 +344,13 @@ and folders open without asking again. It never saves the password to disk, and 
 never offers it to another device. If the device later rejects it, for example
 because the password changed, the dialog asks again.
 
-Folders that you may not read offer **Retry with authorization**: a one-time listing
-through Windows UAC or Linux polkit (`pkexec` and a desktop authentication agent) by
-`midnight-elevated-listing`, the [elevated listing helper](glossary.md#elevated-listing-helper), which the build helpers build beside the host. The helper
-lists the requested folder only, loads no plugins, and does not elevate file
-operations, change permissions or store passwords
+Folders that you may not read offer **Retry with authorization**: a listing through
+Windows UAC or Linux polkit (`pkexec` and a desktop authentication agent) by
+`midnight-elevated-listing`, the [elevated listing helper](glossary.md#elevated-listing-helper), which the build helpers build beside the host. One
+consent covers the folder you authorized and the folders inside it for a while (see
+below). The helper lists folders only, never anything outside the folder you authorized,
+loads no plugins, and does not open or read files, elevate file operations, change
+permissions or store passwords
 ([authorization boundary](../SECURITY.md#directory-authorization-helper)). Because it runs
 as Administrator or root, the host uses it only from beside the running `midnight-explorer`,
 and only where no other account can change it:
@@ -390,15 +392,29 @@ Copy-Item -Recurse -Force -LiteralPath _build\release\viewers, _build\release\fi
 
 A folder listed with authorization stays in the panel as it was listed. Your account
 still cannot read it, so the panel's status row says *Listed with authorization; not
-updated automatically. Refresh offers authorization again.*: changes in the folder are
-not shown, and nothing lists it again on its own (not a change in the folder, **Show
-hidden files**, a finished job or a drive list change). Sorting keeps the listed rows.
-**Refresh** (Ctrl+R) lists the folder again with your account's rights; while access is
-still denied, the rows stay and **Cannot open folder** offers **Retry with authorization**
-again, which asks your operating system once more. Opening a subfolder that you may not
-read offers its own retry the same way; going up or elsewhere leaves the listing. Actions
-on its entries (copying, viewing, folder sizes) run with your account's rights and can be
-denied. Nothing asks for permission unless you choose **Retry with authorization**.
+updated automatically. Subfolders and Refresh do not ask again for a while.*: changes in
+the folder are not shown, and nothing lists it again on its own (not a change in the
+folder, **Show hidden files**, a finished job or a drive list change). Sorting keeps the
+listed rows.
+
+One consent covers the folder and its subfolders. While the panel stays inside the folder
+you authorized, entering a subfolder at any depth that your account may not read, going
+back up to the authorized folder, or **Refresh** (Ctrl+R) lists it through the same
+authorization, without a dialog or prompt; each such listing is shown the same way. A
+folder that your account can read is listed with your own rights as usual. The
+authorization ends when the panel leaves the authorized folder (going up above it, another
+drive, a Hot Path, a tab that shows another folder), when the application closes,
+after 5 minutes without a listing, or 30 minutes after you consented, whichever comes
+first. After that, **Refresh** lists the folder with your account's rights; while access
+is still denied, the rows stay and **Cannot open folder** offers **Retry with
+authorization** again, which asks your operating system once more. A link, junction or
+mount point inside the folder that leads somewhere else is not covered: **Cannot open
+folder** says that the folder is outside the authorized folder and offers its own retry.
+The tree view's disclosure and folder sizes do not use the authorization either.
+
+Only folder listings are authorized. Actions on the entries (opening, viewing or copying a
+file, folder sizes) run with your account's rights and are still denied. Nothing asks for
+permission unless you choose **Retry with authorization**.
 
 ### Windows x64
 
@@ -1841,7 +1857,7 @@ The application workspace (`crates/`):
 | `midnight-ui` | Slint presentation: presenters, the virtualized lazy row model and dialogs |
 | `midnight-ui-bindings` | Generated Slint types, compiled separately from the handwritten presentation |
 | `midnight-ui-input` | Shared keyboard, placement and wheel input policy |
-| `midnight-elevation` | The one-shot elevated directory reader and, on Linux, the HTML viewer's AppArmor profile installation |
+| `midnight-elevation` | The elevated directory reader (one consent lists a folder and its subfolders for a while) and, on Linux, the HTML viewer's AppArmor profile installation |
 | `midnight-native-filesystem-host` | Discovery and loading of the independent native and network filesystem packages, and the host side of their browse and read interface |
 | `midnight-filesystem-host` | Discovery, validation and supervision of filesystem worker processes, such as the archive worker, and their sessions |
 | `midnight-worker-platform` | Process boundary shared by the media and archive worker programs |

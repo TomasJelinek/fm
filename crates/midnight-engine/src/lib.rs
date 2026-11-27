@@ -5,6 +5,7 @@ mod archive_shared;
 mod archive_sizes;
 mod archives;
 pub use archives::ArchiveCapture;
+mod authorized_sessions;
 mod captured_native;
 mod checksum;
 mod checksum_actor;
@@ -540,6 +541,7 @@ impl EngineServices {
         let mut locale_requested = false;
         let mut requests: [Option<Request>; 2] = [None, None];
         let denied_navigations = elevation::DeniedNavigations::default();
+        let authorized_sessions = authorized_sessions::AuthorizedSessions::default();
         let mut navigation_high_water: [Option<NavigationId>; 2] = [None, None];
         let mut tasks = JoinSet::new();
         // Copy/Move and mutation actors retire native ownership before the task drain.
@@ -890,6 +892,7 @@ impl EngineServices {
                         }
                         navigation_high_water[pane.index()] = Some(navigation);
                         denied_navigations.begin(pane, navigation);
+                        drop(authorized_sessions.dispatched(pane, navigation, command.as_ref(), elevated.is_some()));
                         if matches!(&command, Some(Command::ArchiveNavigate { .. } | Command::NetworkNavigate { .. })) {
                             space.leave(pane);
                         }
@@ -1401,6 +1404,7 @@ impl EngineServices {
                             let selection_stream = selection.streaming.clone();
                             let navigation_fallback = self.navigation_fallback.clone();
                             let denied_navigations = denied_navigations.clone();
+                            let sessions = authorized_sessions.clone();
                             let worker_scope = scope.clone();
                             let listing_watch = watcher.as_ref().map(watch::Controller::reporter);
                             let watch = listing_watch.clone();
@@ -1416,7 +1420,7 @@ impl EngineServices {
                                     // The blocking worker owns its permit until it really finishes,
                                     // including when its async parent has been superseded.
                                     let _permit = permit;
-                                    list_directory(ListingTask { elevated, offer_elevation, denied_navigations, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, source_hidden, hide_hidden, shown, continued_sizes, selection_stream, navigation_fallback, watch });
+                                    list_directory(ListingTask { elevated, offer_elevation, denied_navigations, sessions, filesystem, locale, outbox, pane, navigation, path: listing_path, sort, cancel: request_cancel, icons, snapshots: listing_snapshots, source, source_hidden, hide_hidden, shown, continued_sizes, selection_stream, navigation_fallback, watch });
                                 })).await;
                                 if let Err(error) = result
                                     && !error_cancel.is_cancelled() {
@@ -1462,6 +1466,7 @@ impl EngineServices {
         for request in requests.into_iter().flatten() {
             request.cancel();
         }
+        drop(authorized_sessions.end_all());
         for request in size_requests.into_iter().flatten() {
             request.cancel();
         }
@@ -1535,6 +1540,8 @@ struct ListingTask {
     /// The authorization service, when this navigation may offer an authorized retry.
     offer_elevation: Option<Arc<dyn midnight_core::ElevatedDirectoryService>>,
     denied_navigations: elevation::DeniedNavigations,
+    /// The panes' authorization sessions (`authorized_sessions`).
+    sessions: authorized_sessions::AuthorizedSessions,
     navigation_fallback: Option<Arc<dyn midnight_core::NavigationFallbackService>>,
     selection_stream: streaming_selection::StreamingSelections,
     filesystem: Arc<dyn FileSystem>,
@@ -1565,6 +1572,7 @@ fn list_directory(task: ListingTask) {
         elevated,
         offer_elevation,
         denied_navigations,
+        sessions,
         navigation_fallback,
         selection_stream,
         filesystem,
@@ -1616,7 +1624,9 @@ fn list_directory(task: ListingTask) {
     let mut entries = Vec::new();
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     // What the authorization helper reads, this process may not: its folder is
-    // never subscribed or checked (`watch::Controller::authorized_listing_started`).
+    // never subscribed or checked (`watch::Controller::authorized_listing_started`,
+    // `Reporter::listing_authorized`).
+    let authorized = std::cell::Cell::new(false);
     let mut watch = watch.filter(|_| elevated.is_none());
     let done = watch.clone();
     let mut hidden = 0_usize;
@@ -1626,7 +1636,9 @@ fn list_directory(task: ListingTask) {
         }
         // The folder is readable: the pane's watch may subscribe it while the
         // rest is listed.
-        if let Some(watch) = watch.take() {
+        if !authorized.get()
+            && let Some(watch) = watch.take()
+        {
             watch.listing_read(pane, navigation);
         }
         if hide_hidden && hidden_entries::is_hidden(&entry) {
@@ -1660,20 +1672,35 @@ fn list_directory(task: ListingTask) {
         }
         true
     };
-    let result = if let Some(service) = &elevated {
-        service.read_directory(&path, &cancel, &mut emit)
-    } else {
-        filesystem.read_directory(&path, &cancel, &mut emit)
-    };
+    let result = authorized_sessions::Reader {
+        elevated: elevated.as_deref(),
+        filesystem: filesystem.as_ref(),
+        sessions: &sessions,
+        pane,
+        navigation,
+        authorized: &authorized,
+    }
+    .read(&path, &cancel, &mut emit);
     if cancel.is_cancelled() {
         return;
     }
+    let authorized = authorized.get();
     // Before the rows are published: the pane's watch checks them once shown
-    // if its subscription took effect only after this.
+    // if its subscription took effect only after this. Rows that the pane's
+    // authorization session read are marked instead, and so is the UI's request.
+    if let (Ok(()), Some(done)) = (&result, &done) {
+        if !authorized {
+            done.listing_done(pane, navigation);
+        } else {
+            done.listing_authorized(pane, navigation);
+        }
+    }
     if result.is_ok()
-        && let Some(done) = &done
+        && authorized
+        && elevated.is_none()
+        && !outbox.blocking_send(Event::ListingAuthorized { pane, navigation }, &cancel)
     {
-        done.listing_done(pane, navigation);
+        return;
     }
     if let Err(error) = result {
         listing_failed(&snapshots, pane, navigation);
@@ -1681,7 +1708,11 @@ fn list_directory(task: ListingTask) {
         // the retry can ask for permission. The service caches the answer.
         let availability = offer_elevation
             .as_ref()
-            .filter(|_| error.kind == std::io::ErrorKind::PermissionDenied && path.is_absolute())
+            .filter(|_| {
+                error.kind == std::io::ErrorKind::PermissionDenied
+                    && path.is_absolute()
+                    && !authorized
+            })
             .map(|service| service.availability());
         if let Some(availability) = availability
             && denied_navigations.record(
@@ -1713,7 +1744,7 @@ fn list_directory(task: ListingTask) {
             return;
         }
         // A path that names a file: the path bar shows that file in its folder.
-        if elevated.is_none()
+        if !authorized
             && !not_a_folder::report(
                 filesystem.as_ref(),
                 &outbox,
@@ -1728,7 +1759,7 @@ fn list_directory(task: ListingTask) {
         let event = match navigation_fallback::next_path(
             &path,
             &error,
-            if elevated.is_some() {
+            if authorized {
                 None
             } else {
                 navigation_fallback.as_deref()
@@ -1777,7 +1808,7 @@ fn list_directory(task: ListingTask) {
         if cancel.is_cancelled() {
             return;
         }
-        let complete = elevated.is_some() || filesystem.listing_metadata_complete(entry);
+        let complete = authorized || filesystem.listing_metadata_complete(entry);
         if let Some(shown) = &shown {
             let value = if complete {
                 Some(entry.metadata.clone())

@@ -1,4 +1,9 @@
 use super::*;
+use crate::{
+    helper::{Limits, Session},
+    protocol::FailureKind,
+};
+use midnight_core::{ElevatedListingSession, SessionListingError};
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 fn channel(socket: UnixStream) -> Channel {
@@ -8,6 +13,13 @@ fn channel(socket: UnixStream) -> Channel {
         Instant::now() + Duration::from_secs(2),
     )
     .unwrap()
+}
+/// The helper's listing of `path` as a session's first request.
+fn listed(path: &Path) -> Vec<protocol::WireEntry> {
+    Session::default()
+        .list(&encode_path(path), &Cancellation::default())
+        .result
+        .unwrap()
 }
 fn unique_nonce() -> String {
     let mut nonce = [0; 32];
@@ -25,13 +37,7 @@ fn native_names_and_metadata_preserve_raw_unix_identity() {
     let path = directory.path().join(&name);
     fs::write(&path, b"abc").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-    let reply = crate::helper::reply(
-        Request {
-            path: encode_path(directory.path()),
-        },
-        &Cancellation::default(),
-    )
-    .unwrap();
+    let reply = listed(directory.path());
     assert_eq!(reply.len(), 1);
     assert_eq!(reply[0].name, name.as_bytes());
     assert_eq!(reply[0].size, Some(3));
@@ -45,13 +51,7 @@ fn links_report_their_own_metadata_and_directory_targets() {
     fs::create_dir(directory.path().join("folder")).unwrap();
     symlink("folder", directory.path().join("folder-link")).unwrap();
     symlink("missing", directory.path().join("dangling")).unwrap();
-    let reply = crate::helper::reply(
-        Request {
-            path: encode_path(directory.path()),
-        },
-        &Cancellation::default(),
-    )
-    .unwrap();
+    let reply = listed(directory.path());
     let kind = |name: &str| {
         let entry = reply
             .iter()
@@ -162,30 +162,31 @@ fn nonce_parser_is_bounded_and_handshake_rejects_wrong_nonce() {
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 }
 
+fn empty_reply() -> Reply {
+    Reply {
+        session: false,
+        result: Ok(Vec::new()),
+    }
+}
+
 #[test]
-fn one_shot_handshake_and_framed_reply_survive_peer_close() {
+fn handshake_and_framed_reply_survive_peer_close() {
     let (left, right) = UnixStream::pair().unwrap();
     let nonce = [27; 32];
     let worker = thread::spawn(move || {
         let mut helper = channel(right);
         handshake(&mut helper, &nonce, false).unwrap();
         assert_eq!(
-            protocol::read_request(&mut helper).unwrap().path,
-            b"/fixture"
+            protocol::read_request(&mut helper).unwrap(),
+            Request::List(b"/fixture".to_vec())
         );
-        protocol::write_reply(&mut helper, &Ok(Vec::new())).unwrap();
+        protocol::write_reply(&mut helper, &empty_reply()).unwrap();
     });
     let mut parent = channel(left);
     handshake(&mut parent, &nonce, true).unwrap();
-    protocol::write_request(
-        &mut parent,
-        &Request {
-            path: b"/fixture".to_vec(),
-        },
-    )
-    .unwrap();
+    protocol::write_request(&mut parent, &Request::List(b"/fixture".to_vec())).unwrap();
     worker.join().unwrap();
-    assert_eq!(protocol::read_reply(&mut parent).unwrap(), Ok(Vec::new()));
+    assert_eq!(protocol::read_reply(&mut parent).unwrap(), empty_reply());
 }
 
 #[test]
@@ -204,9 +205,16 @@ fn large_frames_cross_many_socket_buffers_through_readiness_waits() {
     let expected = entries.len();
     // About 4.5 MiB: both ends repeatedly wait for readiness on full or empty buffers.
     let writer = thread::spawn(move || {
-        protocol::write_reply(&mut channel(right), &Ok(entries)).unwrap();
+        let reply = Reply {
+            session: true,
+            result: Ok(entries),
+        };
+        protocol::write_reply(&mut channel(right), &reply).unwrap();
     });
-    let reply = protocol::read_reply(&mut channel(left)).unwrap().unwrap();
+    let reply = protocol::read_reply(&mut channel(left))
+        .unwrap()
+        .result
+        .unwrap();
     writer.join().unwrap();
     assert_eq!(reply.len(), expected);
     assert_eq!(reply[19_999].size, Some(19_999));
@@ -234,7 +242,7 @@ fn blocked_channel_read_cancels_and_deadline_is_enforced() {
 #[test]
 fn truncated_reply_is_rejected() {
     let (left, mut right) = UnixStream::pair().unwrap();
-    right.write_all(b"MELIST01\x20\0\0\0\x01").unwrap();
+    right.write_all(b"MELIST02\x20\0\0\0\x01").unwrap();
     drop(right);
     assert_eq!(
         protocol::read_reply(&mut channel(left)).unwrap_err().kind(),
@@ -280,9 +288,20 @@ fn child_budget_is_reserved_before_launch_and_released_only_after_reaping() {
         ChildSlot::acquire().err().unwrap().kind(),
         io::ErrorKind::WouldBlock
     );
-    drop(first);
+    // A request waits briefly for a slot that a just-closed helper frees once it is reaped.
+    let releaser = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        drop(first);
+    });
+    let third = ChildSlot::acquire_within(RETIRING_WAIT).unwrap();
+    releaser.join().unwrap();
     drop(second);
-    let child = RunningChild::spawn(Command::new("/bin/sleep").arg("10")).unwrap();
+    drop(third);
+    let child = RunningChild::spawn_in(
+        Command::new("/bin/sleep").arg("10"),
+        ChildSlot::acquire().unwrap(),
+    )
+    .unwrap();
     assert_eq!(CHILDREN.load(Ordering::Acquire), 1);
     let pid = child.pid;
     drop(child);
@@ -293,7 +312,13 @@ fn child_budget_is_reserved_before_launch_and_released_only_after_reaping() {
     assert_eq!(CHILDREN.load(Ordering::Acquire), 0);
     assert!(!Path::new(&format!("/proc/{pid}")).exists());
     // Spawn failure drops the sender; the waiting reaper releases its reservation.
-    assert!(RunningChild::spawn(&mut Command::new("/definitely/missing/helper")).is_err());
+    assert!(
+        RunningChild::spawn_in(
+            &mut Command::new("/definitely/missing/helper"),
+            ChildSlot::acquire().unwrap()
+        )
+        .is_err()
+    );
     let deadline = Instant::now() + Duration::from_secs(3);
     while CHILDREN.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
         thread::sleep(TICK);
@@ -394,10 +419,349 @@ fn disconnect_monitor_child() {
         created,
         Instant::now() + Duration::from_secs(30),
         Cancellation::default(),
+        exit_helper,
     )
     .unwrap();
     // The monitor exits this dedicated process when the requester disconnects.
     loop {
         thread::park();
     }
+}
+
+/// A folder tree in a fresh temporary folder: the authorized folder with `child/grandchild`,
+/// a file, a symbolic link to its own `child` and one to a sibling folder outside it.
+struct Tree {
+    _base: tempfile::TempDir,
+    root: PathBuf,
+    sibling: PathBuf,
+}
+
+fn tree() -> Tree {
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("authorized");
+    let sibling = base.path().join("authorized-sibling");
+    fs::create_dir_all(root.join("child").join("grandchild")).unwrap();
+    fs::write(root.join("file.txt"), b"file").unwrap();
+    fs::create_dir_all(sibling.join("nested")).unwrap();
+    fs::write(sibling.join("secret.txt"), b"secret").unwrap();
+    symlink("child", root.join("inside")).unwrap();
+    symlink(&sibling, root.join("outside")).unwrap();
+    symlink("../authorized-sibling", root.join("relative-outside")).unwrap();
+    Tree {
+        _base: base,
+        root,
+        sibling,
+    }
+}
+
+fn names(entries: &[protocol::WireEntry]) -> Vec<PathBuf> {
+    let mut names: Vec<_> = entries
+        .iter()
+        .map(|entry| decode_path(&entry.name).unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+/// The helper's containment, run unprivileged: its first listing makes the folder the
+/// session's root; later requests are served for that folder and the folders inside it only,
+/// decided by name before anything is opened and on the opened folder's final location.
+#[test]
+fn the_helper_lists_the_authorized_folder_and_its_subfolders_only() {
+    let tree = tree();
+    let cancel = Cancellation::default();
+    let mut session = Session::default();
+    let mut list = |path: &Path| session.list(&encode_path(path), &cancel);
+    let reply = list(&tree.root);
+    assert!(reply.session, "the first listing establishes the session");
+    assert_eq!(
+        names(&reply.result.unwrap()),
+        ["child", "file.txt", "inside", "outside", "relative-outside"].map(PathBuf::from)
+    );
+    for path in [
+        tree.root.clone(),
+        tree.root.join("child"),
+        tree.root.join("child").join("grandchild"),
+        // A link whose target is inside the folder leads to a subfolder.
+        tree.root.join("inside"),
+        tree.root.join("inside").join("grandchild"),
+    ] {
+        let reply = list(&path);
+        assert!(reply.session);
+        assert!(
+            reply.result.is_ok(),
+            "{}: {:?}",
+            path.display(),
+            reply.result
+        );
+    }
+    assert_eq!(
+        names(&list(&tree.root.join("inside")).result.unwrap()),
+        [PathBuf::from("grandchild")]
+    );
+    for path in [
+        tree.root.parent().unwrap().to_owned(),
+        tree.root.join(".."),
+        tree.root.join("child").join("..").join(".."),
+        tree.root.join("..").join("authorized-sibling"),
+        tree.sibling.clone(),
+        tree.root.join("outside"),
+        tree.root.join("outside").join("nested"),
+        tree.root.join("relative-outside"),
+        PathBuf::from("/proc"),
+    ] {
+        let reply = list(&path);
+        assert!(reply.session, "a refusal keeps the session");
+        let failure = reply.result.unwrap_err();
+        assert_eq!(
+            failure.kind,
+            FailureKind::Outside,
+            "{}: {}",
+            path.display(),
+            failure.message
+        );
+    }
+    // A file and a missing folder inside it are refused for their own reasons.
+    for path in [tree.root.join("file.txt"), tree.root.join("missing")] {
+        let reply = list(&path);
+        assert!(reply.session);
+        assert_eq!(
+            reply.result.unwrap_err().kind,
+            FailureKind::Other,
+            "{}",
+            path.display()
+        );
+    }
+}
+
+/// A filesystem mounted on a folder inside the authorized folder is another volume: the
+/// root folder's own subfolders are listed, the separately mounted `/proc` is not.
+#[test]
+fn a_mount_inside_the_authorized_folder_is_outside_it() {
+    let cancel = Cancellation::default();
+    let mut session = Session::default();
+    assert!(session.list(b"/", &cancel).session);
+    let reply = session.list(b"/etc", &cancel);
+    assert!(reply.result.is_ok(), "{:?}", reply.result);
+    let reply = session.list(b"/proc", &cancel);
+    assert!(reply.session);
+    assert_eq!(reply.result.unwrap_err().kind, FailureKind::Outside);
+}
+
+#[test]
+fn a_failed_first_listing_establishes_no_session() {
+    let base = tempfile::tempdir().unwrap();
+    let mut session = Session::default();
+    let reply = session.list(
+        &encode_path(&base.path().join("missing")),
+        &Cancellation::default(),
+    );
+    assert!(!reply.session);
+    assert!(reply.result.is_err());
+    assert!(!session.established());
+}
+
+fn ignore_violation() {}
+
+/// Both ends of a session in this process: the helper's loop on a thread over a socket pair,
+/// and the requester's connection after the first listing of `root`.
+fn session_over_socket(
+    root: &Path,
+    idle: Duration,
+    lifetime: Duration,
+) -> (Connection, thread::JoinHandle<io::Result<()>>) {
+    let (requester, helper_end) = UnixStream::pair().unwrap();
+    let parent = std::process::id();
+    let created = stamp(parent).unwrap();
+    let helper = thread::spawn(move || {
+        let limits = Limits {
+            request: Duration::from_secs(30),
+            idle,
+            lifetime,
+        };
+        let started = Instant::now();
+        let mut helper = SocketRequester {
+            channel: Channel::new(
+                helper_end,
+                Cancellation::default(),
+                started + limits.request,
+            )
+            .unwrap(),
+            parent,
+            created,
+            terminate: ignore_violation,
+        };
+        helper::serve_session(&mut helper, started, started + limits.request, &limits)
+    });
+    let mut connection = Connection {
+        channel: channel(requester),
+        _child: None,
+    };
+    let reply = connection
+        .exchange(&Request::List(encode_path(root)), &Cancellation::default())
+        .unwrap();
+    assert!(reply.session);
+    reply.result.unwrap();
+    (connection, helper)
+}
+
+fn read(
+    session: &dyn ElevatedListingSession,
+    path: &Path,
+) -> Result<Vec<PathBuf>, SessionListingError> {
+    let mut paths = Vec::new();
+    session
+        .read_directory(path, &Cancellation::default(), &mut |entry| {
+            paths.push(entry.native_path().unwrap().to_owned());
+            true
+        })
+        .map(|()| {
+            paths.sort();
+            paths
+        })
+}
+
+/// One consent, many listings: the requester's session lists subfolders over the same
+/// socket without another helper, the helper refuses what is outside even when asked
+/// directly, and closing the session ends the helper.
+#[test]
+fn a_session_serves_many_requests_over_one_socket_until_it_is_closed() {
+    let tree = tree();
+    let (mut connection, helper) =
+        session_over_socket(&tree.root, Duration::from_secs(30), Duration::from_secs(60));
+    let reply = connection
+        .exchange(
+            &Request::List(encode_path(&tree.sibling)),
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert!(reply.session);
+    assert_eq!(reply.result.unwrap_err().kind, FailureKind::Outside);
+    let session = crate::session::connected(&tree.root, connection, Duration::from_secs(60));
+    assert_eq!(session.root(), tree.root);
+    let child = tree.root.join("child");
+    assert_eq!(read(&*session, &child).unwrap(), [child.join("grandchild")]);
+    assert_eq!(
+        read(&*session, &tree.root.join("inside")).unwrap(),
+        [tree.root.join("inside").join("grandchild")]
+    );
+    for outside in [tree.root.join("outside"), tree.sibling.clone()] {
+        match read(&*session, &outside) {
+            Err(SessionListingError::Outside(error)) => {
+                assert!(error.is_outside_authorization(), "{error}");
+                assert_eq!(error.kind, io::ErrorKind::PermissionDenied);
+                assert_eq!(error.path, outside);
+            }
+            other => panic!("{}: {other:?}", outside.display()),
+        }
+    }
+    match read(&*session, &tree.root.join("missing")) {
+        Err(SessionListingError::Failed(error)) => {
+            assert_eq!(error.operation, "authorized directory listing");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(session.is_live(), "refusals and failures keep the session");
+    assert_eq!(read(&*session, &tree.root).unwrap().len(), 5);
+    drop(session);
+    helper.join().unwrap().unwrap();
+}
+
+#[test]
+fn a_session_ends_when_idle_too_old_or_disconnected() {
+    let tree = tree();
+    // The helper ends an idle session by itself; its requester learns it when it asks.
+    let (mut connection, helper) = session_over_socket(
+        &tree.root,
+        Duration::from_millis(200),
+        Duration::from_secs(60),
+    );
+    helper.join().unwrap().unwrap();
+    assert!(
+        connection
+            .exchange(
+                &Request::List(encode_path(&tree.root)),
+                &Cancellation::default()
+            )
+            .is_err()
+    );
+    // So does a session whose lifetime passed, however recently it was used.
+    let (connection, helper) = session_over_socket(
+        &tree.root,
+        Duration::from_secs(30),
+        Duration::from_millis(300),
+    );
+    helper.join().unwrap().unwrap();
+    let session = crate::session::connected(&tree.root, connection, Duration::from_secs(60));
+    assert!(matches!(
+        read(&*session, &tree.root),
+        Err(SessionListingError::Ended)
+    ));
+    assert!(!session.is_live());
+    // The requester ends an idle session without asking, which ends its helper.
+    let (connection, helper) =
+        session_over_socket(&tree.root, Duration::from_secs(30), Duration::from_secs(60));
+    let session = crate::session::connected(&tree.root, connection, Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(300));
+    assert!(!session.is_live());
+    assert!(matches!(
+        read(&*session, &tree.root),
+        Err(SessionListingError::Ended)
+    ));
+    helper.join().unwrap().unwrap();
+    // A requester that disconnects without a close request ends it too.
+    let (requester, helper_end) = UnixStream::pair().unwrap();
+    let parent = std::process::id();
+    let created = stamp(parent).unwrap();
+    let helper = thread::spawn(move || {
+        let started = Instant::now();
+        let mut helper = SocketRequester {
+            channel: Channel::new(helper_end, Cancellation::default(), started + TIMEOUT).unwrap(),
+            parent,
+            created,
+            terminate: ignore_violation,
+        };
+        helper::serve_session(&mut helper, started, started + TIMEOUT, &Limits::SESSION)
+    });
+    let mut requester = channel(requester);
+    protocol::write_request(&mut requester, &Request::List(encode_path(&tree.root))).unwrap();
+    assert!(protocol::read_reply(&mut requester).unwrap().session);
+    drop(requester);
+    helper.join().unwrap().unwrap();
+}
+
+/// A cancelled request whose reply arrives within the grace keeps the session in step; one
+/// whose reply does not arrive in time fails, and the requester's session then ends.
+#[test]
+fn a_cancelled_request_keeps_the_session_only_when_its_reply_arrives_soon() {
+    let tree = tree();
+    let (mut connection, helper) =
+        session_over_socket(&tree.root, Duration::from_secs(30), Duration::from_secs(60));
+    let cancelled = Cancellation::default();
+    cancelled.cancel();
+    let reply = connection
+        .exchange(&Request::List(encode_path(&tree.root)), &cancelled)
+        .unwrap();
+    assert_eq!(names(&reply.result.unwrap()).len(), 5);
+    let reply = connection
+        .exchange(
+            &Request::List(encode_path(&tree.root.join("child"))),
+            &Cancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(names(&reply.result.unwrap()), [PathBuf::from("grandchild")]);
+    drop(connection);
+    helper.join().unwrap().unwrap();
+    // Nobody answers: the cancelled request gives up after the grace.
+    let (requester, _silent) = UnixStream::pair().unwrap();
+    let mut connection = Connection {
+        channel: channel(requester),
+        _child: None,
+    };
+    let started = Instant::now();
+    let error = connection
+        .exchange(&Request::List(encode_path(&tree.root)), &cancelled)
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+    assert!(started.elapsed() >= CANCEL_GRACE);
 }

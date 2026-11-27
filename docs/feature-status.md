@@ -118,8 +118,13 @@ How to read it:
   from the command line; size-warning and error notices with details; **Retry with
   authorization** for a denied folder (UAC, polkit), offered only when the checks that the
   retry runs pass, otherwise the message says why (a missing or altered helper, a folder
-  other accounts can change, no trusted `pkexec`); its listing stays shown, unwatched,
-  until Refresh offers the retry again. Builds that record the shipped helper's
+  other accounts can change, no trusted `pkexec`); one consent lists the folder and,
+  without another prompt while the panel stays inside it (up to 30 minutes, 5 minutes
+  after the last listing), its subfolders and Refresh, refusing links and mount points
+  that lead elsewhere; the listing stays shown, unwatched, and file actions inside stay
+  denied; after the authorization ends, Refresh offers the retry again (tree disclosure
+  and folder sizes are not covered; actual UAC/polkit consent of a session is verified
+  manually only). Builds that record the shipped helper's
   digest also allow it from a per-user installation; release packaging does not record
   it yet.
 - **Open:** the startup tab restore replaces a panel that already shows the saved

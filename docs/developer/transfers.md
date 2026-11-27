@@ -1557,7 +1557,7 @@ reaches it, with Skip and Skip all, and the other selected items are still copie
   and shared with every folder it creates or merges into): whether symbolic links may be
   created, and each destination volume's facts (network location, reparse points,
   filesystem name), keyed by the volume's serial number. The `midnight-elevation` helper
-  does not create links: it is a one-shot elevated directory reader (and the AppArmor
+  does not create links: it is an elevated, read-only directory reader (and the AppArmor
   installer on Linux), and letting an elevated process create links at destinations the
   unelevated application chooses would widen its authority beyond reading.
 

@@ -1178,6 +1178,9 @@ impl Presenter {
             }
             return;
         }
+        let Some(event) = self.apply_authorized_listing(event) else {
+            return;
+        };
         if let Event::FolderPresence(result) = event {
             self.apply_folder_presence(result);
             return;

@@ -840,6 +840,15 @@ pub enum Event {
         path: PathBuf,
         availability: crate::ElevationAvailability,
     },
+    /// The listing dispatched as `navigation` was denied with this process's rights and read
+    /// its folder through the pane's live authorization of an enclosing folder
+    /// ([`crate::ElevatedListingSession`]), without another prompt. Its rows, like an
+    /// authorized retry's, are a snapshot of a folder this process may not read. Sent just
+    /// before its [`Event::ListingFinished`].
+    ListingAuthorized {
+        pane: PaneId,
+        navigation: NavigationId,
+    },
     ListingFailed {
         pane: PaneId,
         navigation: NavigationId,

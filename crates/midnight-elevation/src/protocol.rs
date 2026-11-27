@@ -1,15 +1,33 @@
-//! A single bounded request and response. Names retain native code units, never display text.
-use std::io::{self, Cursor, Read, Write};
+//! Bounded frames of one authorization session. Names retain native code units, never display
+//! text. The first request names the folder the user authorized; while the helper's replies
+//! say that the session continues, later requests name that folder or a folder inside it.
+use std::{
+    io::{self, Cursor, Read, Write},
+    time::Duration,
+};
 
 pub(crate) const MAX_FRAME: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_ENTRIES: usize = 250_000;
 const MAX_PATH: usize = 256 * 1024;
 const MAX_ERROR: usize = 16 * 1024;
-const MAGIC: &[u8; 8] = b"MELIST01";
+/// Version 2: sessions. A helper of another version refuses every frame.
+const MAGIC: &[u8; 8] = b"MELIST02";
+
+/// Deadline of one exchange: the first one from the helper's start (the requester's own
+/// deadline also covers the consent prompt), each later one from its request.
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long the helper waits for the next request after a reply: no longer than a single
+/// exchange may take, so an idle session keeps its consent no longer than one listing could.
+pub(crate) const IDLE_TIMEOUT: Duration = REQUEST_TIMEOUT;
+/// The longest life of a session from the helper's start, however busy it is.
+pub(crate) const LIFETIME: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Request {
-    pub path: Vec<u8>,
+pub(crate) enum Request {
+    /// List this folder (native code units of an absolute path).
+    List(Vec<u8>),
+    /// End the session.
+    Close,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct WireEntry {
@@ -20,12 +38,27 @@ pub(crate) struct WireEntry {
     pub native_attributes: Option<u32>,
     pub unix_mode: Option<u32>,
 }
+/// Why the helper did not list a folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailureKind {
+    Other = 0,
+    /// Denied even with authorization.
+    Denied = 1,
+    /// Not the authorized folder or inside it.
+    Outside = 2,
+}
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Failure {
-    pub denied: bool,
+    pub kind: FailureKind,
     pub message: String,
 }
-pub(crate) type Reply = Result<Vec<WireEntry>, Failure>;
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Reply {
+    /// The helper serves further requests of this session after this reply; otherwise it
+    /// ends.
+    pub session: bool,
+    pub result: Result<Vec<WireEntry>, Failure>,
+}
 
 pub(crate) fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -90,6 +123,13 @@ fn byte(input: &mut impl Read) -> io::Result<u8> {
     input.read_exact(&mut value)?;
     Ok(value[0])
 }
+fn flag(input: &mut impl Read) -> io::Result<bool> {
+    match byte(input)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(invalid("Invalid elevated listing flag")),
+    }
+}
 fn optional_u64(out: &mut Vec<u8>, value: Option<u64>) {
     out.push(u8::from(value.is_some()));
     if let Some(value) = value {
@@ -97,33 +137,40 @@ fn optional_u64(out: &mut Vec<u8>, value: Option<u64>) {
     }
 }
 fn read_optional_u64(input: &mut impl Read) -> io::Result<Option<u64>> {
-    match byte(input)? {
-        0 => Ok(None),
-        1 => {
-            let mut value = [0; 8];
-            input.read_exact(&mut value)?;
-            Ok(Some(u64::from_le_bytes(value)))
-        }
-        _ => Err(invalid("Invalid elevated listing option")),
+    if !flag(input)? {
+        return Ok(None);
     }
+    let mut value = [0; 8];
+    input.read_exact(&mut value)?;
+    Ok(Some(u64::from_le_bytes(value)))
 }
 pub(crate) fn write_request(out: &mut impl Write, request: &Request) -> io::Result<()> {
     let mut data = Vec::new();
-    bytes(&mut data, &request.path, MAX_PATH)?;
+    match request {
+        Request::List(path) => {
+            data.push(0);
+            bytes(&mut data, path, MAX_PATH)?;
+        }
+        Request::Close => data.push(1),
+    }
     frame(out, &data)
 }
 pub(crate) fn read_request(input: &mut impl Read) -> io::Result<Request> {
     let mut data = read_frame(input)?;
-    let path = read_bytes(&mut data, MAX_PATH)?;
+    let request = match byte(&mut data)? {
+        0 => Request::List(read_bytes(&mut data, MAX_PATH)?),
+        1 => Request::Close,
+        _ => return Err(invalid("Unknown elevated listing request")),
+    };
     done(&data)?;
-    Ok(Request { path })
+    Ok(request)
 }
 pub(crate) fn write_reply(out: &mut impl Write, reply: &Reply) -> io::Result<()> {
-    let mut data = Vec::new();
-    match reply {
+    let mut data = vec![u8::from(reply.session)];
+    match &reply.result {
         Err(error) => {
             data.push(0);
-            data.push(u8::from(error.denied));
+            data.push(error.kind as u8);
             bytes(&mut data, error.message.as_bytes(), MAX_ERROR)?;
         }
         Ok(entries) => {
@@ -147,97 +194,184 @@ pub(crate) fn write_reply(out: &mut impl Write, reply: &Reply) -> io::Result<()>
     }
     frame(out, &data)
 }
+fn read_entries(data: &mut Cursor<Vec<u8>>) -> io::Result<Vec<WireEntry>> {
+    let length = read_u32(data)? as usize;
+    if length > MAX_ENTRIES {
+        return Err(invalid("Too many directory entries"));
+    }
+    let mut entries = Vec::with_capacity(length);
+    for _ in 0..length {
+        let name = read_bytes(data, MAX_PATH)?;
+        let kind = byte(data)?;
+        if kind > 4 {
+            return Err(invalid("Unknown entry kind"));
+        }
+        let size = read_optional_u64(data)?;
+        let modified = read_optional_u64(data)?
+            .map(|seconds| {
+                let nanos = read_u32(data)?;
+                if nanos >= 1_000_000_000 {
+                    return Err(invalid("Invalid timestamp"));
+                }
+                Ok((seconds as i64, nanos))
+            })
+            .transpose()?;
+        let native_attributes = read_optional_u64(data)?
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| invalid("Invalid native attributes"))?;
+        let unix_mode = read_optional_u64(data)?
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| invalid("Invalid Unix mode"))?;
+        entries.push(WireEntry {
+            name,
+            kind,
+            size,
+            modified,
+            native_attributes,
+            unix_mode,
+        });
+    }
+    Ok(entries)
+}
 pub(crate) fn read_reply(input: &mut impl Read) -> io::Result<Reply> {
     let mut data = read_frame(input)?;
-    let reply = match byte(&mut data)? {
-        0 => {
-            let denied = match byte(&mut data)? {
-                0 => false,
-                1 => true,
-                _ => return Err(invalid("Invalid error kind")),
-            };
-            let message = String::from_utf8(read_bytes(&mut data, MAX_ERROR)?)
-                .map_err(|_| invalid("Invalid error text"))?;
-            Err(Failure { denied, message })
-        }
-        1 => {
-            let length = read_u32(&mut data)? as usize;
-            if length > MAX_ENTRIES {
-                return Err(invalid("Too many directory entries"));
-            }
-            let mut entries = Vec::with_capacity(length);
-            for _ in 0..length {
-                let name = read_bytes(&mut data, MAX_PATH)?;
-                let kind = byte(&mut data)?;
-                if kind > 4 {
-                    return Err(invalid("Unknown entry kind"));
-                }
-                let size = read_optional_u64(&mut data)?;
-                let modified = read_optional_u64(&mut data)?
-                    .map(|seconds| {
-                        let nanos = read_u32(&mut data)?;
-                        if nanos >= 1_000_000_000 {
-                            return Err(invalid("Invalid timestamp"));
-                        }
-                        Ok((seconds as i64, nanos))
-                    })
-                    .transpose()?;
-                let native_attributes = read_optional_u64(&mut data)?
-                    .map(u32::try_from)
-                    .transpose()
-                    .map_err(|_| invalid("Invalid native attributes"))?;
-                let unix_mode = read_optional_u64(&mut data)?
-                    .map(u32::try_from)
-                    .transpose()
-                    .map_err(|_| invalid("Invalid Unix mode"))?;
-                entries.push(WireEntry {
-                    name,
-                    kind,
-                    size,
-                    modified,
-                    native_attributes,
-                    unix_mode,
-                });
-            }
-            Ok(entries)
-        }
-        _ => return Err(invalid("Invalid listing response")),
+    let session = flag(&mut data)?;
+    let result = if flag(&mut data)? {
+        Ok(read_entries(&mut data)?)
+    } else {
+        let kind = match byte(&mut data)? {
+            0 => FailureKind::Other,
+            1 => FailureKind::Denied,
+            2 => FailureKind::Outside,
+            _ => return Err(invalid("Invalid error kind")),
+        };
+        let message = String::from_utf8(read_bytes(&mut data, MAX_ERROR)?)
+            .map_err(|_| invalid("Invalid error text"))?;
+        Err(Failure { kind, message })
     };
     done(&data)?;
-    Ok(reply)
+    Ok(Reply { session, result })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn arbitrary_native_code_units_round_trip() {
-        let request = Request {
-            path: vec![0xff, 0, 0xd8, 1],
-        };
-        let mut wire = Vec::new();
-        write_request(&mut wire, &request).unwrap();
-        assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
-        let reply = Ok(vec![WireEntry {
+
+    fn entry() -> WireEntry {
+        WireEntry {
             name: vec![0xff, 0x80],
             kind: 2,
             size: Some(u64::MAX),
             modified: Some((-1, 123)),
             native_attributes: Some(2),
             unix_mode: Some(0o100600),
-        }]);
+        }
+    }
+
+    #[test]
+    fn arbitrary_native_code_units_round_trip() {
+        let request = Request::List(vec![0xff, 0, 0xd8, 1]);
+        let mut wire = Vec::new();
+        write_request(&mut wire, &request).unwrap();
+        assert_eq!(read_request(&mut wire.as_slice()).unwrap(), request);
+        let reply = Reply {
+            session: true,
+            result: Ok(vec![entry()]),
+        };
         wire.clear();
         write_reply(&mut wire, &reply).unwrap();
         assert_eq!(read_reply(&mut wire.as_slice()).unwrap(), reply);
     }
+
+    /// One stream carries the requests and replies of a whole session in order: listings,
+    /// each kind of refusal, and the closing request.
     #[test]
-    fn oversized_and_truncated_frames_are_rejected() {
+    fn a_session_carries_many_requests_and_replies_in_order() {
+        let requests = [
+            Request::List(b"root".to_vec()),
+            Request::List(b"root/child".to_vec()),
+            Request::List(b"root/link".to_vec()),
+            Request::List(b"root/private".to_vec()),
+            Request::Close,
+        ];
+        let mut wire = Vec::new();
+        for request in &requests {
+            write_request(&mut wire, request).unwrap();
+        }
+        let mut input = wire.as_slice();
+        for request in &requests {
+            assert_eq!(&read_request(&mut input).unwrap(), request);
+        }
+        assert!(input.is_empty());
+        let failure = |kind, message: &str| Failure {
+            kind,
+            message: message.into(),
+        };
+        let replies = [
+            Reply {
+                session: true,
+                result: Ok(vec![entry()]),
+            },
+            Reply {
+                session: true,
+                result: Ok(Vec::new()),
+            },
+            Reply {
+                session: true,
+                result: Err(failure(FailureKind::Outside, "outside")),
+            },
+            Reply {
+                session: true,
+                result: Err(failure(FailureKind::Denied, "denied")),
+            },
+            Reply {
+                session: false,
+                result: Err(failure(FailureKind::Other, "missing")),
+            },
+        ];
+        wire.clear();
+        for reply in &replies {
+            write_reply(&mut wire, reply).unwrap();
+        }
+        let mut input = wire.as_slice();
+        for reply in &replies {
+            assert_eq!(&read_reply(&mut input).unwrap(), reply);
+        }
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn oversized_truncated_and_malformed_frames_are_rejected() {
         let mut wire = MAGIC.to_vec();
         wire.extend_from_slice(&((MAX_FRAME + 1) as u32).to_le_bytes());
         assert!(read_request(&mut wire.as_slice()).is_err());
         wire.clear();
-        write_request(&mut wire, &Request { path: vec![1, 2] }).unwrap();
+        write_request(&mut wire, &Request::List(vec![1, 2])).unwrap();
         wire.pop();
         assert!(read_request(&mut wire.as_slice()).is_err());
+        // An unknown request kind, trailing data after a close, and a path longer than
+        // its frame.
+        for payload in [&[2u8][..], &[1, 0], &[0, 0xff, 0xff, 0xff, 0x7f]] {
+            let mut wire = Vec::new();
+            frame(&mut wire, payload).unwrap();
+            assert!(read_request(&mut wire.as_slice()).is_err(), "{payload:?}");
+        }
+        // A frame of the one-shot version 1 protocol.
+        let mut wire = b"MELIST01".to_vec();
+        wire.extend_from_slice(&6u32.to_le_bytes());
+        wire.extend_from_slice(&[2, 0, 0, 0, b'/', b'x']);
+        assert!(read_request(&mut wire.as_slice()).is_err());
+        // Replies: a session flag that is no flag, an unknown refusal and an oversized count.
+        for payload in [
+            &[2u8, 1, 0, 0, 0, 0][..],
+            &[1, 0, 3, 0, 0, 0, 0],
+            &[1, 1, 0xff, 0xff, 0xff, 0xff],
+        ] {
+            let mut wire = Vec::new();
+            frame(&mut wire, payload).unwrap();
+            assert!(read_reply(&mut wire.as_slice()).is_err(), "{payload:?}");
+        }
     }
 }

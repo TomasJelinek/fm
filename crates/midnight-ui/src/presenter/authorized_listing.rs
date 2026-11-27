@@ -5,18 +5,29 @@
 //! on its own (a watch hint, Show hidden files, a finished operation, a removed
 //! drive or a dropped tree), because each re-read with ordinary rights would be
 //! denied and its recovery would move the pane to a parent folder. A re-sort
-//! keeps the rows. Refresh asks with ordinary rights first and, while access is
-//! still denied, offers authorization again as opening the folder did; only
-//! that explicit retry prompts. A denial never moves the pane elsewhere.
+//! keeps the rows.
+//!
+//! One consent covers the folder and its subfolders for a while: the backend
+//! keeps the retry's session for the pane and lists a subfolder, or the folder
+//! again, through it when ordinary rights are denied, and says so before the
+//! rows (`Event::ListingAuthorized`); entering a subfolder or Refresh then
+//! shows rows without a prompt. Refresh asks as a navigation: once the session
+//! has ended, the denial offers authorization again as opening the folder did,
+//! and only that explicit retry prompts. A denial never moves the pane
+//! elsewhere.
 use super::*;
 
 /// The pane's status row while it shows such rows.
-const AUTHORIZED: &str =
-    "Listed with authorization; not updated automatically. Refresh offers authorization again.";
-const AUTHORIZED_DETAILS: &str = "The authorization helper listed this folder once. Your \
-    account cannot read it, so Midnight Explorer neither watches it for changes nor lists it \
-    again on its own. Refresh lists it with your account's rights first and, while access is \
-    still denied, offers Retry with authorization.";
+const AUTHORIZED: &str = "Listed with authorization; not updated automatically. Subfolders and \
+    Refresh do not ask again for a while.";
+const AUTHORIZED_DETAILS: &str = "The authorization helper listed this folder. Your account \
+    cannot read it, so Midnight Explorer neither watches it for changes nor lists it again on \
+    its own. While this panel stays in the folder you authorized, its subfolders and Refresh \
+    are listed through the same authorization without asking again, until it has been unused \
+    for 5 minutes or 30 minutes have passed. Files in it still cannot be opened, viewed or \
+    copied. After that, or once the panel has left the folder, Refresh lists it with your \
+    account's rights first and, while access is still denied, offers Retry with \
+    authorization.";
 
 impl Pane {
     /// The pane shows the committed rows of an authorized listing.
@@ -48,5 +59,23 @@ impl Presenter {
             && p.pending
                 .as_ref()
                 .is_some_and(|request| request.keep_rows && request.path == p.path)
+    }
+
+    /// The pane's pending listing reads its folder through the pane's
+    /// authorization session: its rows commit as an authorized listing.
+    pub(super) fn apply_authorized_listing(&mut self, event: Event) -> Option<Event> {
+        let Event::ListingAuthorized { pane, navigation } = event else {
+            return Some(event);
+        };
+        let p = &mut self.panes[pane.index()];
+        if p.generation == navigation.0
+            && let Some(request) = p
+                .pending
+                .as_mut()
+                .filter(|request| request.navigation == navigation)
+        {
+            request.authorized = true;
+        }
+        None
     }
 }

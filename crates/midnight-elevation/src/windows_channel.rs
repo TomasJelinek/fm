@@ -3,6 +3,7 @@
 //! awaited before its buffer is released.
 use midnight_core::Cancellation;
 use std::{
+    cell::Cell,
     io::{self, Read, Write},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     ptr, thread,
@@ -57,6 +58,10 @@ pub(super) struct Channel {
     event: OwnedHandle,
     cancel: Cancellation,
     deadline: Instant,
+    /// How long operations continue after `cancel` (`begin`).
+    grace: Duration,
+    /// When an operation first saw `cancel`.
+    cancelled: Cell<Option<Instant>>,
 }
 
 impl Channel {
@@ -71,7 +76,18 @@ impl Channel {
             event: event()?,
             cancel,
             deadline,
+            grace: Duration::ZERO,
+            cancelled: Cell::new(None),
         })
+    }
+
+    /// Bound the following operations by `cancel` and `deadline`. Operations go on for
+    /// `grace` after `cancel`, so that a reply that is nearly complete can still be read.
+    pub(super) fn begin(&mut self, cancel: Cancellation, deadline: Instant, grace: Duration) {
+        self.cancel = cancel;
+        self.deadline = deadline;
+        self.grace = grace;
+        self.cancelled.set(None);
     }
 
     pub(super) fn pipe(&self) -> &OwnedHandle {
@@ -80,7 +96,11 @@ impl Channel {
 
     fn check(&self) -> io::Result<()> {
         if self.cancel.is_cancelled() {
-            return Err(aborted());
+            let since = self.cancelled.get().unwrap_or_else(Instant::now);
+            self.cancelled.set(Some(since));
+            if since.elapsed() >= self.grace {
+                return Err(aborted());
+            }
         }
         if Instant::now() >= self.deadline {
             return Err(timed_out());
@@ -231,8 +251,9 @@ impl Write for Channel {
 }
 
 /// Ends the dedicated helper process when its requester exits, closes the pipe, sends any
-/// byte after its single request, or the deadline passes, even while a native directory read
-/// is blocked. A pending one-byte read observes the pipe; no polling is involved.
+/// byte while a request is being served, or the deadline passes, even while a native
+/// directory read is blocked. A pending one-byte read observes the pipe; no polling is
+/// involved.
 pub(super) struct Monitor {
     stop: OwnedHandle,
     thread: Option<thread::JoinHandle<()>>,
@@ -264,11 +285,6 @@ impl Monitor {
             stop,
             thread: Some(thread),
         })
-    }
-
-    /// Stop watching before the reply is written: afterwards the requester may close at once.
-    pub(super) fn stop(mut self) {
-        self.finish();
     }
 
     fn finish(&mut self) {
@@ -423,7 +439,7 @@ mod tests {
         drop(server);
         endings.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(cancel.is_cancelled());
-        monitor.stop();
+        drop(monitor);
 
         let (server, client) = pipe_pair();
         let cancel = Cancellation::default();
@@ -436,7 +452,7 @@ mod tests {
             move || ended.send(()).unwrap(),
         )
         .unwrap();
-        monitor.stop();
+        drop(monitor);
         // Stopping joins the watcher; it neither terminated nor cancelled the listing.
         assert!(endings.try_recv().is_err());
         assert!(!cancel.is_cancelled());

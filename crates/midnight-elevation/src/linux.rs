@@ -1,13 +1,14 @@
-//! Polkit launches one read-only helper over an authenticated, private Unix socket.
+//! Polkit launches one read-only helper over an authenticated, private Unix socket. After its
+//! first listing the helper serves the authorization session over the same socket.
 use crate::{
-    Cause, HelperDigest,
+    Cause, HelperDigest, helper,
     protocol::{self, Reply, Request},
     refusal,
 };
 use midnight_core::Cancellation;
 use std::{
     ffi::{CString, OsStr, OsString},
-    fs::{self, DirBuilder, DirEntry, FileType},
+    fs::{self, DirBuilder},
     io::{self, Read, Write},
     os::{
         fd::{AsRawFd, RawFd},
@@ -28,8 +29,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-const TIMEOUT: Duration = Duration::from_secs(300);
+#[path = "linux_listing.rs"]
+mod listing;
+pub(crate) use listing::{Location, list_directory, open_directory};
+
+const TIMEOUT: Duration = protocol::REQUEST_TIMEOUT;
 const TICK: Duration = Duration::from_millis(10);
+/// How long a cancelled session request still waits for its reply, which keeps the session's
+/// channel in step; a reply that takes longer ends the session.
+const CANCEL_GRACE: Duration = Duration::from_secs(2);
+/// How long ending a session waits to hand the helper its close request.
+const CLOSE_WAIT: Duration = Duration::from_millis(200);
+/// How long a request waits for closed helpers to exit when they fill the budget: a session
+/// that ended just before (its pane left the folder or retries it) frees its slot this way.
+const RETIRING_WAIT: Duration = Duration::from_secs(2);
 /// Bound on how long cancellation or the deadline can stay unnoticed while waiting for I/O.
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 /// Fallback re-check of the requester's identity; a closed socket wakes the monitor at once.
@@ -45,13 +58,6 @@ pub(crate) fn decode_path(bytes: &[u8]) -> io::Result<PathBuf> {
         return Err(protocol::invalid("NUL in native path"));
     }
     Ok(PathBuf::from(OsString::from_vec(bytes.to_vec())))
-}
-pub(crate) fn metadata(value: &fs::Metadata) -> (Option<u32>, Option<u32>) {
-    (None, Some(value.mode()))
-}
-/// Unix links record no target type. stat follows the link but never opens the target.
-pub(crate) fn is_directory_link(entry: &DirEntry, _: &FileType) -> bool {
-    fs::metadata(entry.path()).is_ok_and(|value| value.is_dir())
 }
 /// pkexec runs the helper as root. Only root may be able to change the helper or any ancestor,
 /// and ownership on a nosuid mount (removable or user-mounted storage) vouches for nothing.
@@ -294,22 +300,32 @@ pub(crate) fn trusted_pkexec() -> io::Result<()> {
     }
     Ok(())
 }
-/// One of the two authorization processes the application runs at a time, held until the
-/// process was reaped.
+/// One of the two authorization processes the application runs at a time (a prompt, a live
+/// session's helper or the profile installation), held until the process was reaped.
 pub(crate) struct ChildSlot;
 impl ChildSlot {
     pub(crate) fn acquire() -> io::Result<Self> {
-        CHILDREN
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        Self::acquire_within(Duration::ZERO)
+    }
+    /// Wait up to `wait` for a slot that a just-closed helper frees once it is reaped.
+    fn acquire_within(wait: Duration) -> io::Result<Self> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let acquired = CHILDREN.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < 2).then_some(count + 1)
-            })
-            .map(|_| Self)
-            .map_err(|_| {
-                io::Error::new(
+            });
+            if acquired.is_ok() {
+                return Ok(Self);
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
-                    "Two authorization requests are still active",
-                )
-            })
+                    "Two authorizations are still active. Finish or cancel the system's \
+                     authorization prompt, or leave a folder listed with authorization, first.",
+                ));
+            }
+            thread::sleep(TICK);
+        }
     }
 }
 impl Drop for ChildSlot {
@@ -323,8 +339,8 @@ struct RunningChild {
     status: Arc<Mutex<Option<ExitStatus>>>,
 }
 impl RunningChild {
-    fn spawn(command: &mut Command) -> io::Result<Self> {
-        let slot = ChildSlot::acquire()?;
+    /// Start `command` in `slot`, which the reaper holds until the process was reaped.
+    fn spawn_in(command: &mut Command, slot: ChildSlot) -> io::Result<Self> {
         let stop = Cancellation::default();
         let status = Arc::new(Mutex::new(None));
         let monitor_stop = stop.clone();
@@ -430,6 +446,10 @@ struct Channel {
     socket: UnixStream,
     cancel: Cancellation,
     deadline: Instant,
+    /// How long operations continue after `cancel` (`begin`).
+    grace: Duration,
+    /// When an operation first saw `cancel`.
+    cancelled: Option<Instant>,
 }
 impl Channel {
     fn new(socket: UnixStream, cancel: Cancellation, deadline: Instant) -> io::Result<Self> {
@@ -438,7 +458,26 @@ impl Channel {
             socket,
             cancel,
             deadline,
+            grace: Duration::ZERO,
+            cancelled: None,
         })
+    }
+    /// Bound the following operations by `cancel` and `deadline`. Operations go on for
+    /// `grace` after `cancel`, so that a reply that is nearly complete can still be read.
+    fn begin(&mut self, cancel: Cancellation, deadline: Instant, grace: Duration) {
+        self.cancel = cancel;
+        self.deadline = deadline;
+        self.grace = grace;
+        self.cancelled = None;
+    }
+    fn check(&mut self) -> io::Result<()> {
+        if self.cancel.is_cancelled() {
+            let since = *self.cancelled.get_or_insert_with(Instant::now);
+            if since.elapsed() < self.grace {
+                return check(&Cancellation::default(), self.deadline);
+            }
+        }
+        check(&self.cancel, self.deadline)
     }
     fn wait(&self, events: libc::c_short) -> io::Result<()> {
         wait_ready(
@@ -451,7 +490,7 @@ impl Channel {
 impl Read for Channel {
     fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
         loop {
-            check(&self.cancel, self.deadline)?;
+            self.check()?;
             match self.socket.read(data) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait(libc::POLLIN)?,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -463,7 +502,7 @@ impl Read for Channel {
 impl Write for Channel {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         loop {
-            check(&self.cancel, self.deadline)?;
+            self.check()?;
             match self.socket.write(data) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait(libc::POLLOUT)?,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -472,7 +511,7 @@ impl Write for Channel {
         }
     }
     fn flush(&mut self) -> io::Result<()> {
-        check(&self.cancel, self.deadline)
+        self.check()
     }
 }
 fn handshake(channel: &mut Channel, nonce: &[u8; 32], parent: bool) -> io::Result<()> {
@@ -490,12 +529,48 @@ fn handshake(channel: &mut Channel, nonce: &[u8; 32], parent: bool) -> io::Resul
     Ok(())
 }
 
-pub(crate) fn list(
+/// The requester's end of a helper's session. Dropping it hands the helper a close request
+/// and closes the socket (the helper ends on either); the authorization slot is released once
+/// the helper was reaped.
+pub(crate) struct Connection {
+    channel: Channel,
+    /// `None` only for an in-process test helper, which takes no slot.
+    _child: Option<RunningChild>,
+}
+
+impl Connection {
+    /// One more request of the session. Cancellation is honoured once the reply has not
+    /// arrived within a short grace, which ends the session.
+    pub(crate) fn exchange(
+        &mut self,
+        request: &Request,
+        cancel: &Cancellation,
+    ) -> io::Result<Reply> {
+        self.channel
+            .begin(cancel.clone(), Instant::now() + TIMEOUT, CANCEL_GRACE);
+        protocol::write_request(&mut self.channel, request)?;
+        protocol::read_reply(&mut self.channel)
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.channel.begin(
+            Cancellation::default(),
+            Instant::now() + CLOSE_WAIT,
+            Duration::ZERO,
+        );
+        let _ = protocol::write_request(&mut self.channel, &Request::Close);
+    }
+}
+
+/// Ask for consent, start the helper and send it the session's first request.
+pub(crate) fn start(
     helper: &Path,
     request: &Request,
     cancel: &Cancellation,
     _: Option<&HelperDigest>,
-) -> io::Result<Reply> {
+) -> io::Result<(Connection, Reply)> {
     check(cancel, Instant::now() + TIMEOUT)?;
     trusted_pkexec()?;
     let mut nonce = [0; 32];
@@ -522,7 +597,7 @@ pub(crate) fn list(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let child = RunningChild::spawn(&mut command)?;
+    let child = RunningChild::spawn_in(&mut command, ChildSlot::acquire_within(RETIRING_WAIT)?)?;
     let deadline = Instant::now() + TIMEOUT;
     let connection = loop {
         check(cancel, deadline)?;
@@ -545,13 +620,64 @@ pub(crate) fn list(
             Err(error) => return Err(error),
         }
     };
+    // The connected session needs no path: remove the private socket and its folder.
+    drop(socket);
     let mut channel = Channel::new(connection, cancel.clone(), deadline)?;
     // The nonce is visible in the socket path and command line; SO_PEERCRED, PKEXEC_UID and
     // the /proc creation time bind the channel. Matching it rejects a stale or foreign helper.
     handshake(&mut channel, &nonce, true)?;
     protocol::write_request(&mut channel, request)?;
     // Read buffered bytes even when the helper has already exited; framing detects truncation.
-    protocol::read_reply(&mut channel)
+    let reply = protocol::read_reply(&mut channel)?;
+    Ok((
+        Connection {
+            channel,
+            _child: Some(child),
+        },
+        reply,
+    ))
+}
+
+/// The helper's end of the socket, with the requester's identity for its watch.
+struct SocketRequester {
+    channel: Channel,
+    parent: u32,
+    created: u64,
+    terminate: fn(),
+}
+impl Read for SocketRequester {
+    fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
+        self.channel.read(data)
+    }
+}
+impl Write for SocketRequester {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.channel.write(data)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.channel.flush()
+    }
+}
+impl helper::Requester for SocketRequester {
+    type Watch = Monitor;
+    fn set_deadline(&mut self, deadline: Instant) {
+        self.channel
+            .begin(Cancellation::default(), deadline, Duration::ZERO);
+    }
+    fn watch(&self, deadline: Instant, cancel: &Cancellation) -> io::Result<Monitor> {
+        Monitor::start(
+            &self.channel.socket,
+            self.parent,
+            self.created,
+            deadline,
+            cancel.clone(),
+            self.terminate,
+        )
+    }
+}
+
+fn exit_helper() {
+    std::process::exit(1);
 }
 
 pub(crate) fn serve(args: &[OsString]) -> io::Result<()> {
@@ -584,21 +710,22 @@ pub(crate) fn serve(args: &[OsString]) -> io::Result<()> {
     }
     let connection = UnixStream::connect(&path)?;
     verify_parent(&connection, parent, uid, created)?;
-    let cancel = Cancellation::default();
-    let deadline = Instant::now() + TIMEOUT;
-    let mut channel = Channel::new(connection, cancel.clone(), deadline)?;
+    let started = Instant::now();
+    let deadline = started + TIMEOUT;
+    let mut channel = Channel::new(connection, Cancellation::default(), deadline)?;
     handshake(&mut channel, &nonce, false)?;
-    let request = protocol::read_request(&mut channel)?;
-    let monitor = Monitor::start(&channel.socket, parent, created, deadline, cancel.clone())?;
-    let reply = crate::helper::reply(request, &cancel);
-    // Stop watching before the reply is written: afterwards the requester may close at once.
-    monitor.stop();
-    protocol::write_reply(&mut channel, &reply)
+    let mut requester = SocketRequester {
+        channel,
+        parent,
+        created,
+        terminate: exit_helper,
+    };
+    helper::serve_session(&mut requester, started, deadline, &helper::Limits::SESSION)
 }
 
-/// Ends the dedicated helper process when its requester disconnects, sends anything after its
-/// single request, changes identity or the deadline passes, even while a native directory read
-/// is blocked. Socket readiness wakes it immediately.
+/// Ends the dedicated helper process when its requester disconnects, sends anything while a
+/// request is being served, changes identity or the deadline passes, even while a native
+/// directory read is blocked. Socket readiness wakes it immediately.
 struct Monitor {
     stop: Option<UnixStream>,
     thread: Option<thread::JoinHandle<()>>,
@@ -610,6 +737,7 @@ impl Monitor {
         created: u64,
         deadline: Instant,
         cancel: Cancellation,
+        terminate: fn(),
     ) -> io::Result<Self> {
         let socket = socket.try_clone()?;
         let (stop, stopped) = UnixStream::pair()?;
@@ -621,16 +749,13 @@ impl Monitor {
                     // This runs only inside the dedicated read-only helper process. Exiting
                     // also ends a blocked native directory read; no application thread or
                     // mutable transaction is terminated. The parent still waits/reaps it.
-                    std::process::exit(1);
+                    terminate();
                 }
             })?;
         Ok(Self {
             stop: Some(stop),
             thread: Some(thread),
         })
-    }
-    fn stop(mut self) {
-        self.finish();
     }
     fn finish(&mut self) {
         // Closing our end wakes the watcher's poll on the paired socket.

@@ -236,8 +236,9 @@ navigation prevents an obsolete dialog callback from authorizing anything.
 The Windows helper uses the UAC prompt; Linux uses the desktop polkit agent through
 `pkexec`. An engine without an authorization service does not advertise the button.
 Denial, cancellation and queue failure remain explicit errors and keep the current
-listing; there is no silent retry, ACL change or privileged host launch. The helper grants one read-only directory listing and does not
-grant file content or mutation permissions. It runs only from an installation that
+listing; there is no silent retry, ACL change or privileged host launch. The helper grants read-only listings of the authorized folder and the folders
+inside it for one session (below) and does not grant file content or mutation
+permissions. It runs only from an installation that
 no other account can change: with the helper's digest recorded in the executable, the
 shipped helper in a folder that only the user and administrators (root) can change;
 without it, an administrator-protected (Windows) or root-owned (Linux) installation.
@@ -278,14 +279,36 @@ status for those rows once accepted (`Visible::authorized`). The presenter
 (`presenter/authorized_listing.rs`) records them per committed navigation: automatic
 re-reads (`refresh_if_changed` for watch hints, Show hidden files, removed drives and
 dropped trees; post-operation re-reads) skip them, the status row says *Listed with
-authorization; not updated automatically. Refresh offers authorization again.*, Refresh
-sends a `Navigate` (only a navigation's denial is offered a retry) whose denial opens
-**Cannot open folder** while the rows stay, and a denied re-read never follows the
-backend's parent fallback. Opening a subfolder is an ordinary navigation with its own
-offer. Tests: `crates/midnight-engine/tests/elevation.rs`
+authorization; not updated automatically. Subfolders and Refresh do not ask again for a
+while.*, Refresh sends a `Navigate` (only a navigation's denial is offered a retry), and
+a denied re-read never follows the backend's parent fallback.
+
+**One consent, a subtree.** The retry calls `ElevatedDirectoryService::open_session`,
+and the engine (`authorized_sessions.rs`) keeps the returned `ElevatedListingSession`
+for the pane. A later Navigate, Refresh or Resort of that pane whose path names the
+session's root or a folder below it by ordinary names keeps the session; any other
+dispatch for the pane (a folder outside it, an archive or network view, another retry)
+and shutdown drop it, which closes its helper. The listing worker
+(`authorized_sessions::Reader`) still reads with the process's own rights first; when
+that is denied before any entry was emitted and the pane's newest dispatch is the
+listing's, it lists through the session, reports no read to the watch, marks the rows
+with `Reporter::listing_authorized` and sends `Event::ListingAuthorized` just before
+`ListingFinished`, so the presenter commits them as an authorized listing (status note,
+no automatic re-reads). Session outcomes: `Ended` (idle, expired, helper gone) reports the
+original denial, which offers the retry as before; `Outside` (the helper's final-location
+check refused a link or mount point) reports `FsError::outside_authorization`, a denial
+with its own offer, and the presenter's **Cannot open folder** says "Access to this folder
+was denied. This folder is outside the authorized folder …"; `Failed` (missing, denied
+even with authorization) reports the failure without an offer or parent fallback. Tree
+disclosure, folder sizes and file actions do not use the session. Tests:
+`crates/midnight-engine/tests/elevation.rs`
 (`an_authorized_listing_is_neither_watched_nor_checked_with_ordinary_rights`),
+`crates/midnight-engine/tests/elevation_sessions.rs`,
 `crates/midnight-engine/src/watch/authorized_tests.rs` and
-`crates/midnight-ui/src/presenter/tests/elevation.rs`.
+`crates/midnight-ui/src/presenter/tests/elevation.rs`; the helper's containment and
+session protocol are tested in `crates/midnight-elevation` (`windows_tests.rs`,
+`linux_tests.rs`, `protocol.rs`, `helper.rs`). Evidence:
+[session record](../verification/2026-11-27-authorization-sessions.md).
 
 A generated report title is only a display label and never authority to reopen a
 native path. Missing size-report viewer support and diagnostic read failures are

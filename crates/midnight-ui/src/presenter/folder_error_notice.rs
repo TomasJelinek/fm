@@ -54,7 +54,13 @@ impl Presenter {
         // A failed authorized retry shows its own reason, such as the helper
         // installation requirement, instead of the concise ordinary denial.
         let authorized = self.panes[pane.index()].authorized_retry == Some(navigation);
-        let reason = if error.kind == std::io::ErrorKind::PermissionDenied && !authorized {
+        let reason = if error.is_outside_authorization() {
+            // A link or mount point inside an authorized folder that leads elsewhere.
+            format!(
+                "Access to this folder was denied. {}",
+                crate::error_presentation::folder_reason(&error.message, &error.path)
+            )
+        } else if error.kind == std::io::ErrorKind::PermissionDenied && !authorized {
             "Access to this folder was denied.".into()
         } else {
             crate::error_presentation::folder_reason(&error.message, &error.path)

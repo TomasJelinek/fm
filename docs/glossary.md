@@ -195,9 +195,11 @@ application hands them and the libraries they are granted to load. See
 
 `midnight-elevated-listing` (`.exe` on Windows), a small program installed beside the
 application. When a folder cannot be opened because access was denied, **Retry with
-authorization** runs it once as administrator (after the UAC prompt) or as root
-(through polkit) to list that one folder. It loads no plugins and changes nothing. The
-application runs it only from a folder that no other account can change. See the
+authorization** runs it as administrator (after the UAC prompt) or as root (through
+polkit) to list that folder; it then stays as a short session that lists the folders
+inside it without another prompt, and nothing outside it. It opens no file, loads no
+plugins and changes nothing. The application runs it only from a folder that no other
+account can change. See the
 [directory authorization helper](../SECURITY.md#directory-authorization-helper) and
 [Troubleshooting](troubleshooting.md#cannot-open-folder-access-denied).
 

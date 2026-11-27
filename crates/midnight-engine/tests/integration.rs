@@ -17,6 +17,7 @@ mod desktop;
 mod desktop_urls;
 mod editor;
 mod elevation;
+mod elevation_sessions;
 mod engine_configuration;
 mod file_actions;
 mod find_actions;

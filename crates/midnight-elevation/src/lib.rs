@@ -1,5 +1,6 @@
-//! Bounded operations with operating-system authorization: a one-shot elevated directory
-//! reader and, on Linux, installing the HTML viewer's AppArmor profile ([`SandboxProfile`]).
+//! Bounded operations with operating-system authorization: an elevated directory reader whose
+//! one consent lists a folder and, for a while, the folders inside it, and, on Linux,
+//! installing the HTML viewer's AppArmor profile ([`SandboxProfile`]).
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod helper;
@@ -16,6 +17,7 @@ mod sandbox_profile;
 #[cfg(not(target_os = "linux"))]
 #[path = "sandbox_profile_other.rs"]
 mod sandbox_profile;
+mod session;
 pub use sandbox_profile::SandboxProfile;
 
 /// Why installing a [`SandboxProfile`] did not complete.
@@ -35,7 +37,7 @@ pub enum SandboxProfileError {
 }
 
 use midnight_core::{
-    Cancellation, ElevatedDirectoryService, ElevationAvailability, Entry, EntryId, EntryKind,
+    Cancellation, ElevatedDirectoryService, ElevatedListingSession, ElevationAvailability, Entry,
     FsError,
 };
 use native::requirement;
@@ -44,9 +46,8 @@ use std::{
     ffi::OsString,
     fmt,
     io::{self, Read},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::OnceLock,
-    time::{Duration, UNIX_EPOCH},
 };
 
 /// SHA-256 of the authorization helper that a build shipped with.
@@ -82,7 +83,18 @@ impl ElevatedDirectoryService for ElevatedDirectories {
         cancel: &Cancellation,
         emit: &mut dyn FnMut(Entry) -> bool,
     ) -> Result<(), FsError> {
-        read(path, cancel, emit, self.shipped.as_ref())
+        self.open_session(path, cancel, emit).map(drop)
+    }
+
+    /// Ask for authorization, list `path`, and keep the helper as a session that lists
+    /// `path` and the folders inside it without another prompt.
+    fn open_session(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+        emit: &mut dyn FnMut(Entry) -> bool,
+    ) -> Result<Option<Box<dyn ElevatedListingSession>>, FsError> {
+        session::open(path, cancel, emit, self.shipped.as_ref())
             .map_err(|error| FsError::from_io("authorized directory listing", path, error))
     }
 
@@ -258,74 +270,6 @@ pub fn parse_helper_digest(text: &str) -> Option<HelperDigest> {
     Some(digest)
 }
 
-fn read(
-    path: &Path,
-    cancel: &Cancellation,
-    emit: &mut dyn FnMut(Entry) -> bool,
-    shipped: Option<&HelperDigest>,
-) -> io::Result<()> {
-    if cancel.is_cancelled() {
-        return Err(cancelled());
-    }
-    if !path.is_absolute() {
-        return Err(protocol::invalid("Directory path must be absolute"));
-    }
-    let helper = trusted_helper(shipped)?;
-    let request = protocol::Request {
-        path: native::encode_path(path),
-    };
-    let reply = native::list(&helper, &request, cancel, shipped)?;
-    let entries = reply.map_err(|error| {
-        io::Error::new(
-            if error.denied {
-                io::ErrorKind::PermissionDenied
-            } else {
-                io::ErrorKind::Other
-            },
-            error.message,
-        )
-    })?;
-    for (index, wire) in entries.into_iter().enumerate() {
-        if cancel.is_cancelled() {
-            return Err(cancelled());
-        }
-        let name = native::decode_path(&wire.name)?;
-        let mut components = name.components();
-        if !matches!(components.next(), Some(Component::Normal(_)))
-            || components.next().is_some()
-            || name.as_os_str().is_empty()
-            || name.file_name() != Some(name.as_os_str())
-        {
-            return Err(protocol::invalid("Helper returned a non-basename entry"));
-        }
-        let kind = match wire.kind {
-            0 => EntryKind::Directory,
-            1 => EntryKind::DirectoryLink,
-            2 => EntryKind::File,
-            3 => EntryKind::Symlink,
-            4 => EntryKind::Other,
-            _ => return Err(protocol::invalid("Helper returned an unknown entry kind")),
-        };
-        let mut entry = Entry::new(EntryId(index as u64 + 1), path.join(name), kind);
-        entry.kind = kind;
-        entry.metadata.size = wire.size;
-        entry.metadata.modified = wire.modified.and_then(|(seconds, nanos)| {
-            if seconds >= 0 {
-                UNIX_EPOCH.checked_add(Duration::new(seconds as u64, nanos))
-            } else {
-                UNIX_EPOCH
-                    .checked_sub(Duration::from_secs(seconds.unsigned_abs()))
-                    .and_then(|time| time.checked_add(Duration::from_nanos(u64::from(nanos))))
-            }
-        });
-        entry.metadata.native_attributes = wire.native_attributes;
-        entry.metadata.unix_mode = wire.unix_mode;
-        if !emit(entry) {
-            return Err(cancelled());
-        }
-    }
-    Ok(())
-}
 const HELPER: &str = if cfg!(windows) {
     "midnight-elevated-listing.exe"
 } else {
@@ -337,7 +281,7 @@ const HELPER: &str = if cfg!(windows) {
 /// shipped helper's digest, only with that content. Without a digest only administrators
 /// (root) may be able to change it. It runs as Administrator/root: another account that could
 /// replace it, or plant a library beside it, would turn one consent prompt into its own code.
-fn trusted_helper(shipped: Option<&HelperDigest>) -> io::Result<PathBuf> {
+pub(crate) fn trusted_helper(shipped: Option<&HelperDigest>) -> io::Result<PathBuf> {
     let executable = midnight_plugin_host::installed_executable().map_err(io::Error::other)?;
     helper_beside(&executable, shipped)
 }

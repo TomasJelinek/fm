@@ -653,6 +653,24 @@ impl Reporter {
         }
     }
 
+    /// Called by a flat listing's task that read its directory through the
+    /// pane's authorization session after this process was denied
+    /// (`authorized_sessions`), before it publishes the rows: like an
+    /// authorized retry's (`Controller::authorized_listing_started`), its rows
+    /// are neither subscribed nor checked once accepted. It reported no read.
+    pub(crate) fn listing_authorized(&self, pane: PaneId, navigation: NavigationId) {
+        let mut listings = self.listings[pane.index()]
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if listings
+            .started
+            .as_ref()
+            .is_some_and(|started| started.navigation == navigation)
+        {
+            listings.authorized = Some(navigation);
+        }
+    }
+
     /// Called by the backend when the flat listing it dispatched as
     /// `navigation` ended without rows to accept (it failed, offered elevation
     /// or fell back to another directory) and was not superseded. The pane

@@ -465,13 +465,16 @@ inspected as possibly holding the item; neither is described as unneeded.
 - Ordinary browsing does not copy, rename, delete, execute files, invoke a shell,
   request elevation or interpret filenames as code. A failed explicit native folder
   navigation can offer **Retry with authorization**. Only that explicit action
-  consumes a backend-retained denied-navigation receipt and invokes the OS prompt
-  for one read-only directory listing in a separate helper. Refresh, metadata and
-  background tree probes never prompt. The listing it returns stays a static
+  consumes a backend-retained denied-navigation receipt and invokes the OS prompt,
+  which starts a separate helper for read-only listings of that folder and, without
+  another prompt for the rest of its session, the folders inside it
+  ([session and containment](#authorization-session)). Refresh, metadata and
+  background tree probes never prompt. Each listing it returns stays a static
   snapshot: the host neither watches nor checks that folder with its own rights and
-  re-reads it only on Refresh, which asks with ordinary rights and, while still
-  denied, offers the retry again (another receipt, another explicit action); a
-  denied re-read never moves the panel to another folder. The helper loads no plugins, changes no
+  re-reads it only on Refresh, through the session while it lasts, otherwise with
+  ordinary rights, which while still denied offers the retry again (another receipt,
+  another explicit action); a denied re-read never moves the panel to another
+  folder. The helper loads no plugins, changes no
   ACLs, stores no passwords, and grants no file mutation or content-read authority
   to the host. Native operation capture/revalidation remains unelevated. It runs
   only from an installation that standard users cannot change; see
@@ -850,17 +853,75 @@ verifies its original parent PID/UID, `/proc` creation time and `PKEXEC_UID`. Th
 256-bit nonce in the pipe name, socket path and command line is public: matching it
 only rejects a stale or foreign helper and authenticates nothing.
 
-The helper lists one directory from enumeration metadata without opening any entry;
-Windows classifies links from their own attributes, and Linux follows a symbolic link
-only with `stat` to classify a directory link. Frames are bounded (64 MiB, 250,000
-entries, 256 KiB names, 16 KiB errors) and truncation is an error. Both ends wait on I/O
-readiness, observing cancellation and the five-minute deadline within a bounded slice.
-The helper ends its own process when the requester disconnects, sends further data,
-exits or the deadline passes, even while a directory read is blocked. At most two
-authorization processes, helpers or the HTML viewer's **Install…** on Linux, can be
-pending or live per process. Actual UAC/polkit consent is not exercised by automated
-tests; see the [directory authorization
+The helper lists directories from enumeration metadata through the handle it opened,
+without opening any entry and without reading any file; Windows classifies links from
+their own attributes and reparse tags, and Linux follows a symbolic link only with `stat`
+to classify a directory link. Frames are bounded (64 MiB, 250,000 entries, 256 KiB
+names, 16 KiB errors) per reply, and truncation is an error. Both ends wait on I/O
+readiness, observing cancellation and a five-minute deadline per exchange within a
+bounded slice. While it lists, the helper ends its own process when the requester
+disconnects, sends any data, exits or the deadline passes, even while a directory read
+is blocked. At most two authorization processes, prompts, live session helpers or the
+HTML viewer's **Install…** on Linux, can be pending or live per process; a request waits
+up to two seconds for a just-closed helper to exit. Actual UAC/polkit consent is not
+exercised by automated tests; see the [directory authorization
 verification](docs/verification/2026-11-11-directory-authorization.md).
+
+<a id="authorization-session"></a>
+**Session.** One consent authorizes the folder the user retried and the folders inside it
+for a bounded time, not one listing ([session record](docs/verification/2026-11-27-authorization-sessions.md)):
+
+- **Lifetime.** After its first successful listing the helper stays connected over the
+  same identity-bound pipe or socket and serves further listing requests of its
+  requester without another prompt. It ends when the requester sends a close request,
+  disconnects or exits; 5 minutes after its last reply (the same five minutes that one
+  exchange may take, so an idle session keeps its consent no longer than a single
+  listing could); and 30 minutes after it started, however busy. A first listing that
+  fails, or whose folder's location cannot be determined, ends it at once. The host ends
+  it 15 seconds before either limit, so a request never races the helper's own timeout,
+  and also when the pane navigates outside the folder (its parent, another drive, a Hot
+  Path, a tab showing another folder, an archive or network view), on another authorized
+  retry in that pane, and on exit. The host keeps at most one session per pane, counted
+  in the two-process budget. A cancelled request still reads its reply for up to two
+  seconds to keep the channel in step; a reply that takes longer ends the session.
+- **Containment (decided by the helper, the privileged side).** The first request names
+  the root. Every later request must name the root or a folder below it through ordinary
+  names only (the root's own components, then names without `.`, `..`, another drive,
+  share or prefix); anything else is refused before it is opened. The helper then opens
+  the folder (following links, as navigation does; on Windows by its verbatim path, as a
+  directory on a disk, with identification-only quality of service so a pipe reached
+  through a link cannot impersonate it; on Linux with `O_DIRECTORY`, which never opens a
+  FIFO or device) and compares the opened handle's location with the root's: on Windows
+  the normalized final path in the NT namespace (`GetFinalPathNameByHandleW` with
+  `VOLUME_NAME_NT`), which starts with the volume's device; on Linux the kernel's path of
+  the descriptor (`/proc/self/fd`) and its mount (`mnt_id`). The folder must be the root
+  or below it on the same volume or mount; it is then listed through that same handle, so
+  nothing can exchange it between the check and the listing. A link, junction, mount
+  point or reparse point inside the root whose target lies outside it, `..` and another
+  volume are refused with a typed error, which the host presents as *outside the
+  authorized folder* and for which it offers that folder's own retry. Links whose target
+  stays inside the root lead to subfolders, as navigation does.
+- **What the user consents to.** Listing names and metadata of the retried folder and of
+  the folders below it on its volume, from this pane, for at most 30 minutes. Not reading,
+  opening, copying or changing any file (viewers, copies and folder sizes still run with
+  the user's own rights and stay denied), not other folders, not other panes' sessions.
+  The host still lists every folder with its own rights first and uses the session only
+  for a denied one, so readable folders keep their ordinary watch and actions. The prompt
+  itself names the helper, not the folder; the folder is the one whose **Cannot open
+  folder** message offered the retry.
+- **Residual risks.** Code that already runs as the user can drive a live session through
+  the requester process (it shares the user's identity and can inject into it): it gains
+  listings of the authorized subtree without a prompt until the session ends, nothing
+  outside it. Such code could equally ask for its own consent. The root is held by
+  location, not by an open handle (holding one would keep a removable volume from being
+  ejected for the session's life): if the root is moved away and someone who can write
+  its parent puts another folder at its path, the session lists that folder and the
+  folders below it; that account could read them anyway, and the authorized folder's
+  former subfolders are no longer reachable through the session. A volume removed and
+  another inserted within the session can reuse the root's NT device name or mount
+  identifier: only folders at the root's path on the new volume are listed. Containment
+  compares names exactly; a typed spelling in another letter case is outside by name and
+  asks with ordinary rights and then for its own consent.
 
 ## Verified clipboard copying and the copy contract
 
@@ -1001,7 +1062,7 @@ link is created with `CreateSymbolicLinkW` and the unprivileged flag, which work
 Developer Mode or for a process that already holds the symbolic-link privilege (an
 elevated one); the application reads the Developer Mode setting and its own token's
 privileges to decide, never requests elevation for it, and never uses the
-`midnight-elevation` helper (a one-shot elevated directory reader) to create links.
+`midnight-elevation` helper (an elevated, read-only directory reader) to create links.
 `CreateSymbolicLinkW` takes a path: it is given the destination folder's path and the
 private name that the namespace turn just checked absent, and the created object must
 then open, relative to the held folder, as the planned link. Without the right, a

@@ -1,13 +1,21 @@
-//! At most two UAC requests/children, including cancelled helpers that have not exited yet.
+//! At most two UAC requests/children, including live authorization sessions and cancelled or
+//! closed helpers that have not exited yet.
 use std::{
     io,
     os::windows::io::{AsRawHandle, OwnedHandle},
     sync::Mutex,
+    thread,
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::WAIT_OBJECT_0,
     System::Threading::{TerminateProcess, WaitForSingleObject},
 };
+
+/// How long a request waits for closed helpers to exit when they fill the budget: a session
+/// that ended just before (its pane left the folder or retries it) frees its slot this way.
+const RETIRING_WAIT: Duration = Duration::from_secs(2);
+const RETIRING_POLL: Duration = Duration::from_millis(20);
 
 static CHILDREN: Mutex<Children> = Mutex::new(Children {
     reserved: 0,
@@ -22,19 +30,27 @@ pub(super) struct Reservation {
 }
 impl Reservation {
     pub(super) fn acquire() -> io::Result<Self> {
-        let mut children = CHILDREN.lock().unwrap_or_else(|error| error.into_inner());
-        // A retained process handle cannot be reused for an unrelated PID.
-        children.retiring.retain(|process| unsafe {
-            WaitForSingleObject(process.as_raw_handle(), 0) != WAIT_OBJECT_0
-        });
-        if children.reserved + children.retiring.len() >= 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "Two authorization requests are still active; finish or cancel an OS prompt first",
-            ));
+        let deadline = Instant::now() + RETIRING_WAIT;
+        loop {
+            let mut children = CHILDREN.lock().unwrap_or_else(|error| error.into_inner());
+            // A retained process handle cannot be reused for an unrelated PID.
+            children.retiring.retain(|process| unsafe {
+                WaitForSingleObject(process.as_raw_handle(), 0) != WAIT_OBJECT_0
+            });
+            if children.reserved + children.retiring.len() < 2 {
+                children.reserved += 1;
+                return Ok(Self { process: None });
+            }
+            if children.retiring.is_empty() || Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Two authorizations are still active. Finish or cancel the system's \
+                     authorization prompt, or leave a folder listed with authorization, first.",
+                ));
+            }
+            drop(children);
+            thread::sleep(RETIRING_POLL);
         }
-        children.reserved += 1;
-        Ok(Self { process: None })
     }
     pub(super) fn launched(&mut self, process: OwnedHandle) -> io::Result<OwnedHandle> {
         self.process = Some(process);
