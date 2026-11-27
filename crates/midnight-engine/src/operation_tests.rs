@@ -49,7 +49,12 @@ struct Calls {
     rename_failure: Mutex<Option<FsError>>,
     /// The target whose delete fails after reporting its progress.
     failing_delete: Mutex<Option<PathBuf>>,
+    /// Targets whose move to the Trash is refused when the job runs.
     trash_unavailable: Mutex<Vec<PathBuf>>,
+    /// Folders that no Trash takes entries from, as preparation asks before confirmation.
+    no_trash: Mutex<Vec<PathBuf>>,
+    /// How often preparation asked whether a Trash takes a target.
+    trash_asked: AtomicUsize,
     /// Entries each target's discovery reports beyond the target itself, as if
     /// another program removed them before the deletion.
     discovered_extra: AtomicUsize,
@@ -166,6 +171,22 @@ impl PreparedMutation for FakeTarget {
     }
     fn item(&self) -> &MutationItem {
         &self.item
+    }
+    fn trash_support(&self) -> TrashSupport {
+        self.calls.trash_asked.fetch_add(1, Ordering::Relaxed);
+        let folder = self.item.path.parent();
+        if self
+            .calls
+            .no_trash
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|no_trash| Some(no_trash.as_path()) == folder)
+        {
+            TrashSupport::Unavailable("The Recycle Bin is turned off for X:".into())
+        } else {
+            TrashSupport::Available
+        }
     }
     fn rename(&self, name: &OsStr, _: &Cancellation) -> Result<RenameCompletion, FsError> {
         self.calls

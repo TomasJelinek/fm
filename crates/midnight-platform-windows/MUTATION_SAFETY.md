@@ -166,7 +166,23 @@ Trash uses the dedicated `ITransferSource::RecycleItem` operation. It never call
 `RemoveItem`, `IFileOperation::DeleteItem`, or permanent deletion as a fallback.
 The Shell returns the item at its recycle location. Errors such as unavailable
 recycling, forced permanent-delete configuration, excessive item size, or an
-unsupported recycle path length are surfaced to the user.
+unsupported recycle path length are surfaced to the user as failures of the job
+that keep the item.
+
+Before a Trash delete is confirmed, `trash_support` (`mutation_trash_support.rs`)
+tells the engine whether the Recycle Bin takes items from each selected item's
+folder, so that the user confirms a permanent delete instead of a Trash delete
+that would fail. It only reads: the `NoRecycleFiles` policy (HKLM before HKCU),
+the drive type of the folder's volume (found from the retained parent handle with
+`GetFinalPathNameByHandleW(VOLUME_NAME_GUID)`, so a volume mounted in a folder or
+reached through `subst` counts as itself; a UNC path is a network share without
+touching the network) and, on a fixed disk, the volume's `NukeOnDelete` under
+`HKCU\...\Explorer\BitBucket\Volume\{volume GUID}`, or the older all-drives
+`NukeOnDelete` for a volume without its own. Network, removable, CD/DVD and RAM
+drives have no Recycle Bin, except inside a redirected known folder. What it cannot
+tell is "available": `RecycleItem` still decides. An answer is reused for two
+seconds per volume (path prefix and serial number). The Recycle Bin and its
+contents are never opened.
 
 Windows also refuses to recycle a folder while a program keeps an entry below it open,
 this application included (its watch of a subfolder that a panel shows or that is

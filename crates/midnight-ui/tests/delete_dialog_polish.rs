@@ -207,6 +207,7 @@ fn preview(
         folders,
         file_bytes,
         sample,
+        trash_unavailable: None,
     }
 }
 

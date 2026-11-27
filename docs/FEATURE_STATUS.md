@@ -218,9 +218,11 @@ How to read it:
   Recycle Bin on Windows); with Shift they delete permanently. The confirmation asks its
   question first and lists the details below it, with a long folder path shortened as
   in the path bar. Each entry that cannot
-  be removed asks Retry, Skip, Skip all errors or Cancel; items the Trash refuses (a
-  Windows drive whose Recycle Bin removes files immediately, for example) are kept and
-  the job asks in its own window whether to delete them permanently instead. F7 creates
+  be removed asks Retry, Skip, Skip all errors or Cancel. Where no Trash takes the
+  selection (a Windows drive whose Recycle Bin is turned off, a network or removable
+  drive; on Linux another filesystem than the home Trash's), F8 opens the permanent
+  delete's confirmation at once and says why; an item the Trash still refuses during the
+  job is kept and asks like any other failure. F7 creates
   folders, including missing parent folders; Shift+F4 creates an empty file and asks
   before it replaces one. F2 renames, with the shared overwrite flow. Attributes, Times and
   Case edit the selected entries, also recursively, after a review step. Alt+Enter opens Properties

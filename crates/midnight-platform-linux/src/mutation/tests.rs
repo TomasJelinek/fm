@@ -655,6 +655,93 @@ fn xdg_trash_location_uses_only_absolute_environment_paths() {
     assert_eq!(super::trash::home_trash(None, None), None);
 }
 
+/// The Trash check before a Trash delete follows what the move does: the home trash on
+/// the entry's filesystem (its nearest existing folder decides where a move creates the
+/// rest), nothing else. A filesystem without it is named by its top folder.
+#[test]
+fn a_trash_is_the_home_trash_on_the_entrys_filesystem() {
+    use midnight_core::TrashSupport;
+    use rustix::fs::FileType;
+    let filesystem: std::collections::HashMap<&str, (u64, FileType)> = [
+        ("/", (1, FileType::Directory)),
+        ("/home", (1, FileType::Directory)),
+        ("/home/me", (1, FileType::Directory)),
+        ("/home/me/.local", (1, FileType::Directory)),
+        ("/home/me/.local/share", (1, FileType::Directory)),
+        ("/home/me/docs", (1, FileType::Directory)),
+        ("/home/linked", (1, FileType::Symlink)),
+        ("/run", (5, FileType::Directory)),
+        ("/run/user", (5, FileType::Directory)),
+        ("/run/user/1000", (7, FileType::Directory)),
+        ("/run/user/1000/work", (7, FileType::Directory)),
+    ]
+    .into_iter()
+    .collect();
+    let stat = |path: &Path| filesystem.get(path.to_str().unwrap()).copied();
+    let support = |root: Option<&str>, folder: &str, device| {
+        super::trash::support_with(root.map(Path::new), Path::new(folder), device, &stat)
+    };
+    let home = Some("/home/me/.local/share/Trash");
+    // Not created yet: a move creates it in ~/.local/share, on the home filesystem.
+    assert_eq!(support(home, "/home/me/docs", 1), TrashSupport::Available);
+    assert_eq!(
+        support(home, "/run/user/1000/work", 7),
+        TrashSupport::Unavailable("There is no Trash on /run/user/1000".into())
+    );
+    assert_eq!(
+        support(None, "/home/me/docs", 1),
+        TrashSupport::Unavailable("There is no Trash, because the home folder is unknown".into())
+    );
+    // A link where the trash would be, or nothing at all: the move decides and says why.
+    assert_eq!(
+        support(Some("/home/linked/Trash"), "/run/user/1000/work", 7),
+        TrashSupport::Available
+    );
+    assert_eq!(
+        super::trash::support_with(home.map(Path::new), Path::new("/x"), 9, &|_| None),
+        TrashSupport::Available
+    );
+}
+
+/// The real check: a private home on the fixture's filesystem has a Trash for it; a
+/// file on tmpfs `/dev/shm`, another filesystem, has none.
+#[test]
+fn the_real_check_finds_the_home_trash_only_on_its_own_filesystem() {
+    use midnight_core::TrashSupport;
+    use std::os::unix::fs::MetadataExt;
+    if std::env::var_os("XDG_DATA_HOME").is_some() {
+        eprintln!("SKIP: XDG_DATA_HOME chooses the Trash instead of the private home");
+        return;
+    }
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let file = fixture.path().join("file.txt");
+    fs::write(&file, b"kept").unwrap();
+    let service = LinuxFileSystem::new(Some(home.clone()));
+    let cancel = Cancellation::default();
+    let prepared = service.prepare(&file, &cancel).unwrap();
+    assert_eq!(prepared.trash_support(), TrashSupport::Available);
+    assert!(!home.join(".local").exists(), "the check creates nothing");
+    let device = |path: &Path| fs::metadata(path).map(|metadata| metadata.dev()).ok();
+    let shm = Path::new("/dev/shm");
+    if !shm.is_dir() || device(shm) == device(fixture.path()) {
+        eprintln!("SKIP: /dev/shm is not another filesystem here");
+        return;
+    }
+    let elsewhere = tempfile::tempdir_in(shm).unwrap();
+    let file = elsewhere.path().join("elsewhere.txt");
+    fs::write(&file, b"kept").unwrap();
+    let prepared = service.prepare(&file, &cancel).unwrap();
+    match prepared.trash_support() {
+        TrashSupport::Unavailable(why) => {
+            assert!(why.starts_with("There is no Trash on /"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fs::read(&file).unwrap(), b"kept");
+}
+
 #[test]
 fn only_the_parent_or_a_directory_on_another_device_is_a_filesystem_root() {
     use rustix::fs::FileType;

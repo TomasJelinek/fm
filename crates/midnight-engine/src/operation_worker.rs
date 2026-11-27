@@ -5,7 +5,9 @@ pub(super) mod delete;
 mod discovery;
 #[path = "operation_replace.rs"]
 mod replace;
+use midnight_core::TrashSupport;
 use std::{
+    collections::HashMap,
     ffi::OsString,
     io,
     path::{Component, Path},
@@ -205,6 +207,7 @@ pub(super) fn prepare(
     } else {
         job.targets.len() as u64
     };
+    job.check_trash()?;
     if request.kind == MutationKind::EditMetadata {
         job.metadata = Some(super::metadata::Edit::prepare(
             request.id,
@@ -248,6 +251,7 @@ fn new_job(
             folders: 0,
             file_bytes: Some(0),
             sample: vec![],
+            trash_unavailable: None,
         },
     }
 }
@@ -297,10 +301,76 @@ pub(super) fn prepare_captured_delete(
         job.append_target(prepared);
     }
     job.status.lock().unwrap_or_else(|e| e.into_inner()).total = scope.count as u64;
+    job.check_trash()?;
     Ok(job)
 }
 
+/// The sentence a permanent delete's confirmation gives when a Trash delete became one:
+/// `reason` (why no Trash takes the items, naming the drive or mount), then what is
+/// deleted. All of the selection is, also what a Trash could take: one confirmation and
+/// one job for the selection, which the user cancels to keep everything.
+pub(super) fn trash_unavailable_sentence(reason: &str, refused: usize, total: usize) -> String {
+    if refused < total {
+        format!(
+            "{reason}, so all selected items will be deleted permanently, including those \
+             the Trash could take."
+        )
+    } else if total == 1 {
+        format!("{reason}, so this item will be deleted permanently.")
+    } else {
+        format!("{reason}, so these items will be deleted permanently.")
+    }
+}
+
 impl Job {
+    /// A Trash delete of items that no Trash takes (its drive's Recycle Bin is turned
+    /// off, a network share or a USB stick has none, a Linux mount has no Trash) is
+    /// prepared as a permanent delete, so the user confirms exactly that, with why,
+    /// before anything starts. If only some items cannot go to a Trash, the whole
+    /// selection is. Entries of one folder share its volume: each folder is asked once.
+    fn check_trash(&mut self) -> Result<(), FsError> {
+        if self.preview.kind != MutationKind::Delete(DeleteMode::Trash) {
+            return Ok(());
+        }
+        let mut folders: HashMap<&Path, Option<String>> = HashMap::new();
+        let mut refused = 0;
+        let mut reason: Option<String> = None;
+        for target in &self.targets {
+            let path = &target.item().path;
+            let folder = path.parent().unwrap_or(path);
+            if !folders.contains_key(folder) {
+                if self.cancel.is_cancelled() {
+                    return Err(FsError::from_io(
+                        "prepare",
+                        path,
+                        io::ErrorKind::Interrupted.into(),
+                    ));
+                }
+                let support = match target.trash_support() {
+                    TrashSupport::Available => None,
+                    TrashSupport::Unavailable(why) => Some(why),
+                };
+                folders.insert(folder, support);
+            }
+            if let Some(why) = &folders[folder] {
+                refused += 1;
+                reason.get_or_insert_with(|| why.clone());
+            }
+        }
+        let Some(reason) = reason else {
+            return Ok(());
+        };
+        let kind = MutationKind::Delete(DeleteMode::Permanent);
+        self.preview.kind = kind;
+        self.preview.trash_unavailable = Some(trash_unavailable_sentence(
+            &reason,
+            refused,
+            self.targets.len(),
+        ));
+        self.status.lock().unwrap_or_else(|e| e.into_inner()).kind = kind;
+        Ok(())
+    }
+
     fn append_target(&mut self, prepared: Arc<dyn PreparedMutation>) {
         Self::include_item(&mut self.preview, prepared.item());
         self.targets.push(prepared);

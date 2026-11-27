@@ -195,27 +195,6 @@ pub(super) fn deletion(p: &OperationProgress, mode: DeleteMode, locale: &NumberL
     if !p.state.is_terminal() {
         return String::new();
     }
-    // The fallback job can finish with a mix of recycled and permanently removed
-    // targets. The backend counts them at the point consent changes its method.
-    if mode == DeleteMode::Permanent && p.message.starts_with("Moved to Trash: ") {
-        return p
-            .message
-            .lines()
-            .take_while(|line| {
-                [
-                    "Moved to Trash: ",
-                    "Permanently deleted: ",
-                    "Remaining selected items: ",
-                ]
-                .iter()
-                .any(|prefix| {
-                    line.strip_prefix(prefix)
-                        .is_some_and(|count| count.parse::<u64>().is_ok())
-                })
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
     if p.state == OperationState::Completed && p.failed == 0 && p.errors.is_empty() {
         return String::new();
     }

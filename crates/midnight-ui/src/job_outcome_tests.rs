@@ -323,20 +323,6 @@ fn a_permanent_delete_says_what_it_deleted_and_lists_its_error() {
 }
 
 #[test]
-fn trash_fallback_reports_recycled_and_permanently_deleted_targets_separately() {
-    let mut p = deleting(DeleteMode::Permanent, OperationState::CompletedWithErrors);
-    p.total = 4;
-    p.completed = 3;
-    p.message =
-        "Moved to Trash: 1\nPermanently deleted: 2\nRemaining selected items: 1\nentry is busy"
-            .into();
-    assert_eq!(
-        deletion(&p, DeleteMode::Permanent, &locale()),
-        "Moved to Trash: 1\nPermanently deleted: 2\nRemaining selected items: 1"
-    );
-}
-
-#[test]
 fn a_cancelled_trash_move_says_what_stays_in_the_trash() {
     let mut p = deleting(DeleteMode::Trash, OperationState::Cancelled);
     p.total = 5;

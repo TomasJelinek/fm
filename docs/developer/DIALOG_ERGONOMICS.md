@@ -118,8 +118,10 @@ measurement.
   everything in it?", "Permanently delete the link “x”?", "Move 12 items to the
   Trash?". Right under it is one short line: "Permanent deletion cannot be undone." in
   the error colour, semibold, after a round "!" glyph on its first line; for the Trash
-  "If the Trash is unavailable, permanent deletion requires a separate confirmation." in the secondary text
-  colour, without a glyph. The rest are details, after a wider gap, in a subdued block on
+  "Items the Trash cannot take are kept, never deleted permanently." in the secondary
+  text colour, without a glyph. F8 where no Trash takes the items shows the permanent
+  delete's confirmation, whose warning starts with one more line that says why ("The
+  Recycle Bin is turned off for C:, so this item will be deleted permanently."). The rest are details, after a wider gap, in a subdued block on
   the secondary surface: a label column in the muted colour, as wide as its widest label
   (at most two fifths of the block), and the values in the secondary colour, both in the
   small font. One item lists Name, Type ("File", "Folder", "Link (what it points to is

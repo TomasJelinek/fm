@@ -113,6 +113,7 @@ impl Harness {
                 kind: EntryKind::File,
                 metadata: EntryMetadata::default(),
             }],
+            trash_unavailable: None,
         }));
     }
     fn refresh(&self) {

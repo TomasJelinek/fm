@@ -3,7 +3,7 @@ use crate::WindowsFileSystem;
 use midnight_core::{
     Cancellation, CompressionStatus, DeleteCompletion, DeleteEntryFailure, DeleteFailureChoice,
     DeleteMode, EntryKind, EntryMetadata, FsError, MutationItem, MutationService,
-    PreparedDirectory, PreparedMutation, RenameCompletion,
+    PreparedDirectory, PreparedMutation, RenameCompletion, TrashSupport,
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -28,6 +28,8 @@ mod metadata;
 pub(crate) mod native;
 #[path = "mutation_trash.rs"]
 mod trash;
+#[path = "mutation_trash_support.rs"]
+mod trash_support;
 
 struct WindowsMutation {
     item: MutationItem,
@@ -289,6 +291,15 @@ impl PreparedMutation for WindowsMutation {
         failed: &mut dyn FnMut(DeleteEntryFailure) -> DeleteFailureChoice,
     ) -> Result<DeleteCompletion, FsError> {
         self.delete_decided(mode, cancel, progress, &mut |failure| Ok(failed(failure)))
+    }
+    /// The Recycle Bin of the folder's volume, as `trash_support` reads its settings.
+    fn trash_support(&self) -> TrashSupport {
+        self.item
+            .path
+            .parent()
+            .map_or(TrashSupport::Available, |folder| {
+                trash_support::support(folder, &self.parent)
+            })
     }
 }
 

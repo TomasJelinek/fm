@@ -1265,13 +1265,21 @@ current keys. Terms such as [panel](GLOSSARY.md#panel), [tab](GLOSSARY.md#tab) a
   contents may not be on this computer is not replaced, and the notice says so. The
   new file is focused when creation finishes.
 - Delete/F8: confirm moving selected items to Trash. Shift+Delete/Shift+F8:
-  explicitly confirm permanent deletion. If Trash is unavailable (on Windows, for example,
-  when the drive's Recycle Bin is set to remove files immediately), the job stops and asks
-  in its own window, above its progress window: it names why, lists the items as the
-  permanent-deletion confirmation does and says this cannot be undone. **Permanently
-  delete** deletes them, **Cancel job** keeps them, and **Decide later** leaves the job
-  waiting; its progress window then says what it waits for, and **Resolve** there or in
-  Jobs asks again.
+  explicitly confirm permanent deletion. Where no Trash takes the items, Delete/F8
+  opens the permanent-deletion confirmation at once, the same one as Shift+Delete, with
+  one more line that says why ("The Recycle Bin is turned off for C:, so this item will
+  be deleted permanently."). On Windows that is a drive whose Recycle Bin is set to
+  "Don't move files to the Recycle Bin", a policy that turns the Recycle Bin off, or a
+  network share or drive, USB stick, memory card, CD/DVD or RAM drive, which have no
+  Recycle Bin; on Linux an item on another filesystem than your home Trash (a tmpfs
+  folder such as `/run/user/1000`, a USB stick). Nothing starts until you answer: Escape
+  or **Cancel** keeps everything. If only some of the selected items cannot go to the
+  Trash, confirming deletes all of them permanently; to keep the others recoverable,
+  cancel and delete them separately. If the Trash still refuses an item after the
+  Delete started (its setting was changed meanwhile, or the item is too large for the
+  Recycle Bin), the item is kept and the job asks **Retry**, **Skip**, **Skip all
+  errors** or **Cancel job**, as for any other item it cannot remove; it never deletes
+  that item permanently instead.
   The confirmation asks its question first ("Permanently delete “report.pdf”?",
   "Move 12 items to the Trash?"), says right under it that a permanent deletion cannot
   be undone, and lists the details below: for one item its name, type, size (readable,
@@ -1557,13 +1565,15 @@ names are never truncated (dated [locale sorting design](superpowers/specs/2026-
 
 Platform limits of file operations: on Linux, file operations, Copy/Move and Find
 use `openat2` and need kernel 5.6 or later, and Trash uses the home Trash only for
-items on the same filesystem. When the Trash or Windows Recycle Bin cannot accept
-an item, Delete offers a separate permanent-delete confirmation for the affected
-items. Cancel keeps them in place. Items already moved to the Trash or Recycle Bin stay there.
+items on the same filesystem. Where the Trash or Windows Recycle Bin takes no items,
+Delete/F8 asks for a permanent deletion of the selection at once, with why; Cancel
+keeps everything. An item the Trash still refuses during the Delete is kept and
+reported as a failure, never deleted permanently instead.
 The Windows Shell's Recycle Bin can refuse long paths that native Rename,
-F7 and permanent deletion handle. On Windows, removable FAT32/exFAT media usually
-have no Recycle Bin and have no stable file identities, so Copy and Move refuse them
-with an explicit error. Permanent deletion there uses the classic delete disposition
+F7 and permanent deletion handle; such an item is kept, and the Delete reports it as a
+failure. On Windows, removable FAT32/exFAT media have no Recycle Bin (Delete/F8 there
+asks for a permanent deletion at once) and have no stable file identities, so Copy and
+Move refuse them with an explicit error. Permanent deletion there uses the classic delete disposition
 and refuses read-only entries; that is not yet verified on real FAT media (see the
 [Windows mutation notes](../crates/midnight-platform-windows/MUTATION_SAFETY.md#fat32-and-exfat)).
 The dated [operation design](superpowers/specs/2026-11-05-rename-delete-scroll-design.md)

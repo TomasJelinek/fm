@@ -83,7 +83,7 @@ fn recycle_shell(
 }
 
 // Only the destination lookup can interpret a missing path as a missing Recycle
-// Bin. A vanished source must never enter the permanent-delete offer.
+// Bin. A vanished source must never be reported as the Recycle Bin refusing it.
 fn recycle_destination_error(path: &Path, error: windows::core::Error) -> FsError {
     let code = error.code();
     if code == COPYENGINE_E_RECYCLE_BIN_NOT_FOUND

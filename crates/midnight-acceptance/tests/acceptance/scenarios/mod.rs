@@ -398,7 +398,7 @@ pub fn all() -> &'static [Scenario] {
                 name: "files_trash",
                 isolation: crate::Isolation::ParallelStaged,
                 area: "operations",
-                summary: "F8 into a private Trash: a file, a folder, a multi-selection, awkward names (.trashinfo, labels), a read-only file, a nested tree row; write-protected folders inside and outside the deleted tree.",
+                summary: "F8 into a private Trash: a file, a folder, a multi-selection, awkward names (.trashinfo, labels), a read-only file, a nested tree row; write-protected folders inside and outside the deleted tree; F8 where no Trash takes a file opens the permanent delete's confirmation with why (Windows: gated network or removable volumes only).",
                 run: files_trash::trash,
                 timeout: files_trash::TIMEOUT,
             },

@@ -1406,7 +1406,6 @@ fn delete_failure(id: u64, version: u64) -> Event {
         id: OperationId(id),
         version,
         mode: DeleteMode::Permanent,
-        permanent_fallback: None,
         error: FsError::from_io(
             "mutate entry",
             std::path::Path::new("source/locked"),

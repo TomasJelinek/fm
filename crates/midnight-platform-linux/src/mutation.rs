@@ -36,7 +36,7 @@
 use midnight_core::{
     Cancellation, DeleteCompletion, DeleteEntryFailure, DeleteFailureChoice, DeleteMode, EntryKind,
     EntryMetadata, FsError, MutationItem, MutationResidue, MutationService, PreparedDirectory,
-    PreparedMutation, RenameCompletion,
+    PreparedMutation, RenameCompletion, TrashSupport,
 };
 use rustix::fs::{
     Access, AtFlags, CWD, FileType, Mode, OFlags, RenameFlags, ResolveFlags, Stat, accessat, fstat,
@@ -419,6 +419,11 @@ impl PreparedMutation for Prepared {
         self.delete_decided(mode, cancel, progress, true, &mut |failure| {
             Ok(failed(failure))
         })
+    }
+
+    /// The home trash, when it is on this entry's filesystem (`trash::support`).
+    fn trash_support(&self) -> TrashSupport {
+        trash::support(self)
     }
 }
 

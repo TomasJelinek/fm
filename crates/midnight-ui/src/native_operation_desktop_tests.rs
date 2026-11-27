@@ -169,6 +169,7 @@ fn embedded_operation_keeps_main_enabled_and_native_close_cancels_without_mutati
                     state.borrow_mut().apply(Event::Operation(OperationEvent::Preview(Arc::new(OperationPreview {
                         id: request.id, kind: request.kind, files: 1, folders: 0, file_bytes: Some(1),
                         sample: vec![MutationItem { path: paths[0].join("source.txt"), kind: EntryKind::File, metadata: EntryMetadata::default() }],
+                        trash_unavailable: None,
                     }))));
                     crate::refresh(&main, &state.borrow());
                     phase = 1;

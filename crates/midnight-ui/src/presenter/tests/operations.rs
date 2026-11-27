@@ -248,6 +248,7 @@ fn stale_confirmation_and_failed_enqueue_do_not_confirm_another_operation() {
                 kind: EntryKind::File,
                 metadata: Default::default(),
             }],
+            trash_unavailable: None,
         },
     ))));
     p.confirm_operation("999", "new.txt".into(), &|_| panic!("stale callback"));
@@ -313,6 +314,7 @@ fn jobs_cancelled_delete_confirmation_is_hidden_until_worker_retires_and_never_b
                     folders: 0,
                     file_bytes: None,
                     sample: vec![],
+                    trash_unavailable: None,
                 },
             ))));
         }
@@ -354,6 +356,7 @@ fn jobs_preparation_errors_and_cancelled_confirmed_delete_remain_visible() {
                 folders: 0,
                 file_bytes: None,
                 sample: vec![],
+                trash_unavailable: None,
             },
         ))));
         if accepted {
@@ -516,6 +519,7 @@ fn a_new_empty_file_over_a_listed_file_asks_then_replaces() {
             folders: 0,
             file_bytes: None,
             sample: vec![],
+            trash_unavailable: None,
         },
     ))));
     p.confirm_operation("1", existing.clone(), &|_| {
@@ -571,6 +575,7 @@ fn a_new_empty_file_asks_only_for_a_listed_file_in_the_folder_s_letter_case_rule
                 folders: 0,
                 file_bytes: None,
                 sample: vec![],
+                trash_unavailable: None,
             },
         ))));
         p.confirm_operation(&id.0.to_string(), name.into(), &|_| true);
@@ -600,6 +605,7 @@ fn confirmed_rename(p: &mut Presenter) -> OperationId {
                 kind: EntryKind::File,
                 metadata: Default::default(),
             }],
+            trash_unavailable: None,
         },
     ))));
     p.confirm_operation(&id.0.to_string(), "renamed.txt".into(), &|_| true);

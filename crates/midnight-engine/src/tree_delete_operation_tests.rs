@@ -90,6 +90,42 @@ async fn captured_tree_delete_prepares_descendants_but_requires_confirmation_for
     }
 }
 
+/// Items of two folders, one of which no Trash takes: the whole selection is prepared as
+/// one permanent delete, whose confirmation says so; each folder is asked once.
+#[tokio::test]
+async fn a_captured_trash_delete_partly_without_a_trash_is_one_permanent_delete() {
+    let mut h = Harness::new(MutationKind::Delete(DeleteMode::Trash));
+    let folder = h.request.source.path.join("parent/child");
+    h.calls.no_trash.lock().unwrap().push(folder);
+    let request = request(&h, DeleteMode::Trash);
+    h.controller.prepare_captured_delete(request).await;
+    let preview = h.preview().await;
+    let permanent = MutationKind::Delete(DeleteMode::Permanent);
+    assert_eq!(preview.kind, permanent);
+    assert_eq!(
+        preview.trash_unavailable.as_deref(),
+        Some(
+            "The Recycle Bin is turned off for X:, so all selected items will be deleted \
+             permanently, including those the Trash could take."
+        )
+    );
+    assert_eq!(h.calls.trash_asked.load(Ordering::Relaxed), 2);
+    h.controller.confirm(preview.id, None).await;
+    let done = h.finished().await;
+    assert_eq!(
+        (done.state, done.kind),
+        (OperationState::Completed, permanent)
+    );
+    assert!(
+        h.calls
+            .deleted
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, mode)| *mode == DeleteMode::Permanent)
+    );
+}
+
 #[tokio::test]
 async fn cancelled_captured_confirmation_never_deletes_and_releases_owner_on_worker() {
     let mut h = Harness::new(MutationKind::Delete(DeleteMode::Permanent));

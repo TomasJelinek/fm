@@ -1108,7 +1108,6 @@ impl EngineServices {
                         Some(Command::ResolveMetadataConflict { id, token, choice }) => operations.resolve_metadata_conflict(id, token, choice).await,
                         Some(Command::DecideRename(decision)) => operations.decide_rename(decision).await,
                         Some(Command::DecideDelete(decision)) => operations.decide_delete(decision).await,
-                        Some(Command::AnswerTrashFallback { id, version, confirm }) => operations.answer_trash_fallback(id, version, confirm).await,
                         Some(Command::CompareDirectories(request)) => comparison.compare(request),
                         Some(Command::CancelComparison(id)) => comparison.cancel(id),
                         Some(Command::ValidatePanelFilter(request)) => filters.validate(request),

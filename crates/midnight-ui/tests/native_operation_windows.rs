@@ -187,6 +187,7 @@ impl Harness {
                 kind: EntryKind::File,
                 metadata: EntryMetadata::default(),
             }],
+            trash_unavailable: None,
         };
         owned_commands::run(&self.state, &self.begin, |state, _| {
             state.apply(Event::Operation(OperationEvent::Preview(Arc::new(preview))));

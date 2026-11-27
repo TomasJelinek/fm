@@ -110,6 +110,7 @@ fn preview(id: u64, kind: MutationKind) -> Arc<OperationPreview> {
             kind: EntryKind::File,
             metadata: EntryMetadata::default(),
         }],
+        trash_unavailable: None,
     })
 }
 
@@ -166,6 +167,7 @@ fn folder_rename_shows_the_captured_parent_and_selects_the_entire_raw_name() {
                 kind: EntryKind::Directory,
                 metadata: EntryMetadata::default(),
             }],
+            trash_unavailable: None,
         }));
     }
     h.refresh();

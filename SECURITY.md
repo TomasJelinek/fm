@@ -332,13 +332,21 @@ intermediate creation is retained on failure or cancellation. Empty-file creatio
 accepts only one basename. See the [F7 path
 contract](docs/superpowers/specs/2026-11-06-create-any-path.md).
 
-Delete/F8 requests system Trash. If the provider specifically reports that Trash
-is unavailable, the engine retains those unmodified, pinned targets and asks whether
-to delete them permanently instead, in a question window of its own that opens above
-the job's progress window and names the refusal, lists the items and warns that this
-cannot be undone; Escape and Decide later answer nothing. Permanent deletion
-requires an affirmative answer for the current job and offer version. Items already
-recycled stay in the Trash. Windows uses the dedicated Shell recycle method, which can reject paths beyond
+Delete/F8 requests system Trash. Before anything is confirmed, preparation asks the
+provider, once per folder of the pinned targets and read-only, whether a Trash takes
+their items: on Windows the "Do not move deleted files to the Recycle Bin" policy, the
+volume's drive type (network, removable, CD/DVD and RAM drives have no Recycle Bin)
+and its "Don't move files to the Recycle Bin" setting; on Linux whether the home Trash
+is on the item's filesystem. When a Trash cannot take a target, the whole request is
+prepared as a permanent delete instead, and the user sees the same confirmation as
+Shift+Delete (the dangerous button, "Permanent deletion cannot be undone.") with one
+line that says why; nothing is changed unless that confirmation is accepted, and
+Escape keeps every item. A Trash delete the user confirmed is never turned into a
+permanent one: a Trash that still refuses an item while the job runs (its setting
+changed after the check, an item too large for the Recycle Bin) leaves the item in
+place, and the job reports it as an ordinary failure with Retry, Skip, Skip all errors
+and Cancel job. An unknown answer counts as "a Trash takes it", so the check alone
+never causes a permanent deletion. Windows uses the dedicated Shell recycle method, which can reject paths beyond
 its own limit even though rename/create/permanent operations support long paths. Linux
 supports only the home Trash, and only for items on the same filesystem as that Trash;
 deletion requires Linux 5.6 or later (`openat2`). Destructive traversal never

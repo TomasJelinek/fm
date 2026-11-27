@@ -29,6 +29,12 @@ pub struct OperationPreview {
     pub file_bytes: Option<u64>,
     /// At most 32 entries; the complete prepared target list stays on the worker.
     pub sample: Vec<MutationItem>,
+    /// A Delete asked for as a Trash delete whose items (some or all) no Trash can take
+    /// is prepared as a permanent delete instead (`kind` says so), which the user then
+    /// confirms like any other permanent delete. This is why, as one sentence for the
+    /// confirmation, such as "The Recycle Bin is turned off for C:, so this item will be
+    /// deleted permanently." None for every other preview.
+    pub trash_unavailable: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,8 +103,6 @@ pub struct DeleteFailure {
     pub id: OperationId,
     pub version: u64,
     pub mode: crate::DeleteMode,
-    /// Only the original pinned targets which the provider explicitly could not recycle.
-    pub permanent_fallback: Option<OperationPreview>,
     /// Why, naming the entry, or the folder whose entries cannot be removed.
     pub error: FsError,
     pub can_retry: bool,

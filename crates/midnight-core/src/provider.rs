@@ -79,8 +79,9 @@ pub struct FsError {
 }
 
 impl FsError {
-    /// The provider specifically refused to recycle this item. A caller may offer
-    /// a separate, explicit permanent-delete confirmation for the pinned item.
+    /// The provider specifically refused to recycle this item, which it kept. The
+    /// item is never deleted permanently instead: a Delete reports this like any
+    /// other failure, and the user may retry or skip it.
     pub fn trash_unavailable(path: &Path, reason: impl Into<String>) -> Self {
         Self::from_io(
             "move to trash",

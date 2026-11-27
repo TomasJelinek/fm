@@ -140,17 +140,9 @@ fn cached_mutation(p: &Presenter, progress: &std::sync::Arc<OperationProgress>) 
 }
 /// What a Delete that waits for an answer says instead of its time remaining.
 fn delete_waiting(failure: &DeleteFailure) -> String {
-    let question = if failure.permanent_fallback.is_some() {
-        if cfg!(windows) {
-            "the Recycle Bin cannot take the items; delete them permanently instead?"
-        } else {
-            "the Trash cannot take the items; delete them permanently instead?"
-        }
-    } else {
-        "the Delete stopped at an error."
-    };
     format!(
-        "Waiting for your answer: {question} Choose Resolve to see the question.\n{}",
+        "Waiting for your answer: the Delete stopped at an error. Choose Resolve to see \
+         the question.\n{}",
         failure.error.message
     )
 }

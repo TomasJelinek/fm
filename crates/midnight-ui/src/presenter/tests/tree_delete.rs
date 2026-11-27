@@ -113,6 +113,7 @@ fn tree_delete_prepares_exact_occurrences_and_requires_confirmation_in_both_mode
                 folders: 1,
                 file_bytes: Some(0),
                 sample: vec![],
+                trash_unavailable: None,
             },
         ))));
         p.confirm_operation("wrong", String::new(), &|_| panic!("wrong token"));

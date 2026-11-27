@@ -231,6 +231,7 @@ fn tree_rename_holds_input_until_the_refreshed_tree_shows_and_focuses_the_new_na
                     kind: EntryKind::Directory,
                     metadata: Default::default(),
                 }],
+                trash_unavailable: None,
             },
         ))));
         p.confirm_operation(&id.0.to_string(), "renamed".into(), &|_| true);
@@ -446,6 +447,7 @@ fn a_later_completion_keeps_an_earlier_tree_reveal() {
                 kind: EntryKind::Directory,
                 metadata: Default::default(),
             }],
+            trash_unavailable: None,
         },
     ))));
     p.confirm_operation(&id.0.to_string(), "renamed".into(), &|_| true);

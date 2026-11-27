@@ -19,7 +19,7 @@ use windows::{
 };
 
 #[test]
-fn recycle_refusals_offer_fallback_only_for_unsupported_recycling() {
+fn only_unsupported_recycling_is_a_recycle_bin_refusal() {
     let path = Path::new(r"D:\test.txt");
     for value in [ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_NOT_FOUND] {
         let code = windows::core::HRESULT::from_win32(value.0);

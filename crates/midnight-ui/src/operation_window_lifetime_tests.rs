@@ -99,6 +99,7 @@ impl Harness {
                     kind: EntryKind::File,
                     metadata: EntryMetadata::default(),
                 }],
+                trash_unavailable: None,
             }));
         }
         crate::refresh(&self.main, &self.state.borrow());

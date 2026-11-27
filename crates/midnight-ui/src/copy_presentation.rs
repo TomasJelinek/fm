@@ -80,7 +80,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
                 .as_ref()
                 .is_none_or(|draft| draft.retire_requested)
         {
-            refresh_delete_failure(window, presenter, failure);
+            refresh_delete_failure(window, failure);
         }
         return;
     }
@@ -145,7 +145,6 @@ fn refresh_conflict(
         "Replacement and merging are unavailable for these items. Choose another name or skip."
     };
     window.set_copy_is_failure(false);
-    window.set_copy_permanent_fallback(false);
     window.set_copy_can_replace(conflict.can_replace);
     window.set_copy_can_merge(conflict.can_merge);
     window.set_copy_source_details(shown_text(&describe(
@@ -177,7 +176,6 @@ fn refresh_failure(window: &MainWindow, failure: &CopyFailure, intent: Option<Tr
         return;
     }
     window.set_copy_is_failure(true);
-    window.set_copy_permanent_fallback(false);
     window.set_copy_can_retry(failure.can_retry);
     window.set_copy_can_skip(failure.can_skip);
     window.set_copy_can_replace(false);
@@ -194,27 +192,21 @@ fn refresh_failure(window: &MainWindow, failure: &CopyFailure, intent: Option<Tr
     window.invoke_show_copy_conflict();
 }
 
-/// A Delete failure in the shared failure prompt (`delete-error:{job}:{version}`); a
-/// Trash refusal there asks whether to delete the refused items permanently instead.
-fn refresh_delete_failure(window: &MainWindow, presenter: &Presenter, failure: &DeleteFailure) {
+/// A Delete failure in the shared failure prompt (`delete-error:{job}:{version}`), a
+/// Trash refusal among them: the item is kept, and Retry, Skip or Cancel decide.
+fn refresh_delete_failure(window: &MainWindow, failure: &DeleteFailure) {
     let token: SharedString = format!("delete-error:{}:{}", failure.id.0, failure.version).into();
     if window.get_copy_token() == token {
         return;
     }
-    let fallback = failure.permanent_fallback.is_some();
     window.set_copy_is_failure(true);
-    window.set_copy_permanent_fallback(fallback);
     window.set_copy_can_retry(failure.can_retry);
     window.set_copy_can_skip(failure.can_skip);
     window.set_copy_can_replace(false);
     window.set_copy_can_merge(false);
     window.set_copy_source_details("".into());
     window.set_copy_target_details("".into());
-    window.set_copy_body(shown_text(&if fallback {
-        crate::operation_presentation::trash_fallback_body(presenter, failure)
-    } else {
-        delete_failure_details(failure)
-    }));
+    window.set_copy_body(shown_text(&delete_failure_details(failure)));
     window.set_copy_name("".into());
     window.set_copy_token(token);
     window.invoke_show_copy_conflict();
@@ -228,6 +220,14 @@ pub(crate) fn delete_failure_details(failure: &DeleteFailure) -> String {
         DeleteMode::Permanent => "Deleting permanently",
     };
     let mut detail = format!("{action}\n\n{}", failure.error.message);
+    // A refusal by the Trash after the Delete started (its setting changed since F8, or
+    // the item is too large for it): the item stays, as for any other failure.
+    if failure.error.is_trash_unavailable() {
+        detail.push_str(
+            "\n\nThe Trash did not take this item, and it was kept. Retry once the Trash \
+             takes it, Skip to keep it, or use Shift+Delete to delete it permanently.",
+        );
+    }
     append_split_path(&mut detail, "Item", &failure.error.path);
     detail
 }

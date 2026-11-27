@@ -95,6 +95,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
                     kind: entry.kind,
                     metadata: entry.metadata,
                 }],
+                trash_unavailable: None,
             },
         ))));
     refresh(&ui.window, &state.borrow());
@@ -171,6 +172,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
                     folders: 0,
                     file_bytes: None,
                     sample: vec![],
+                    trash_unavailable: None,
                 },
             ))));
         refresh(&ui.window, &state.borrow());
@@ -261,6 +263,7 @@ fn rename_delete_create_dialogs_preserve_confirmation_and_editor_focus() {
                     folders: 0,
                     file_bytes: Some(0),
                     sample: vec![],
+                    trash_unavailable: None,
                 },
             ))));
         refresh(&ui.window, &state.borrow());
@@ -391,6 +394,7 @@ fn replacing_a_file_with_an_empty_one_needs_the_button_not_another_enter() {
                 folders: 0,
                 file_bytes: Some(0),
                 sample: vec![],
+                trash_unavailable: None,
             },
         ))));
     refresh(&ui.window, &state.borrow());

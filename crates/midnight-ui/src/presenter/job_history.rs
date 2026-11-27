@@ -349,6 +349,7 @@ mod tests {
             folders: 0,
             file_bytes: Some(1),
             sample: vec![],
+            trash_unavailable: None,
         });
         p.operations.pending = Some(OperationId(1));
         p.operations.preview = Some(preview.clone());

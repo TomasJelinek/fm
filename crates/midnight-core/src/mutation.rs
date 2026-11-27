@@ -326,6 +326,27 @@ pub trait PreparedMutation: Send + Sync {
         let _ = failed;
         self.delete(mode, cancel, progress)
     }
+    /// Whether a Trash delete can move this entry to a Trash, asked on a worker before
+    /// a Trash delete is confirmed, so that one no Trash can take is confirmed as a
+    /// permanent delete instead of failing after it started. It changes nothing, must be
+    /// cheap (settings and the volume of the entry's folder, never its contents) and
+    /// answers the same for entries of the same folder. `Available` when unknown: the
+    /// move itself still decides, and a refusal then is an ordinary failure that keeps
+    /// the entry.
+    fn trash_support(&self) -> TrashSupport {
+        TrashSupport::Available
+    }
+}
+
+/// What [`PreparedMutation::trash_support`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrashSupport {
+    /// A Trash is expected to take the entry, or nothing says it would not.
+    Available,
+    /// No Trash takes entries from where this one is. Why, as the start of a sentence
+    /// naming the drive or mount, such as "The Recycle Bin is turned off for C:" or
+    /// "There is no Trash on /run/user/1000".
+    Unavailable(String),
 }
 
 /// Blocking native operations are called only on the engine's mutation workers.

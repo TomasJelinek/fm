@@ -19,6 +19,62 @@ pub(super) fn home_trash(home: Option<&Path>, data_home: Option<OsString>) -> Op
         .map(|home| home.join(".local/share/Trash"))
 }
 
+/// Whether `move_entry` can take an entry of `prepared`'s folder, asked before a Trash
+/// delete is confirmed: the home trash, on the folder's filesystem. Read only: the trash
+/// folders are created only by a move.
+pub(super) fn support(prepared: &Prepared) -> TrashSupport {
+    support_with(
+        prepared.trash_root.as_deref(),
+        &prepared.parent_path,
+        prepared.parent_identity.device,
+        &|path| {
+            statat(CWD, path, AtFlags::SYMLINK_NOFOLLOW)
+                .ok()
+                .map(|stat| (stat.st_dev, FileType::from_raw_mode(stat.st_mode)))
+        },
+    )
+}
+
+/// `support` with the filesystem as `stat` reports it: a path's device and type, without
+/// following a final link.
+pub(super) fn support_with(
+    trash_root: Option<&Path>,
+    folder: &Path,
+    device: u64,
+    stat: &dyn Fn(&Path) -> Option<(u64, FileType)>,
+) -> TrashSupport {
+    let Some(root) = trash_root else {
+        return TrashSupport::Unavailable(
+            "There is no Trash, because the home folder is unknown".into(),
+        );
+    };
+    // A move creates what is missing of the trash below its nearest existing folder,
+    // so on that folder's filesystem.
+    let files = root.join("files");
+    let mut existing = files.as_path();
+    let (trash_device, kind) = loop {
+        if let Some(found) = stat(existing) {
+            break found;
+        }
+        match existing.parent() {
+            Some(parent) => existing = parent,
+            None => return TrashSupport::Available,
+        }
+    };
+    // A link or a file there: the move reports what is wrong.
+    if kind != FileType::Directory || trash_device == device {
+        return TrashSupport::Available;
+    }
+    // The top folder of the entry's filesystem names it.
+    let mut mount = folder;
+    while let Some(parent) = mount.parent()
+        && stat(parent).is_some_and(|(parent_device, _)| parent_device == device)
+    {
+        mount = parent;
+    }
+    TrashSupport::Unavailable(format!("There is no Trash on {}", mount.display()))
+}
+
 pub(super) fn move_entry(
     prepared: &Prepared,
     cancel: &Cancellation,

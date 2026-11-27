@@ -16,9 +16,10 @@ const NAMES: usize = 5;
 pub(crate) struct Confirmation {
     /// The headline: what is deleted, by name for one target, counted for several.
     pub(crate) question: String,
-    /// Right under the question: that a permanent delete cannot be undone, or what
-    /// happens to the items where there is no Trash.
-    pub(crate) warning: &'static str,
+    /// Right under the question: that a permanent delete cannot be undone, after why it
+    /// is one when a Trash delete became one (no Trash takes the items), or what
+    /// happens to items the Trash refuses.
+    pub(crate) warning: String,
     /// Label and value; a value of several lines lists names, one per line.
     pub(crate) details: Vec<(&'static str, String)>,
     /// The detail whose value is a folder's path: the dialog shortens it in the middle,
@@ -63,7 +64,7 @@ pub(crate) fn confirmation(
     context: &Context<'_>,
 ) -> Confirmation {
     match single(preview) {
-        Some(item) => one(item, mode, context),
+        Some(item) => one(preview, item, mode, context),
         None => several(preview, mode, context),
     }
 }
@@ -81,18 +82,27 @@ fn name(path: &Path) -> std::borrow::Cow<'_, str> {
         .to_string_lossy()
 }
 
-fn warning(mode: DeleteMode) -> &'static str {
-    match mode {
+/// The warning line: for a Trash delete that became a permanent one (`F8` where no Trash
+/// takes the items), why, on its own line first.
+fn warning(preview: &OperationPreview, mode: DeleteMode) -> String {
+    let warning = match mode {
         DeleteMode::Permanent => "Permanent deletion cannot be undone.",
-        DeleteMode::Trash => {
-            "If the Trash is unavailable, permanent deletion requires a separate confirmation."
-        }
+        DeleteMode::Trash => "Items the Trash cannot take are kept, never deleted permanently.",
+    };
+    match preview.trash_unavailable.as_deref() {
+        Some(why) if mode == DeleteMode::Permanent => format!("{why}\n{warning}"),
+        _ => warning.to_owned(),
     }
 }
 
 /// One target, named in the question by its kind. The worker counts directory links
 /// with folders and other links with files; both are links here.
-fn one(item: &MutationItem, mode: DeleteMode, context: &Context<'_>) -> Confirmation {
+fn one(
+    preview: &OperationPreview,
+    item: &MutationItem,
+    mode: DeleteMode,
+    context: &Context<'_>,
+) -> Confirmation {
     let name = name(&item.path);
     let link = matches!(item.kind, EntryKind::DirectoryLink | EntryKind::Symlink);
     let question = match (mode, item.kind) {
@@ -140,7 +150,7 @@ fn one(item: &MutationItem, mode: DeleteMode, context: &Context<'_>) -> Confirma
     }
     Confirmation {
         question,
-        warning: warning(mode),
+        warning: warning(preview, mode),
         details,
         path,
         folder,
@@ -206,7 +216,7 @@ fn several(preview: &OperationPreview, mode: DeleteMode, context: &Context<'_>) 
     }
     Confirmation {
         question,
-        warning: warning(mode),
+        warning: warning(preview, mode),
         details,
         path,
         folder,
@@ -370,6 +380,7 @@ mod tests {
             folders,
             file_bytes: bytes,
             sample,
+            trash_unavailable: None,
         }
     }
 
@@ -464,9 +475,40 @@ mod tests {
         assert_eq!(trash.question, "Move “experiments.rar” to the Trash?");
         assert_eq!(
             trash.warning,
-            "If the Trash is unavailable, permanent deletion requires a separate confirmation."
+            "Items the Trash cannot take are kept, never deleted permanently."
         );
         assert_eq!(trash.details, permanent.details);
+    }
+
+    /// F8 where no Trash takes the items: the Shift+Delete confirmation, the same question
+    /// and details, with why it is a permanent delete on the warning's first line.
+    #[test]
+    fn a_trash_delete_without_a_trash_is_the_permanent_confirmation_with_why() {
+        for one in [
+            preview(
+                1,
+                0,
+                Some(5),
+                vec![item("shot.png", EntryKind::File, Some(5))],
+            ),
+            preview(2_000, 3, Some(3_048), mixed()),
+        ] {
+            let shift_delete = confirm(&one, DeleteMode::Permanent);
+            let why = "The Recycle Bin is turned off for C:, so this item will be deleted \
+                       permanently.";
+            let f8 = OperationPreview {
+                trash_unavailable: Some(why.into()),
+                ..one.clone()
+            };
+            let shown = confirm(&f8, DeleteMode::Permanent);
+            assert_eq!(shown.question, shift_delete.question);
+            assert_eq!(shown.details, shift_delete.details);
+            assert_eq!(shown.text(), shift_delete.text());
+            assert_eq!(
+                shown.warning,
+                format!("{why}\nPermanent deletion cannot be undone.")
+            );
+        }
     }
 
     #[test]
@@ -617,7 +659,7 @@ mod tests {
         assert_eq!(trash.question, "Move 2 003 items to the Trash?");
         assert_eq!(
             trash.warning,
-            "If the Trash is unavailable, permanent deletion requires a separate confirmation."
+            "Items the Trash cannot take are kept, never deleted permanently."
         );
         // The selection is larger than the sample: its folder is known from the panel.
         let source = folder();

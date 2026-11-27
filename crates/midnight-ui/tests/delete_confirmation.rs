@@ -89,6 +89,7 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
         folders: 0,
         file_bytes: Some(3_000),
         sample: sample.clone(),
+        trash_unavailable: None,
     };
     let body = show(&ui, &windows, &state, &commands, preview.clone());
     // Several targets: the question counts them, the details list the first names.
@@ -102,7 +103,7 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     assert!(!body.contains("0 folders"));
     assert_eq!(
         ui.window.get_operation_warning(),
-        "If the Trash is unavailable, permanent deletion requires a separate confirmation."
+        "Items the Trash cannot take are kept, never deleted permanently."
     );
     assert!(!ui.window.get_operation_dangerous());
     snapshot(&windows, "delete-multiple-files");
@@ -130,7 +131,7 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     assert!(!body.contains(sample[0].path.to_string_lossy().as_ref()));
     assert_eq!(
         ui.window.get_operation_warning(),
-        "If the Trash is unavailable, permanent deletion requires a separate confirmation."
+        "Items the Trash cannot take are kept, never deleted permanently."
     );
     snapshot(&windows, "delete-single-file");
 
@@ -242,11 +243,151 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     assert!(body.contains("Modified: 1970-01-01 00:00:00 UTC"), "{body}");
 }
 
+/// F8 where no Trash takes the item: the worker prepared a permanent delete and says why,
+/// and the main window shows exactly the Shift+Delete confirmation (title, question,
+/// details, the dangerous button and Enter's result), with why on the warning's first line.
+#[test]
+fn f8_without_a_trash_opens_the_shift_delete_confirmation_with_why() {
+    let (ui, windows) = owned_windows::with_buffer(
+        slint::platform::software_renderer::RepaintBufferType::NewBuffer,
+    );
+    let path = PathBuf::from(std::path::MAIN_SEPARATOR_STR).join("no-trash-fixture");
+    let state = Rc::new(RefCell::new(Presenter::new(path.clone(), path.clone())));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let sink = commands.clone();
+    install(
+        &ui.window,
+        state.clone(),
+        Rc::new(move |command| {
+            sink.borrow_mut().push(command);
+            true
+        }),
+    );
+    let navigation = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Navigate {
+                pane: PaneId::Left,
+                navigation,
+                ..
+            } => Some(*navigation),
+            _ => None,
+        })
+        .unwrap();
+    let mut entry = Entry::new(
+        EntryId(1),
+        path.join("Screenshot 2023-03-31 105053.png"),
+        EntryKind::File,
+    );
+    entry.metadata.size = Some(48_213);
+    state.borrow_mut().apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation,
+        index: Arc::new(DirectoryIndex::from_entries(std::slice::from_ref(&entry))),
+        entries: vec![entry.clone()].into(),
+    });
+    refresh(&ui.window, &state.borrow());
+    ui.window.invoke_row_click(0, 1, false, false);
+    let preview = OperationPreview {
+        id: OperationId(0),
+        kind: MutationKind::Delete(DeleteMode::Permanent),
+        files: 1,
+        folders: 0,
+        file_bytes: Some(48_213),
+        sample: vec![MutationItem {
+            path: entry.path.clone(),
+            kind: entry.kind,
+            metadata: entry.metadata.clone(),
+        }],
+        trash_unavailable: None,
+    };
+    let shown = |ui: &TestUi| {
+        (
+            ui.window.get_operation_title(),
+            ui.window.get_operation_kind(),
+            ui.window.get_operation_dangerous(),
+        )
+    };
+    let shift_delete = show_as(&ui, &windows, &state, &commands, 2, preview.clone());
+    let shift_delete_form = shown(&ui);
+    assert_eq!(
+        ui.window.get_operation_warning(),
+        "Permanent deletion cannot be undone."
+    );
+    let why = "The Recycle Bin is turned off for C:, so this item will be deleted permanently.";
+    let f8 = show_as(
+        &ui,
+        &windows,
+        &state,
+        &commands,
+        1,
+        OperationPreview {
+            trash_unavailable: Some(why.into()),
+            ..preview
+        },
+    );
+    assert!(
+        commands.borrow().iter().any(|command| matches!(command,
+            Command::PrepareOperation(request)
+                if request.kind == MutationKind::Delete(DeleteMode::Trash))),
+        "F8 asked for a Trash delete"
+    );
+    assert_eq!(f8, shift_delete, "the same question and details");
+    assert_eq!(shown(&ui), shift_delete_form);
+    assert_eq!(
+        shift_delete_form,
+        ("Permanently delete".into(), 2, true),
+        "the permanent delete's title, kind and dangerous button"
+    );
+    assert!(
+        f8.starts_with("Permanently delete “Screenshot 2023-03-31 105053.png”?"),
+        "{f8}"
+    );
+    assert_eq!(
+        ui.window.get_operation_warning(),
+        format!(
+            "{why}
+Permanent deletion cannot be undone."
+        )
+    );
+    snapshot(&windows, "delete-without-trash");
+    // Enter confirms it as Shift+Delete does: the prepared permanent delete.
+    let id = OperationId(ui.window.get_operation_token().parse().unwrap());
+    owned_windows::child_key(&windows, Key::Return);
+    assert!(
+        commands.borrow().iter().any(|command| matches!(command,
+            Command::ConfirmOperation { id: confirmed, new_name: None, replace_existing: false }
+                if *confirmed == id)),
+        "{:?}",
+        commands.borrow()
+    );
+}
+
 fn show(
     ui: &TestUi,
     windows: &owned_windows::Windows,
     state: &Rc<RefCell<Presenter>>,
     commands: &Rc<RefCell<Vec<Command>>>,
+    preview: OperationPreview,
+) -> String {
+    // F8 asks for a Trash delete, Shift+Delete for a permanent one.
+    let mutation = if preview.kind == MutationKind::Delete(DeleteMode::Trash) {
+        1
+    } else {
+        2
+    };
+    show_as(ui, windows, state, commands, mutation, preview)
+}
+
+/// Asks for a Delete (`mutation` 1 for F8, 2 for Shift+Delete) and opens the
+/// confirmation of the `preview` the worker answers with.
+fn show_as(
+    ui: &TestUi,
+    windows: &owned_windows::Windows,
+    state: &Rc<RefCell<Presenter>>,
+    commands: &Rc<RefCell<Vec<Command>>>,
+    mutation: i32,
     mut preview: OperationPreview,
 ) -> String {
     if !ui.window.get_operation_token().is_empty() {
@@ -268,14 +409,7 @@ fn show(
         );
     }
     commands.borrow_mut().clear();
-    ui.window.invoke_mutation(
-        0,
-        if preview.kind == MutationKind::Delete(DeleteMode::Trash) {
-            1
-        } else {
-            2
-        },
-    );
+    ui.window.invoke_mutation(0, mutation);
     let id = commands
         .borrow()
         .iter()

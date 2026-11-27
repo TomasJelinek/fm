@@ -65,95 +65,153 @@ impl Harness {
     }
 }
 
-#[tokio::test]
-async fn trash_fallback_only_permanently_deletes_confirmed_pinned_remainders() {
-    for accept in [false, true] {
-        let mut h = deleting(&["unavailable-a", "recycled", "unavailable-b"]);
-        h.request.kind = MutationKind::Delete(DeleteMode::Trash);
-        let leftovers = vec![h.target(0), h.target(2)];
-        *h.calls.trash_unavailable.lock().unwrap() = leftovers.clone();
-        h.start().await;
-        let offer = h.failure().await;
-        let preview = offer.permanent_fallback.as_ref().unwrap();
-        assert_eq!(preview.kind, MutationKind::Delete(DeleteMode::Permanent));
-        assert_eq!(preview.files, 2);
-        assert_eq!(
-            preview
-                .sample
-                .iter()
-                .map(|item| item.path.clone())
-                .collect::<Vec<_>>(),
-            leftovers
-        );
-        // A stale consent or the ordinary error dialog cannot answer this offer.
-        h.controller
-            .answer_trash_fallback(offer.id, offer.version - 1, true)
-            .await;
-        h.decide(&offer, CopyChoice::Retry).await;
-        h.controller
-            .answer_trash_fallback(offer.id, offer.version, accept)
-            .await;
-        let (done, asked) = h.finished_deciding(CopyChoice::Cancel).await;
-        assert!(asked.is_empty());
-        let permanent: Vec<_> = h
-            .calls
-            .deleted
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, mode)| *mode == DeleteMode::Permanent)
-            .map(|(path, _)| path.clone())
-            .collect();
-        if accept {
-            assert_eq!(permanent, leftovers);
-            assert!(
-                done.message
-                    .contains("Moved to Trash: 1\nPermanently deleted: 2")
-            );
-            assert_eq!(
-                (done.state, done.completed, done.failed),
-                (OperationState::Completed, 3, 0)
-            );
-        } else {
-            assert!(permanent.is_empty());
-            assert_eq!((done.state, done.completed), (OperationState::Cancelled, 1));
+/// The preview and the progress that preparation published before it.
+async fn prepared(h: &mut Harness) -> (Arc<OperationPreview>, Arc<OperationProgress>) {
+    h.controller.prepare(h.request.clone()).await;
+    let mut awaiting = None;
+    loop {
+        match h.next().await {
+            OperationEvent::Preview(preview) => {
+                return (preview, awaiting.expect("progress before the preview"));
+            }
+            OperationEvent::Progress(progress) => awaiting = Some(progress),
+            _ => {}
         }
     }
 }
 
+/// F8 of items whose folder no Trash takes (the drive's Recycle Bin is turned off): the
+/// job is prepared as a permanent delete, whose confirmation says why, before anything
+/// starts. Preparation asks once for the folder; once confirmed, every item is deleted
+/// permanently and nothing more is asked.
 #[tokio::test]
-async fn trash_fallback_excludes_an_ordinary_failure_even_after_it_is_skipped() {
-    let mut h = deleting(&["unavailable", "failed"]);
+async fn a_trash_delete_that_no_trash_takes_is_prepared_as_a_permanent_delete() {
+    for (names, sentence) in [
+        (
+            &["only"][..],
+            "The Recycle Bin is turned off for X:, so this item will be deleted permanently.",
+        ),
+        (
+            &["first", "second", "third"][..],
+            "The Recycle Bin is turned off for X:, so these items will be deleted permanently.",
+        ),
+    ] {
+        let mut h = deleting(names);
+        h.request.kind = MutationKind::Delete(DeleteMode::Trash);
+        let folder = h.request.source.path.clone();
+        h.calls.no_trash.lock().unwrap().push(folder);
+        let (preview, awaiting) = prepared(&mut h).await;
+        let permanent = MutationKind::Delete(DeleteMode::Permanent);
+        assert_eq!(preview.kind, permanent);
+        assert_eq!(preview.trash_unavailable.as_deref(), Some(sentence));
+        assert_eq!(preview.files, names.len() as u64);
+        assert_eq!(
+            (awaiting.kind, awaiting.state),
+            (permanent, OperationState::AwaitingConfirmation)
+        );
+        assert_eq!(h.calls.trash_asked.load(Ordering::Relaxed), 1, "one folder");
+        assert!(h.deleted().is_empty(), "nothing before the confirmation");
+        h.controller.confirm(h.request.id, None).await;
+        let (done, asked) = h.finished_deciding(CopyChoice::Cancel).await;
+        assert!(asked.is_empty(), "{asked:?}");
+        assert_eq!(
+            (done.state, done.kind),
+            (OperationState::Completed, permanent)
+        );
+        let deleted = h.calls.deleted.lock().unwrap().clone();
+        assert_eq!(deleted.len(), names.len());
+        assert!(
+            deleted
+                .iter()
+                .all(|(_, mode)| *mode == DeleteMode::Permanent),
+            "{deleted:?}"
+        );
+    }
+}
+
+/// A Trash delete whose folder has a Trash stays one; a permanent delete never asks.
+#[tokio::test]
+async fn a_trash_delete_with_a_trash_stays_one_and_a_permanent_one_never_asks() {
+    let mut h = deleting(&["a", "b"]);
     h.request.kind = MutationKind::Delete(DeleteMode::Trash);
-    let (unavailable, failed) = (h.target(0), h.target(1));
-    *h.calls.trash_unavailable.lock().unwrap() = vec![unavailable.clone()];
-    *h.calls.failing_delete.lock().unwrap() = Some(failed.clone());
-    h.start().await;
-    let failure = h.failure().await;
-    assert_eq!(failure.error.path, failed);
-    assert!(failure.can_retry && failure.permanent_fallback.is_none());
-    h.decide(&failure, CopyChoice::Skip).await;
-    let fallback = h.failure().await;
-    let preview = fallback.permanent_fallback.as_ref().unwrap();
-    assert_eq!(
-        (preview.files, preview.sample[0].path.as_path()),
-        (1, unavailable.as_path())
-    );
-    h.controller
-        .answer_trash_fallback(fallback.id, fallback.version, true)
-        .await;
+    let (preview, awaiting) = prepared(&mut h).await;
+    let trash = MutationKind::Delete(DeleteMode::Trash);
+    assert_eq!((preview.kind, awaiting.kind), (trash, trash));
+    assert_eq!(preview.trash_unavailable, None);
+    assert_eq!(h.calls.trash_asked.load(Ordering::Relaxed), 1);
+    h.controller.confirm(h.request.id, None).await;
     let (done, asked) = h.finished_deciding(CopyChoice::Cancel).await;
-    assert!(asked.is_empty());
-    assert_eq!(
-        (done.state, done.completed, done.failed),
-        (OperationState::CompletedWithErrors, 1, 1)
-    );
+    assert!(asked.is_empty(), "{asked:?}");
+    assert_eq!(done.state, OperationState::Completed);
     assert!(
-        !h.calls
+        h.calls
             .deleted
             .lock()
             .unwrap()
-            .contains(&(failed, DeleteMode::Permanent))
+            .iter()
+            .all(|(_, mode)| *mode == DeleteMode::Trash)
+    );
+
+    let mut h = deleting(&["a"]);
+    let folder = h.request.source.path.clone();
+    h.calls.no_trash.lock().unwrap().push(folder);
+    let (preview, _) = prepared(&mut h).await;
+    assert_eq!(preview.kind, MutationKind::Delete(DeleteMode::Permanent));
+    assert_eq!(
+        preview.trash_unavailable, None,
+        "Shift+Delete says nothing more"
+    );
+    assert_eq!(h.calls.trash_asked.load(Ordering::Relaxed), 0);
+}
+
+/// A Trash that refuses an item while the job runs (its setting changed after
+/// preparation, or the item is too large for it) is an ordinary failure: the item is
+/// kept, Retry, Skip and Cancel decide, Retry works once the Trash takes it, and nothing
+/// is ever deleted permanently instead.
+#[tokio::test]
+async fn a_trash_refusal_during_the_job_is_an_ordinary_failure_that_keeps_the_item() {
+    let mut h = deleting(&["refused", "recycled"]);
+    h.request.kind = MutationKind::Delete(DeleteMode::Trash);
+    let refused = h.target(0);
+    *h.calls.trash_unavailable.lock().unwrap() = vec![refused.clone()];
+    h.start().await;
+    let failure = h.failure().await;
+    assert_eq!(failure.error.path, refused);
+    assert!(failure.error.is_trash_unavailable(), "{failure:?}");
+    assert_eq!(failure.mode, DeleteMode::Trash);
+    assert!(failure.can_retry && failure.can_skip);
+    h.calls.trash_unavailable.lock().unwrap().clear();
+    h.decide(&failure, CopyChoice::Retry).await;
+    let (done, asked) = h.finished_deciding(CopyChoice::Cancel).await;
+    assert!(asked.is_empty(), "{asked:?}");
+    assert_eq!(done.state, OperationState::Completed);
+    assert_eq!((done.completed, done.failed), (2, 0));
+    assert_eq!(
+        *h.calls.deleted.lock().unwrap(),
+        [
+            (refused.clone(), DeleteMode::Trash),
+            (refused, DeleteMode::Trash),
+            (h.target(1), DeleteMode::Trash),
+        ]
+    );
+
+    // The only item: still asked (Retry may help), and Skip keeps it.
+    let mut h = deleting(&["refused"]);
+    h.request.kind = MutationKind::Delete(DeleteMode::Trash);
+    let refused = h.target(0);
+    *h.calls.trash_unavailable.lock().unwrap() = vec![refused.clone()];
+    h.start().await;
+    let failure = h.failure().await;
+    assert!(failure.can_retry && failure.can_skip);
+    h.decide(&failure, CopyChoice::Skip).await;
+    let done = h.finished().await;
+    assert_eq!(done.state, OperationState::CompletedWithErrors);
+    assert_eq!((done.completed, done.failed), (0, 1));
+    assert!(done.errors[0].is_trash_unavailable());
+    assert_eq!(
+        *h.calls.deleted.lock().unwrap(),
+        [(refused, DeleteMode::Trash)],
+        "never a permanent delete"
     );
 }
 
