@@ -128,9 +128,10 @@ the whole report. Background: [directory authorization helper](../SECURITY.md#di
 **Symptom:** a Delete (Delete or F8) stops in a window titled **Move to Trash** with the
 heading **Cannot move to the Trash**.
 
-**Cause:** the Trash refused the items. On Windows the drive's Recycle Bin may be set to
-remove files immediately, and removable FAT32 or exFAT media usually have no Recycle
-Bin; on Linux the Trash takes only items on the same filesystem as your home folder.
+**Cause:** the Trash (on Windows, the Recycle Bin) refused the items. On Windows the
+drive's Recycle Bin may be set to remove files immediately, and removable FAT32 or exFAT
+media usually have no Recycle Bin; on Linux the Trash takes only items on the same
+filesystem as your home folder.
 
 **Fix:** the window lists the refused items and asks:
 
@@ -221,7 +222,7 @@ works without a restart.
 | The viewer says | What to do |
 | --- | --- |
 | `The HTML viewer needs permission for Chromium's sandbox on this system (Ubuntu restricts unprivileged user namespaces).` | Choose **Install…** in the notice and authorize it; it installs the viewer's AppArmor profile and opens the page again. |
-| `The HTML viewer cannot use Chromium's sandbox on this system: it denies user namespaces to programs without administrator rights.` | An administrator must change the kernel setting that the message names. |
+| `The HTML viewer cannot use Chromium's sandbox on this system: it denies user namespaces to programs without administrator rights.` | An administrator changes the kernel setting that the message names or, for an installation that only root can change, makes its `chrome-sandbox` setuid root; an AppArmor profile does not help. |
 | `The HTML viewer needs system libraries that are not installed: ….` | Run the install command that the message gives. |
 
 Chromium never runs without its sandbox. Details:

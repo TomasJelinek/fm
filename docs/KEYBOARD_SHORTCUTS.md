@@ -844,16 +844,17 @@ shortcut** question ([Changing shortcuts](#changing-shortcuts-in-options--keyboa
 | File list, filename search and command editor | Both of the above and the command editor |
 | Command editor | The command line under the panels |
 | Application window | The main window, wherever the keyboard focus is in it |
-| Volume choices popup | The drive dropdown that Alt+F1 and Alt+F2 open |
+| Volume choices popup | The drive dropdown, opened with Alt+F1, Alt+F2 or a click |
 | Viewer content | The content of a viewer window |
 | Comparison content | The content of a file comparison window |
 | Viewer and comparison content | Both of the above |
 | Viewer and comparison windows, including search | Viewer and comparison windows, also while their search field has the focus |
 
-Some chords keep a narrower scope whatever action they are assigned to: plain
-Backspace for the parent folder, plain Escape for clearing comparison marks, the plain
-digits of the Hot Paths and the clipboard chords (Ctrl or Meta with C, X or V, and
-Ctrl+Insert or Shift+Insert) of file-list actions work only outside filename search.
+Some chords work only outside filename search, although their action's scope is
+wider: plain Backspace as the parent folder, plain Escape as clearing comparison marks,
+plain digits as Hot Paths, and the clipboard chords (Ctrl or Meta with C, X or V, and
+Ctrl+Insert or Shift+Insert) in any file-list action, since filename search edits its
+text with them.
 
 These chords are reserved, and Options › Keyboard refuses them:
 
