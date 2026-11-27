@@ -109,7 +109,7 @@ that date:
 
 **MSI validation and installation test (27 November 2026):** scripts/test-msi-install.py
 runs the Windows SDK's ICE rules (darice.cub) on the MSI through the same msi.dll
-API: it extracts darice.cub with xpand.exe from the SDK's own
+API: it extracts darice.cub with `expand.exe` from the SDK's own
 MsiVal2-x86_en-us.msi and cabinet in Windows Kits\10\bin\<version>\x86 (installs
 nothing, runs no msival2.exe), merges it into a copy of the MSI and runs its ICE
 actions. The Windows SDK is free with Windows development (Microsoft Software License
