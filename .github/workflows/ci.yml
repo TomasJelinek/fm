@@ -805,6 +805,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # The Rust cache restores `_build`, and with it an earlier run's MSI test folder:
+          # its work folder is refused, and its ZIP would be a second match below.
+          if (Test-Path -LiteralPath _build/msi-test) { Remove-Item -LiteralPath _build/msi-test -Recurse -Force }
           python -B scripts/test-msi-install.py stand-in --executable _build/release/midnight-explorer.exe `
             --helper _build/release/midnight-elevated-listing.exe --viewers _build/viewer-packages `
             --filesystems _build/filesystem-packages --output _build/msi-test/zip

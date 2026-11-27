@@ -40,9 +40,11 @@ class NormalDeploymentTests(unittest.TestCase):
         self.environment = dict(os.environ, CARGO_TARGET_DIR=str(self.source.parent), DEPLOY_TEST_LOG=str(self.log))
 
     def deploy(self):
+        # A guard against a hang, not a duration: the script takes about a second, but a
+        # hosted runner's first Windows PowerShell start once took longer than 60 s.
         return subprocess.run(["powershell.exe", "-NoLogo", "-NoProfile", "-File",
                                str(self.root / "scripts/deploy-build.ps1")], env=self.environment,
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=180)
 
     def test_complete_runtime_replaces_the_build_deployment(self):
         result = self.deploy()
