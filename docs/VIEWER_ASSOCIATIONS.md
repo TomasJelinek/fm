@@ -1,18 +1,20 @@
 # Viewer file types
 
-**Options → Plugins** has four tabs: **Viewers**, **Filesystems**, **Archives** and
-**Thumbnailers**. The Viewers tab decides which viewer F3 opens for a file; the
-Thumbnailers tab decides which thumbnailer draws a file's preview. The viewer and
-thumbnailer packages' own manifests supply the defaults and are never modified.
+**Options › Plugins** has four tabs: **Viewers**, **Filesystems**, **Archives** and
+**Thumbnailers**. The Viewers tab decides which [viewer](GLOSSARY.md#viewer) F3 opens
+for a file; the Thumbnailers tab decides which [thumbnailer](GLOSSARY.md#thumbnailer)
+draws a file's preview. The viewer and thumbnailer packages' own manifests
+([manifest and installation](developer/QUICK_START.md#manifest-and-installation)) supply
+the defaults and are never modified.
 
 ## Viewers
 
 The **Viewer priority** list shows the installed viewers: the Text and binary viewer
-(the Basic viewer below), the Source, Markdown, Image, PDF and HTML viewers, and Video,
+(called the Basic viewer on this page), the Source, Markdown, Image, PDF and HTML viewers, and Video,
 each when its package is installed. It also lists packages that could not be loaded,
 with the reason, and viewers that are
 no longer installed but still have saved settings ("Not installed · settings
-retained"); those settings stay for a later reinstallation. A check box enables or
+retained"); those settings stay for a later reinstallation. A checkbox enables or
 disables each viewer; a disabled or unavailable viewer opens no files.
 
 Select a viewer and edit **Associated extensions**:
@@ -26,7 +28,7 @@ Select a viewer and edit **Associated extensions**:
 - A saved list replaces the viewer's defaults. It therefore does not gain extensions
   that a newer version adds to the defaults; **Reset** removes the saved list and
   restores the current defaults. For example, the Source viewer's defaults include
-  `csv` and `tsv`, which it colours column by column; removing them from its list
+  `csv` and `tsv`, which it colors column by column; removing them from its list
   returns those files to the Basic viewer.
 - An empty list removes all of that viewer's matches.
 - Limits: at most 512 extensions for one viewer, each at most 64 bytes, without paths,
@@ -69,7 +71,8 @@ the same way, with these differences:
 
 ## Archives and rescanning
 
-The Archives tab's **Archive associations…** chooses which file types open as
+The Archives tab lists the installed archive plugins. Its **Archive associations…**
+button opens the **Options › Archives** page, which chooses which file types open as
 archive folders; see [archive formats](ARCHIVE_FORMATS.md#associations).
 
 **Rescan all plugins** reads the viewer, filesystem (including archive) and

@@ -1,13 +1,16 @@
 # Archive formats and panel associations
 
 Enter or a left double-click on a file whose extension has an enabled archive
-association opens the file as a folder, read by the installed archive worker. When no
-installed worker supports its format, the panel says "Compatible archive filesystem
-plugin is unavailable", with the plugin discovery diagnostics, and does not hand the
-file to another application. Files without an enabled association open as usual.
+association opens the file as a folder, read by the installed archive
+[worker](GLOSSARY.md#worker), a restricted helper process. When no installed worker
+supports its format, the panel says "Compatible archive filesystem plugin is
+unavailable", with the plugin discovery diagnostics, and does not hand the file to
+another application. Files without an enabled association open as usual. Terms such as
+[spool](GLOSSARY.md#spool), [mount](GLOSSARY.md#mount), [lease](GLOSSARY.md#lease) and
+[Hot Paths](GLOSSARY.md#hot-paths) are defined in the [glossary](GLOSSARY.md).
 
 A small zipper badge marks the files that open this way in the Detailed, Brief and
-Thumbnails views. It is a muted corner zipper without an opaque background, 8 × 12
+Thumbnails [views](GLOSSARY.md#views). It is a muted corner zipper without an opaque background, 8 × 12
 logical pixels in Detailed and Brief and 10 × 17 in Thumbnails, drawn over the system
 icon; the icon and the selection stay visible and row sizes do not change. A file gets
 the badge only when its association is enabled and an installed worker supports its
@@ -75,7 +78,9 @@ part inside the archive lists that archive folder.
 
 ## Associations
 
-**Options → Archives** sets which file names open as folders. It has a format chooser
+**Options › Archives** sets which file names open as folders; the **Archive
+associations…** button on the Archives tab of **Options › Plugins** opens the same page.
+It has a format chooser
 (ZIP, 7-Zip, TAR, GZIP stream, TAR.GZ, XZ stream, TAR.XZ, Bzip2 stream, TAR.BZ2,
 Zstandard stream and TAR.ZST), a line that says whether an installed worker supports
 the chosen format, a **Filter file types** field, a checkbox for each built-in
@@ -89,7 +94,8 @@ extension of the format and the format's custom extensions.
   "Decoder unavailable" and keeps the choices.
 - Turning an association off does not invalidate a saved archive tab or Hot Path, and
   does not change what the worker can decode.
-- Extensions without a saved choice use the defaults listed below.
+- Extensions without a saved choice use the defaults in [ZIP containers](#zip-containers)
+  and [Other archive formats](#other-archive-formats).
 
 ### Custom extensions
 
@@ -120,21 +126,56 @@ the saved settings have loaded.
 
 ### Saved choices
 
-The choices are stored with the other preferences. Built-in choices (settings schema
-13 and later) store only the extensions whose state differs from the default, as
-lowercase extension and on or off. Custom extensions (schema 20 and later) store each
-suffix with the identifier of its decoder. An unknown or repeated extension, an
-unknown decoder, or a custom suffix that is not canonical or collides with a built-in
-one makes the settings file invalid rather than changing an association silently. A
-settings file without such choices keeps the oldest schema that its other settings
-need. A checkbox changed before the saved settings have loaded keeps that change, and
-the other saved choices load as stored.
+The choices are stored with the other settings in `preferences.json`
+([settings files](SETTINGS_FILES.md)), in two fields:
+
+| Field | Settings schema | Form | Meaning |
+| --- | --- | --- | --- |
+| `archive_association_overrides` | 13 and later | Object: built-in extension (lowercase, without the dot, such as `jar` or `tar.gz`) to `true` or `false` | The built-in extensions whose state differs from the default |
+| `archive_custom_extensions` | 20 and later | Object: custom suffix (case-folded, without the leading dot) to a decoder ID | The custom extensions and their formats |
+
+```json
+"archive_association_overrides": { "jar": true, "nupkg": false },
+"archive_custom_extensions": { "backup": "zip", "backup.tar": "tar" }
+```
+
+| Decoder ID | Format |
+| --- | --- |
+| `zip` | ZIP |
+| `7z` | 7-Zip |
+| `tar` | TAR |
+| `gzip` | GZIP stream |
+| `tar-gzip` | TAR.GZ |
+| `xz` | XZ stream |
+| `tar-xz` | TAR.XZ |
+| `bzip2` | Bzip2 stream |
+| `tar-bzip2` | TAR.BZ2 |
+| `zstd` | Zstandard stream |
+| `tar-zstd` | TAR.ZST |
+
+An unknown or repeated extension, an unknown decoder, or a custom suffix that is not
+canonical or collides with a built-in one makes the settings file invalid rather than
+changing an association silently. A settings file without such choices keeps the
+oldest schema that its other settings need. A checkbox changed before the saved
+settings have loaded keeps that change, and the other saved choices load as stored.
 
 Saved archive tabs and Hot Paths record the exact decoder (archive address version
 2), so removing a custom suffix does not break them. Addresses saved before
 (version 1) infer the decoder from the built-in suffix. A location inside archives
 inside an archive also records each inner archive's member and decoder (version 3,
-settings schema 42; see [archives inside archives](#archives-inside-archives)).
+settings schema 42; see [archives inside archives](#archives-inside-archives)). An
+archive address has these fields; byte strings are stored as lists of byte values, and
+display text is never stored:
+
+| Field | Address version | Form | Meaning |
+| --- | --- | --- | --- |
+| `version` | 1, 2, 3 | Number | The address version |
+| `provider` | 1, 2, 3 | String | The ID of the archive filesystem provider |
+| `format` | 2, 3 | Decoder ID | The decoder of the archive opened from the native file; absent in version 1 |
+| `container` | 1, 2, 3 | Native path | The archive file, as the settings file stores paths |
+| `source_version` | 1, 2, 3 | Bytes | The archive file's captured revision |
+| `components` | 1, 2, 3 | List of bytes | The raw names of the folders inside that archive |
+| `nested` | 3 | List of objects, the outermost first | Each archive inside the archive: `member` (the member's raw name, bytes), `format` (its decoder ID) and `components` (the folders inside it) |
 
 ## ZIP containers
 
@@ -284,7 +325,8 @@ through the archive's session failed, does not ask: when that open is refused, t
 notice "Archive unavailable" says why and the panel returns to the folder that contains
 the archive.
 
-ZIP support is Stored/Deflate, including password-protected members (below); other
+ZIP support is Stored/Deflate, including password-protected members (see
+[password-protected archives](#password-protected-archives)); other
 codecs, encrypted Office containers, DRM and corrupt archives fail explicitly, and the
 panel names the reason. The current worker
 has no artificial source, member or expansion-ratio byte ceiling: available spool
@@ -300,9 +342,11 @@ showing an archive folder holds about 640 bytes per member in the application (a
 610 MiB for a million members). An
 archive that needs more than its worker has says that the worker ran out of memory;
 the worker SDK grants no worker more than 1 GiB, so this is the remaining limit
-(protocol-1 workers keep their legacy limits, including a 64 MiB source). A source
+([protocol-1](GLOSSARY.md#archive-worker-protocol) workers keep their legacy limits,
+including a 64 MiB source). A source
 that cannot be read, such as a dropped share, is reported as such, never as an
-invalid archive. RAR is unavailable; archives inside archives are described below.
+invalid archive. RAR is unavailable; [archives inside archives](#archives-inside-archives)
+describes nesting.
 See the [filesystem API](developer/FILESYSTEM_API.md) and the
 [archive worker](../plugins/midnight-fs-archive/README.md) for exact limits and the
 plugin contract.
@@ -328,7 +372,7 @@ the close button leave the archive locked and close the dialog without a further
 message: F3 and Enter open nothing, and the keyboard is back in the file list with the
 cursor on the same row. A copy goes on and skips each protected member, naming that
 reason in its results, without asking again. The next action that needs the password
-asks for it again. If the archive plugin cannot decrypt the members, or the archive
+asks for it again. If the archive worker cannot decrypt the members, or the archive
 fails while the password is checked, the dialog closes and a message says why.
 
 The dialog keeps what it was asked for: after the password, F3 views the member that it
@@ -386,7 +430,7 @@ through the inner archive's session as in any archive.
 
 Opening stages the member through the enclosing archive's session: its worker decodes
 and verifies the whole member (lengths and CRCs, as for F3), and the host keeps the
-result as a private lease, in memory when it fits the 16 MiB stage limit and the
+result as a private [lease](GLOSSARY.md#lease), in memory when it fits the 16 MiB stage limit and the
 shared 128 MiB staging budget, and otherwise in an anonymous private spool file under
 the same free-space reserve as every member. Such a member's length is reserved on the
 spool volume before anything is staged: when it would not fit above the volume's
@@ -394,7 +438,8 @@ reserve, beside what other archive reads in progress still need, opening it is r
 at once, saying how much space it needs and how much there is
 (`This archive member needs 50.0 GiB of archive spool space, but the spool volume has
 only 20.0 GiB free above its reserve…`), and the panel stays in the enclosing folder,
-whose archive stays open (a protocol-2 worker cannot be refused without ending, as on
+whose archive stays open (a [protocol-2](GLOSSARY.md#archive-worker-protocol) worker
+cannot be refused without ending, as on
 any staging failure). F3 and F5 on such a member are refused the same way. The inner
 archive gets a restricted worker of its own, which reads that lease through the
 ordinary bounded source broker. The
@@ -414,9 +459,10 @@ Limits:
   opened from native files and the two that Find's Search inside archives may hold
   (each search opens one archive at a time), each worker with the usual 1 GiB
   memory limit.
-- No additional byte, expansion-ratio or member-count ceiling, consistent with the
-  limits above: decoded content is bounded by the spool volume's free-space reserve
-  (checked before a member is staged, as above), each level's index by its own worker's
+- No additional byte, expansion-ratio or member-count ceiling, consistent with
+  [Current operation limits](#current-operation-limits): decoded content is bounded by
+  the spool volume's free-space reserve (checked before a member is staged), each
+  level's index by its own worker's
   memory, and decoder windows and dictionaries
   by their usual bounds. Each level opens only on an explicit Enter, so an archive
   that contains itself is never unpacked recursively.
@@ -434,7 +480,7 @@ Saved tabs, Hot Paths and Back and forward history keep a folder inside archives
 an archive by its whole path: the archive opened from the native file with its
 revision, then for each archive inside it the member's raw name and decoder and the
 folders inside it (archive address version 3). Opening such a location, also after a
-restart, opens every level again in one navigation, at most 4 levels as above; the
+restart, opens every level again in one navigation, at most 4 levels; the
 panel's history keeps the archives it has left the same way, so Back to one of them
 opens it again. When a level no longer opens, the error names it, for example
 `Archive 3 of 4 on the saved path (c.tar.gz) cannot be opened: …`, and the panel stays
@@ -453,7 +499,8 @@ captured source bytes, never UI settings or native paths. The worker's build, te
 and protocol are described in the
 [archive worker development guide](archive-filesystem-development.md).
 
-Behavioral reference: Salamander keeps panel archive associations
-(`src/dialogsp.cpp`, `CCfgPageArchivesAssoc`) separate from the associations that open
-files in other applications, and saves the panel extension list (`src/pack3.cpp`). No
-reference code or assets were copied.
+Behavioral reference: [Salamander](GLOSSARY.md#salamander) keeps panel archive
+associations (`src/dialogsp.cpp`, `CCfgPageArchivesAssoc`, in
+[Open Salamander](https://github.com/OpenSalamander/salamander)) separate from the
+associations that open files in other applications, and saves the panel extension list
+(`src/pack3.cpp`). No reference code or assets were copied.
