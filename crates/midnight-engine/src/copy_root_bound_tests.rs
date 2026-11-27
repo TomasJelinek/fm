@@ -2,8 +2,16 @@
 //! the file list that the clipboard, a drop or a panel selection hands it.
 use super::*;
 
+/// The root of the current directory's volume: the shortest absolute folder, so that a
+/// million paths below it cost the least to build, index and check. Nothing is created
+/// in it; every request here is refused before any item is read.
+fn short_root() -> PathBuf {
+    let current = std::env::current_dir().unwrap();
+    current.ancestors().last().unwrap().to_owned()
+}
+
 fn paths(count: usize) -> CopyRequest {
-    let root = std::env::current_dir().unwrap();
+    let root = short_root();
     CopyRequest {
         start_policy: TransferStartPolicy::Immediate,
         verification: TransferVerification::FullSha256,
@@ -46,7 +54,7 @@ fn a_file_list_of_more_native_roots_than_one_copy_takes_is_refused_at_admission(
 #[test]
 fn a_panel_selection_of_more_native_roots_is_refused_before_any_root_is_prepared() {
     let count = MAX_NATIVE_TRANSFER_ROOTS + 1;
-    let root = std::env::current_dir().unwrap();
+    let root = short_root();
     let entries: Vec<_> = (0..count)
         .map(|index| {
             Entry::new(
