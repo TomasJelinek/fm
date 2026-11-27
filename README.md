@@ -1,24 +1,42 @@
 # Midnight Explorer
 
-Midnight Explorer is a fast, keyboard-friendly dual-pane file manager for Windows and
+Midnight Explorer is a fast, keyboard-friendly two-panel file manager for Windows and
 Linux, written in Rust with [Slint](https://slint.dev). It pairs two independent panels
 with tabs, internal viewers, verified Copy and Move, archives browsed as folders, Find,
 comparison tools and checksums, and keeps every file name's Unicode intact. Viewers,
 filesystems and thumbnailers are separate plugin packages that run isolated from the
 application.
 
-Current version: **0.6.3** (preview).
+Current version: **0.6.3**, a preview: features and plugin interfaces are still
+changing, archives are read-only, the Windows executable and installer are unsigned and
+macOS is not implemented. [Feature status](docs/FEATURE_STATUS.md) lists the current
+limits.
+
+## Start Here
+
+- [Download and install](#download-and-install) a release for Windows or Linux.
+- [Run it and check that it works](#run-and-check).
+- Learn the controls in the [user guide](docs/USER_GUIDE.md) and the
+  [keyboard shortcuts](docs/KEYBOARD_SHORTCUTS.md); F1 shows the shortcuts in the
+  application.
+- Fix a problem with [Troubleshooting](docs/TROUBLESHOOTING.md), or
+  [get help](#support).
+- [Build from source](#build-from-source).
 
 ## Features
 
-- **Panels:** two independent panels with tabs, history, Hot Paths, inline folder
-  trees, Brief, Detailed and Thumbnails views, the panel filter, selection by mask and
-  folder sizes.
+The terms are defined in the [glossary](docs/GLOSSARY.md).
+
+- **Panels:** two independent [panels](docs/GLOSSARY.md#panel) with tabs, history,
+  [Hot Paths](docs/GLOSSARY.md#hot-paths) (numbered saved locations),
+  [inline folder trees](docs/GLOSSARY.md#inline-folder-tree), the Brief, Detailed and
+  Thumbnails [views](docs/GLOSSARY.md#views), the
+  [panel filter](docs/GLOSSARY.md#panel-filter), selection by mask and folder sizes.
 - **Copy and Move** (F5, F6, the clipboard and drag and drop): one background queue
   that reads every copied file back and compares it by SHA-256 by default; Skip, a new
   name, folder Merge or a Replace that keeps the original recoverable; Retry, Skip or
-  Cancel on I/O errors; a progress window per job with Pause, and a Jobs list; up to
-  1,000,000 selected items per job.
+  Cancel on I/O errors; a progress window per job with Pause, and a
+  [Jobs](docs/GLOSSARY.md#jobs) list; up to 1,000,000 selected items per job.
 - **Delete, create and rename:** Delete to the system Trash or permanently, new folders
   and files, rename, attributes, times and case.
 - **Viewers (F3):** text and hex, source code with syntax highlighting, Markdown,
@@ -31,10 +49,11 @@ Current version: **0.6.3** (preview).
   folders, with passwords for ZIP and 7z and nested archives.
 - **Tools:** file comparison (text, images, hex) and directory comparison; checksums
   (SHA-256, SHA-512, SHA-1, MD5, CRC32) with a Verify page; Make File List; Network
-  Neighborhood; drive information; Custom Commands, the command line and a terminal
+  Neighborhood (the computers and shares of the local network); drive information;
+  [Custom Commands](docs/GLOSSARY.md#custom-commands), the command line and a terminal
   button.
-- **Options:** four application icons, 30 dark and 16 light themes that follow the system appearance,
-  density and fonts, filename colours, configurable keyboard
+- **Options:** four application icons, 30 dark and 16 light themes that follow the
+  system appearance, density and fonts, filename colors, configurable keyboard
   shortcuts, file-type assignments and settings export and import.
 
 [Feature status](docs/FEATURE_STATUS.md) lists what is implemented on each platform and
@@ -53,21 +72,38 @@ where it is verified; planned work and known limits are in the
 Provision at least 4 GB of RAM (8 GB recommended). Versions, runtime libraries, graphics
 and filesystem notes are in [system requirements](docs/SYSTEM_REQUIREMENTS.md).
 
-## Download
+## Download and install
 
-Preview builds for Windows x64 (an `.msi` installer and a `.zip`) and Linux x86-64
-(`.tar.gz`) are published on the
-[GitHub Releases page](https://github.com/TomasJelinek/fm/releases), each with a
-`SHA256SUMS` file to verify the download. The MSI asks whether to install just for you
-or for all users ([Windows installer](docs/USER_GUIDE.md#windows-installer)); otherwise
-extract the complete archive and run `midnight-explorer.exe` (Windows) or
-`./midnight-explorer` (Linux); its `README.txt` has the details. Releases up to 0.5.0
-named the executable `me.exe` and `me`. The Windows executable and installer are
-unsigned; from 0.5.1 on the application checks for, verifies and installs signed
-updates itself. The archives include every
-plugin, the dependency notices and the license; the release notes say what each
-preview contains ([0.5.0](docs/releases/0.5.0.md), [0.5.1](docs/releases/0.5.1.md),
-[0.5.2](docs/releases/0.5.2.md), [0.5.3](docs/releases/0.5.3.md), [0.5.4](docs/releases/0.5.4.md), [0.6.0](docs/releases/0.6.0.md), [0.6.1](docs/releases/0.6.1.md), [0.6.2](docs/releases/0.6.2.md), [0.6.3](docs/releases/0.6.3.md)).
+Preview builds are published on the
+[GitHub Releases page](https://github.com/TomasJelinek/fm/releases). Choose one:
+
+- **Windows installer** (`midnight-explorer-<version>-x86_64-pc-windows-msvc.msi`): it
+  asks whether to install just for you or for all users
+  ([Windows installer](docs/USER_GUIDE.md#windows-installer)), adds a Start menu entry
+  and updates itself from 0.6.3 on.
+- **Windows archive** (`midnight-explorer-<version>-x86_64-pc-windows-msvc.zip`) or
+  **Linux archive** (`midnight-explorer-<version>-x86_64-unknown-linux-gnu.tar.gz`):
+  extract the complete archive into a folder of your own and keep the `viewers`,
+  `filesystems` and `thumbnailers` folders beside the executable. Its `README.txt`
+  has the details.
+
+On Windows, install Microsoft's
+[Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+if `VCRUNTIME140.dll` is missing. On Linux, install the runtime packages that
+[system requirements](docs/SYSTEM_REQUIREMENTS.md#runtime-software) list. Each release
+also has `SHA256SUMS` and its signature `SHA256SUMS.minisig` to
+[check a download by hand](docs/TROUBLESHOOTING.md#check-a-download-by-hand).
+
+### Run and check
+
+1. Start `midnight-explorer.exe` (Windows; the installer's Start menu entry does the
+   same) or `./midnight-explorer` in a graphical session (Linux). Releases up to 0.5.0
+   named the executable `me.exe` and `me`.
+2. Check that a window titled `Midnight Explorer 0.6.3 — File Manager` opens with two
+   panels listing folders. The application icon at the right end of the top toolbar
+   opens **About**, which shows the version too.
+3. When the window does not open or the panels stay empty, see
+   [Troubleshooting](docs/TROUBLESHOOTING.md).
 
 ## Build from source
 
@@ -91,12 +127,13 @@ build.bat release      # Windows, optimized release
 ./build.sh release     # Linux, optimized release
 ```
 
-Debug is the default; `release` builds with full optimization and LTO. Build output
-goes to `_build/` (`_build/debug/` or `_build/release/`, with the executable
-`midnight-explorer.exe` or `midnight-explorer` and its `viewers/`, `filesystems/` and
-`thumbnailers/` folders); toolchain caches go to `.tools/`. On Windows, `build.bat` also
-deploys the build to a private installation that the built `midnight-explorer.exe`
-loads its plugins from.
+Debug is the default; `release` builds with full optimization and
+[LTO](docs/GLOSSARY.md#lto) (link-time optimization). Build output goes to `_build/`
+(`_build/debug/` or `_build/release/`, with the executable `midnight-explorer.exe` or
+`midnight-explorer` and its `viewers/`, `filesystems/` and `thumbnailers/` folders);
+toolchain caches go to `.tools/`. On Windows, `build.bat` also deploys the build to a
+[private installation](docs/GLOSSARY.md#private-installation-root) that the built
+`midnight-explorer.exe` loads its plugins from.
 
 The [user guide](docs/USER_GUIDE.md#build-and-run) has the complete build and run
 instructions, [release build](docs/RELEASE_BUILD.md) describes release settings and
@@ -104,17 +141,14 @@ packaging, and the [developer documentation](docs/developer/README.md) covers th
 plugin APIs and SDKs, with [test execution](docs/developer/TEST_EXECUTION.md) for the
 checks.
 
-## Usage
-
-- [User guide](docs/USER_GUIDE.md): running the application, controls, viewers,
-  operations and settings.
-- [Keyboard shortcuts](docs/KEYBOARD_SHORTCUTS.md); F1 shows them in the application.
-- [Settings files](docs/SETTINGS_FILES.md) and
-  [viewer associations](docs/VIEWER_ASSOCIATIONS.md).
-
 ## Documentation
 
 - [Documentation map](docs/README.md): every current contract and reference.
+- [User guide](docs/USER_GUIDE.md): running the application, controls, viewers,
+  operations and settings.
+- [Keyboard shortcuts](docs/KEYBOARD_SHORTCUTS.md), [settings files](docs/SETTINGS_FILES.md)
+  and [viewer associations](docs/VIEWER_ASSOCIATIONS.md).
+- [Troubleshooting](docs/TROUBLESHOOTING.md) and the [glossary](docs/GLOSSARY.md).
 - [Feature status](docs/FEATURE_STATUS.md) and
   [implementation backlog](docs/IMPLEMENTATION_BACKLOG.md).
 - [System requirements](docs/SYSTEM_REQUIREMENTS.md) and
@@ -124,11 +158,39 @@ checks.
 - [Third-party libraries and licenses](docs/THIRD_PARTY.md) and the
   [dependency policy](docs/DEPENDENCY_POLICY.md).
 
-## Project status
+## Releases
 
-Midnight Explorer is a preview: features and plugin interfaces are still changing,
-archives are read-only, the Windows executable is unsigned and macOS is not
-implemented. See [feature status](docs/FEATURE_STATUS.md) for the current limits.
+- **Artifacts:** every release on the
+  [GitHub Releases page](https://github.com/TomasJelinek/fm/releases) has the Windows
+  ZIP and, from 0.6.1, the MSI; the Linux tar.gz; and `SHA256SUMS`, signed from 0.5.1
+  on in `SHA256SUMS.minisig`. The archives include every plugin, the dependency notices
+  and the license. All releases so far are previews (GitHub pre-releases).
+- **Release notes:** [0.1.0](docs/releases/0.1.0.md), [0.5.0](docs/releases/0.5.0.md),
+  [0.5.1](docs/releases/0.5.1.md), [0.5.2](docs/releases/0.5.2.md),
+  [0.5.3](docs/releases/0.5.3.md), [0.5.4](docs/releases/0.5.4.md),
+  [0.6.0](docs/releases/0.6.0.md), [0.6.1](docs/releases/0.6.1.md),
+  [0.6.2](docs/releases/0.6.2.md) and [0.6.3](docs/releases/0.6.3.md).
+- **Compatibility:** Windows 10 22H2 and Windows 11 on x64; Linux x86-64 with the
+  Ubuntu 24.04 / glibc 2.39 baseline ([Platforms](#platforms)). Plugins built on the
+  viewer SDK 0.1.0, 0.2.0 or 0.2.1 keep loading
+  ([developer guide](docs/developer/README.md)).
+- **Updating:** from 0.5.1 on, an extracted copy that your account can change checks
+  for, verifies and installs signed updates itself, and so does an MSI installation
+  from 0.6.3 on; a 0.6.1 MSI installation is updated by running the newer MSI once
+  ([Updates](docs/USER_GUIDE.md#updates)). Settings are kept. 0.6.2's MSI does not
+  install; use a later one.
+- **Source:** the source of each release is its tagged commit in this repository.
+
+## Support
+
+- **Questions and problems:** read [Troubleshooting](docs/TROUBLESHOOTING.md) first, then
+  search or open an issue in the
+  [GitHub issue tracker](https://github.com/TomasJelinek/fm/issues). Include the version,
+  how you installed it, the operating system and the message text
+  ([what to include](docs/TROUBLESHOOTING.md#get-help)).
+- **Security:** [SECURITY.md](SECURITY.md) states the security and integrity
+  requirements. Do not publish the details of a suspected vulnerability in a public
+  issue.
 
 ## Contributing
 
