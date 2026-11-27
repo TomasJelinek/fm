@@ -42,7 +42,7 @@ pub(crate) enum Event {
         pixels: Arc<ViewerPixels>,
     },
     Validated(u64),
-    /// The tiles of one document band, rendered for the camera of `revision`.
+    /// The tiles of one band, rendered for the camera of `revision`.
     Tiles {
         revision: u64,
         tiles: Vec<(Key, Arc<ViewerPixels>)>,
@@ -274,11 +274,6 @@ impl ImageWorker {
                                             Event::Validated(revision)
                                         }
                                         Render::Band { revision, plan } => {
-                                            if !session.is_document() {
-                                                return Err(
-                                                    "Unexpected document render request.".into()
-                                                );
-                                            }
                                             // Only close/source retirement owns cancel: a newer
                                             // camera never ends the SDK session or this band.
                                             let tiles = crate::document_render::render_band(
@@ -287,6 +282,7 @@ impl ImageWorker {
                                                 &stopped,
                                                 Duration::from_secs(15),
                                             )?;
+                                            crate::open_trace::mark("image_band_rendered");
                                             Event::Tiles { revision, tiles }
                                         }
                                     };

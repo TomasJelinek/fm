@@ -38,6 +38,7 @@ struct Renderer {
     cancel: bool,
     reject_source: bool,
     malformed: bool,
+    coordinates: bool,
     requests: Vec<(usize, Viewport, Duration)>,
     validations: usize,
 }
@@ -63,10 +64,23 @@ impl PageRenderer for Renderer {
         } else {
             [0, 0, 255, 255]
         };
+        let rgba = if self.coordinates {
+            (0..viewport.height)
+                .flat_map(|y| {
+                    (0..viewport.width).flat_map(move |x| {
+                        let sx = (viewport.origin_x + f64::from(x) / viewport.scale) as u32;
+                        let sy = (viewport.origin_y + f64::from(y) / viewport.scale) as u32;
+                        [(sx % 251) as u8, (sy % 251) as u8, 17, 255]
+                    })
+                })
+                .collect()
+        } else {
+            color.repeat(viewport.width as usize * viewport.height as usize)
+        };
         Ok(Frame {
             width: viewport.width + u32::from(self.malformed),
             height: viewport.height,
-            rgba: color.repeat(viewport.width as usize * viewport.height as usize),
+            rgba,
         })
     }
 
@@ -107,6 +121,103 @@ fn pixel(tiles: &[(Key, Arc<ViewerPixels>)], x: i32, y: i32, at: [usize; 2]) -> 
         .unwrap();
     let index = (at[1] * 256 + at[0]) * 4;
     pixels.rgba()[index..index + 4].try_into().unwrap()
+}
+
+#[test]
+fn first_raster_paint_renders_each_visible_strip_once_and_preserves_edge_pixels() {
+    use crate::{
+        image_geometry::ImageGeometry,
+        image_view::ImageView,
+        image_worker::{Render, test_worker},
+    };
+    let (worker, requests) = test_worker();
+    let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
+    view.geometry = Some(ImageGeometry::new(1250, 700, [625, 350]));
+    view.changed();
+    let mut renderer = Renderer {
+        coordinates: true,
+        ..Default::default()
+    };
+    let cancel = AtomicBool::new(false);
+    for (row, height) in [(0, 256), (1, 94)] {
+        assert!(view.request().unwrap().is_none());
+        let Render::Band { revision, plan } = requests.try_recv().unwrap() else {
+            panic!("expected the first raster paint to batch adjacent tiles");
+        };
+        let tiles = render_band(&mut renderer, plan, &cancel, Duration::from_secs(15)).unwrap();
+        assert_eq!(tiles.len(), 3);
+        assert_eq!(renderer.requests.len(), row + 1);
+        assert_eq!(
+            renderer.requests[row].1,
+            Viewport {
+                width: 625,
+                height,
+                scale: 0.5,
+                origin_x: 0.0,
+                origin_y: (row * 512) as f64,
+            }
+        );
+        for (key, tile) in &tiles {
+            for (i, pixel) in tile.rgba().as_chunks::<4>().0.iter().enumerate() {
+                let x = key.x as usize * 256 + i % 256;
+                let y = key.y as usize * 256 + i / 256;
+                let expected = if x < 625 && y < 350 {
+                    [((2 * x) % 251) as u8, ((2 * y) % 251) as u8, 17, 255]
+                } else {
+                    [0; 4]
+                };
+                assert_eq!(*pixel, expected, "pixel {x},{y}");
+            }
+        }
+        view.scene.complete_band(tiles).unwrap();
+        view.pending = None;
+        view.validated = Some(revision);
+    }
+    assert!(view.request().unwrap().is_some());
+    assert!(requests.try_recv().is_err());
+}
+
+#[test]
+fn first_raster_paint_precedes_rendering_the_source_backed_guard_column() {
+    use crate::{
+        image_geometry::ImageGeometry,
+        image_view::{ImageView, Paint},
+        image_worker::{Render, test_worker},
+    };
+    let (worker, requests) = test_worker();
+    let mut view = ImageView::new(worker, Arc::new(AtomicU64::new(0)));
+    let mut geometry = ImageGeometry::new(4096, 1024, [511, 255]);
+    geometry.actual();
+    geometry.origin = [0.0; 2];
+    view.geometry = Some(geometry);
+    view.changed();
+
+    assert!(view.request().unwrap().is_none());
+    let Render::Band { revision, plan } = requests.try_recv().unwrap() else {
+        panic!("expected a strip containing the two visible tiles");
+    };
+    let mut renderer = Renderer::default();
+    let tiles = render_band(
+        &mut renderer,
+        plan,
+        &AtomicBool::new(false),
+        Duration::from_secs(15),
+    )
+    .unwrap();
+    assert_eq!(renderer.requests.len(), 1);
+    assert_eq!(renderer.requests[0].1.width, 512);
+    view.scene.complete_band(tiles).unwrap();
+    view.pending = None;
+    view.validated = Some(revision);
+
+    let Some(Paint::Tiles(visible)) = view.request().unwrap() else {
+        panic!("a pending guard must not hold the first paint");
+    };
+    assert_eq!(visible.len(), 2);
+    let Render::Band { plan, .. } = requests.try_recv().unwrap() else {
+        panic!("expected a separate request for the adjacent guard column");
+    };
+    assert_eq!(plan.slices[0].viewport.origin_x, 512.0);
 }
 
 #[test]

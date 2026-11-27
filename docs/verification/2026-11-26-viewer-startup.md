@@ -327,3 +327,37 @@ These ran on the rebased tree, in debug test builds unless stated.
   -- -D warnings` and `cargo fmt --all --check` passed.
 - Not run: the acceptance suite, and the Linux build and timings (Linux timings are
   measured on real hardware).
+
+## Follow-up measurement for opening JPEGs
+
+Compared with `e86eecda`, the first image frame requests horizontal strips of
+adjacent tiles. The image worker also copies rows directly for integer-aligned 1:1
+views. Both builds decoded the original image. The native Windows release probe
+timed the open request through the first accepted content frame with its parent
+window visible at 225% display scaling.
+
+| JPEG fixture | Repeated open, before | Repeated open, after | Render requests before → after |
+| --- | ---: | ---: | ---: |
+| 1920 × 1080 | 271 ms | 167 ms | 40 → 5 |
+| 7072 × 4736 | 767 ms | 564 ms | 54 → 6 |
+
+Each time is the median of six repeated opens per build and image. The probe
+opened the same file four times per process, waited two seconds between opens
+and reversed build order in the second round. The timing runs used the matching
+host and image worker for each version, with tracing disabled. Separate traced
+runs counted the render requests. For the larger JPEG, the median time from the
+worker becoming ready to the first engine frame fell from 830 to 366 ms across
+eight repeated opens per build in those traced runs.
+
+First opens varied under shared machine load. Across six fresh processes per
+build for the 1080p JPEG, the median went from 1159 to 980 ms. Individual runs
+ranged from 931 to 1294 ms before and from 667 to 2415 ms after. The larger
+JPEG had only two fresh processes per build. These measurements cover Windows.
+
+The targeted engine tests passed, including checks for fractional-scale edge
+padding and for displaying visible tiles before guard tiles. The native test
+`image_worker_routes_fits_zooms_pans_cycles_and_preserves_basic_override`
+also passed using the updated Windows worker. The worker's ten decode integration
+tests passed, including EXIF orientation, ICC conversion and exact 1:1 samples.
+The release benchmark executable linked and ran all timed cases. Cargo reported
+a missing fingerprint directory in the shared build cache after linking it.

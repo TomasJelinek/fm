@@ -42,18 +42,9 @@ pub(crate) struct BandPlan {
 
 impl BandPlan {
     pub fn new(document: &DocumentView, band: Band) -> Result<Self, String> {
-        let scale = band.scale;
-        if !scale.is_finite() || !(1.0 / 32768.0..=64.0).contains(&scale) {
-            return Err("Document render scale exceeds its limit.".into());
-        }
-        let [x0, y0, x1, y1] = band.rect;
-        let edge = i64::from(EDGE);
-        let origin = [i64::from(x0) * edge, i64::from(y0) * edge];
-        let size = [(x1 - x0) as u32 * EDGE, (y1 - y0) as u32 * EDGE];
-        raster_length(size)?;
         let paged = document.layout == DocumentLayout::Paged;
-        let top = origin[1] as f64 / scale;
-        let bottom = (origin[1] as f64 + f64::from(size[1])) / scale;
+        let top = f64::from(band.rect[1]) * f64::from(EDGE) / band.scale;
+        let bottom = f64::from(band.rect[3]) * f64::from(EDGE) / band.scale;
         let range = if paged {
             document.page..document.page + 1
         } else {
@@ -65,18 +56,43 @@ impl BandPlan {
                 .partition_point(|page| page.origin[1] < bottom);
             first..end.max(first)
         };
+        Self::from_pages(
+            band,
+            range.map(|page| {
+                let placement = document.placements[page];
+                let page_origin = if paged { [0.0; 2] } else { placement.origin };
+                (page, page_origin, placement.size)
+            }),
+        )
+    }
+
+    pub fn image(band: Band, image_size: [u32; 2]) -> Result<Self, String> {
+        let image = (band.key, [0.0; 2], image_size);
+        Self::from_pages(band, std::iter::once(image))
+    }
+
+    fn from_pages(
+        band: Band,
+        pages: impl Iterator<Item = (usize, [f64; 2], [u32; 2])>,
+    ) -> Result<Self, String> {
+        let scale = band.scale;
+        if !scale.is_finite() || !(1.0 / 32768.0..=64.0).contains(&scale) {
+            return Err("Image render scale exceeds its limit.".into());
+        }
+        let [x0, y0, x1, y1] = band.rect;
+        let edge = i64::from(EDGE);
+        let origin = [i64::from(x0) * edge, i64::from(y0) * edge];
+        let size = [(x1 - x0) as u32 * EDGE, (y1 - y0) as u32 * EDGE];
+        raster_length(size)?;
         let mut slices = Vec::new();
-        for page in range {
-            let placement = document.placements[page];
-            let page_origin = if paged { [0.0; 2] } else { placement.origin };
+        for (page, page_origin, page_size) in pages {
             let low: [u32; 2] = std::array::from_fn(|axis| {
                 (page_origin[axis] * scale - origin[axis] as f64)
                     .floor()
                     .clamp(0.0, f64::from(size[axis])) as u32
             });
             let high: [u32; 2] = std::array::from_fn(|axis| {
-                ((page_origin[axis] + f64::from(placement.size[axis])) * scale
-                    - origin[axis] as f64)
+                ((page_origin[axis] + f64::from(page_size[axis])) * scale - origin[axis] as f64)
                     .ceil()
                     .clamp(0.0, f64::from(size[axis])) as u32
             });

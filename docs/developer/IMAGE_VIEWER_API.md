@@ -159,9 +159,11 @@ oriented dimensions. `Frame { width, height, rgba }` contains a complete physica
 viewport with straight alpha. Every render error, cancellation or source change
 invalidates the session; subsequent requests cannot revive it.
 
-The application's raster-image presentation may request individual bounded tiles
-through the same positioned viewport operation. Retained host tiles still require
-source revalidation before a new camera frame is published. `validate` performs
+For the first raster-image frame, the host requests adjacent 256-pixel tiles in
+horizontal strips through the positioned viewport operation. Each strip covers at
+most 16 tiles, clips to the image edges, and fills the ordinary tile cache. Later
+pan and zoom requests fetch individual missing tiles. Retained host tiles still
+require source revalidation before a new camera frame is published. `validate` performs
 that check on the backend without another decoder render. Tiles lying wholly
 outside the source image are transparent letterboxing: the engine creates them
 locally, with the same bounded pixel ownership and unique tile identities, without

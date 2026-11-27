@@ -246,7 +246,7 @@ impl Scene {
         Ok(None)
     }
 
-    /// The next rectangle of missing document tiles: it starts at the first missing tile
+    /// The next rectangle of missing tiles: it starts at the first missing tile
     /// of the plan (visible tiles first), spans the adjacent missing tiles of its row, then
     /// whole rows in the direction of motion, within 16 tiles across and down and 64 tiles
     /// in all. Tiles that meet no page are created transparent here without rendering.
@@ -272,14 +272,24 @@ impl Scene {
         let Some(start) = start else {
             return Ok(None);
         };
+        let document = self.document.is_some();
+        let visible_only = !document && plan.visible.contains(&start);
+        let candidates = if visible_only {
+            &[][..]
+        } else {
+            plan.guards.as_slice()
+        };
         let wanted: HashSet<Key> = plan
-            .keys()
+            .visible
+            .iter()
+            .chain(candidates)
+            .copied()
             .filter(|key| !self.cache.contains(*key) && !self.transparent(*key))
             .collect();
         // A band of visible tiles stays within the plan, so the view appears as soon as
         // possible. A prefetch band continues over further missing rows up to its bound:
         // a page is then interpreted once for many rows, not once per guard row.
-        let prefetch = !plan.visible.contains(&start);
+        let prefetch = document && !plan.visible.contains(&start);
         let needed = |key: Key| {
             wanted.contains(&key)
                 || (prefetch && !self.cache.contains(key) && !self.transparent(key))
@@ -292,7 +302,13 @@ impl Scene {
         while x1 - x0 < MAX_BAND_EDGE && wanted.contains(&at(x0 - 1, start.y)) {
             x0 -= 1;
         }
-        let rows = (MAX_BAND_TILES / (x1 - x0)).clamp(1, MAX_BAND_EDGE);
+        // A first image paint needs only its visible rows. Send one strip at a time
+        // (at most 4 MiB of pixels), so a stale camera has only one strip in flight.
+        let rows = if document {
+            (MAX_BAND_TILES / (x1 - x0)).clamp(1, MAX_BAND_EDGE)
+        } else {
+            1
+        };
         let upward = self.direction[1] < 0.0;
         let (mut y0, mut y1) = (start.y, start.y + 1);
         while y1 - y0 < rows {
@@ -318,8 +334,12 @@ impl Scene {
                 tiles.push((at(x, y), charge));
             }
         }
-        if tiles.is_empty() {
+        let Some((last, _)) = tiles.last() else {
             return Ok(None);
+        };
+        if !document {
+            // A partially reserved image strip renders only its charged tiles.
+            x1 = last.x + 1;
         }
         Ok(Some(Band {
             key: start.page,
@@ -397,7 +417,7 @@ impl Scene {
             self.cache.insert(key, pixels, plan)?;
         }
         for (key, pixels) in ahead {
-            if current == Some((key.page, key.scale)) {
+            if self.document.is_some() && current == Some((key.page, key.scale)) {
                 self.cache.insert_ahead(key, pixels, plan)?;
             }
         }

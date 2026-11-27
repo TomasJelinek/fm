@@ -206,7 +206,7 @@ impl ImageView {
         self.scene.accept_pan(geometry, surface, sequence, origin)
     }
 
-    /// Request only the next missing tiles: one image tile or one band of document tiles.
+    /// Request missing tiles in bands for the first image paint and for documents.
     /// No source/decode operation runs here.
     pub fn request(&mut self) -> Result<Option<Paint>, String> {
         if let Some(error) = &self.failure {
@@ -217,7 +217,7 @@ impl ImageView {
         }
         self.waiting_budget = false;
         if self.pending.is_none() {
-            if self.document {
+            if self.document || self.published.is_none() {
                 self.request_band()?;
             } else if let Some((key, charge)) = self.scene.next()? {
                 if self.worker.render(self.revision, key, charge) {
@@ -250,15 +250,19 @@ impl ImageView {
         Ok(Some(Paint::Tiles(tiles)))
     }
 
-    /// One band of missing document tiles, visible ones first. While the actor renders it,
+    /// One band of missing tiles, visible ones first. While the actor renders it,
     /// newer cameras only move the plan; whatever the band completes that the latest plan
     /// still needs is kept (`Scene::complete_band`).
     fn request_band(&mut self) -> Result<(), String> {
-        let Some(document) = &self.document_view else {
+        let Some(geometry) = &self.geometry else {
             return Ok(());
         };
         if let Some(band) = self.scene.next_band()? {
-            let plan = BandPlan::new(document, band)?;
+            let plan = if let Some(document) = &self.document_view {
+                BandPlan::new(document, band)?
+            } else {
+                BandPlan::image(band, [geometry.width, geometry.height])?
+            };
             if self.worker.band(self.revision, plan) {
                 self.pending = Some(self.revision);
             }

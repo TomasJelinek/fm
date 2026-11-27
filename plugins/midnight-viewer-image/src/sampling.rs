@@ -6,7 +6,10 @@ use std::io;
 pub(super) fn render(image: &RgbaImage, viewport: Viewport) -> io::Result<Frame> {
     viewport.validate()?;
     let mut rgba = vec![0; api::rgba_length(viewport.width, viewport.height)?];
-    if viewport.scale >= 1.0 {
+    if viewport.scale == 1.0 && viewport.origin_x.fract() == 0.0 && viewport.origin_y.fract() == 0.0
+    {
+        copy_original(image, viewport, &mut rgba);
+    } else if viewport.scale >= 1.0 {
         for y in 0..viewport.height {
             for x in 0..viewport.width {
                 // Original pixels stay exact at 1:1; magnification exposes the source pixel grid.
@@ -27,6 +30,24 @@ pub(super) fn render(image: &RgbaImage, viewport: Viewport) -> io::Result<Frame>
         height: viewport.height,
         rgba,
     })
+}
+
+/// At original scale the viewer requests integer-aligned tiles. Copy their overlap
+/// with the source by scanline. The rest of the viewport already contains transparent pixels.
+fn copy_original(image: &RgbaImage, viewport: Viewport, rgba: &mut [u8]) {
+    let x = viewport.origin_x as i64;
+    let y = viewport.origin_y as i64;
+    let left = x.max(0);
+    let right = (x + i64::from(viewport.width)).min(i64::from(image.width()));
+    if left >= right {
+        return;
+    }
+    let count = (right - left) as usize * 4;
+    for row in y.max(0)..(y + i64::from(viewport.height)).min(i64::from(image.height())) {
+        let source = (row as usize * image.width() as usize + left as usize) * 4;
+        let output = ((row - y) as usize * viewport.width as usize + (left - x) as usize) * 4;
+        rgba[output..output + count].copy_from_slice(&image.as_raw()[source..source + count]);
+    }
 }
 
 /// Source coverage of each output column or row along one axis: the first
@@ -176,6 +197,37 @@ fn area(image: &RgbaImage, x: f64, y: f64, span: f64) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_scale_copies_exact_pixels_and_clips_all_four_edges() {
+        let image = RgbaImage::from_fn(7, 5, |x, y| {
+            image::Rgba([x as u8, y as u8, 77, (x * y * 11) as u8])
+        });
+        for (origin_x, origin_y) in [
+            (1.0, 1.0),
+            (0.0, 0.0),
+            (-2.0, -1.0),
+            (4.0, 3.0),
+            (-20.0, 0.0),
+            (0.0, 20.0),
+            (-0.75, 0.5),
+            (3.25, 3.5),
+        ] {
+            let viewport = Viewport {
+                width: 5,
+                height: 3,
+                scale: 1.0,
+                origin_x,
+                origin_y,
+            };
+            let frame = render(&image, viewport).unwrap();
+            for (i, pixel) in frame.rgba.as_chunks::<4>().0.iter().enumerate() {
+                let sx = viewport.origin_x + f64::from(i as u32 % viewport.width) + 0.5;
+                let sy = viewport.origin_y + f64::from(i as u32 / viewport.width) + 0.5;
+                assert_eq!(*pixel, nearest(&image, sx, sy));
+            }
+        }
+    }
 
     /// The separable filter reproduces the direct per-pixel area average, including
     /// partial coverage at fractional origins, panned edges and transparency.
