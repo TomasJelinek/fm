@@ -14,6 +14,8 @@ pub use discovery::{Diagnostic, PluginInfo, host_target};
 mod content;
 mod text_detection;
 pub use content::{CapturedFile, ContentResources, ContentSource, RevisionPolicy};
+mod manifest_pin;
+pub use manifest_pin::ManifestPin;
 #[cfg(windows)]
 #[path = "installation_windows.rs"]
 mod installation;

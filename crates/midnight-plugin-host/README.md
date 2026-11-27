@@ -47,6 +47,10 @@ An open session owns one read-only regular-file handle. Reads are at most 256 Ki
 use u64 offsets, and compare native handle identity, length and change/write times
 before and after each read. This is **LiveValidated**, not an immutable snapshot.
 The same-size/same-timestamp replacement test also checks stable handle identity.
+`ManifestPin` pins a small trust-relevant file, such as the image viewer's manifest, by
+its exact revision and its complete bytes; a change time that alone moved passes only
+after a complete re-read finds the same bytes
+([plugin manifests and executables](../../docs/developer/content-reads.md#plugin-manifests-and-executables)).
 Linux refuses final symlinks and special files with nonblocking/no-follow opens;
 Windows refuses reparse files and uses native file IDs. macOS is explicitly
 unsupported pending its loader/signing and identity implementation.

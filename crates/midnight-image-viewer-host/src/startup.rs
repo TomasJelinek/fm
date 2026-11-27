@@ -1,6 +1,6 @@
 //! Source-free preparation and bounded supervision of one-use restricted transports.
 use crate::Provider;
-use midnight_plugin_host::{CapturedFile, TrustedExecutablePin};
+use midnight_plugin_host::{ManifestPin, TrustedExecutablePin};
 use midnight_worker_platform::{Limits, ResourcePolicy};
 use serde::Deserialize;
 use std::{
@@ -106,7 +106,9 @@ impl PreparedImageWorker {
 pub(crate) struct ProviderIdentity {
     catalog: Provider,
     policy: ResourcePolicy,
-    manifest: CapturedFile,
+    /// Exact revision; a change time that alone moved passes once the bytes read again are
+    /// the ones parsed here (`ManifestPin`).
+    manifest: ManifestPin,
     executable: TrustedExecutablePin,
 }
 
@@ -118,15 +120,12 @@ impl ProviderIdentity {
         validate_provider(provider)?;
         #[cfg(feature = "startup-diagnostics")]
         validation.mark("policy_validated");
-        let manifest = CapturedFile::capture(&provider.package_dir().join("image-viewer.json"))
-            .map_err(io::Error::other)?;
-        if manifest.length() > MAX_MANIFEST_BYTES {
-            return Err(io::Error::other("Image-viewer manifest exceeds budget"));
-        }
-        let bytes = manifest
-            .read_at(0, manifest.length() as u32)
-            .map_err(io::Error::other)?;
-        let descriptor: PinnedManifest = serde_json::from_slice(&bytes)?;
+        let manifest = ManifestPin::capture(
+            &provider.package_dir().join("image-viewer.json"),
+            MAX_MANIFEST_BYTES,
+        )
+        .map_err(io::Error::other)?;
+        let descriptor: PinnedManifest = serde_json::from_slice(manifest.bytes())?;
         if !descriptor.matches(provider) {
             return Err(io::Error::other(
                 "Image-viewer catalog no longer matches its manifest",

@@ -44,7 +44,9 @@ and LastWriteTime stay the same. Every capture therefore carries an explicit
 - `Exact`, the default of `CapturedFile::capture` and `InstalledProvider::capture`:
   every captured field must still match. Comparison, command-icon artwork import,
   manifest and package captures use it; the comparator's own content check for a
-  moved change time is described in [file comparison](file-comparison.md).
+  moved change time is described in [file comparison](file-comparison.md), and the
+  image viewer's manifest pin's in [plugin manifests and
+  executables](#plugin-manifests-and-executables).
 - `AcceptChangeTimeOnly`: a revision whose change time alone moved is unchanged.
   Windows still requires the same volume, file ID, length and LastWriteTime; Linux the
   same device, inode, length and mtime. These captures use it:
@@ -92,3 +94,45 @@ cache, with emulated plugin readers over fake revisions and over a real file tha
 an alternate data stream with its LastWriteTime set back (Windows) or a mode change
 (Linux); the ignored `installed_archive_capture_reads_on_after_the_archive_was_tagged`
 in `tests/native.rs` repeats that through the installed native plugin.
+
+### Plugin manifests and executables
+
+A file that decides which code runs keeps an exact revision, change time included:
+whoever can write the file can set its modification time back after changing it, and
+the change time still shows the change. (On Windows, write-attributes access can also
+set ChangeTime through `FileBasicInfo`, as `trusted_executable_windows_tests.rs` does,
+so there it shows only a change whose author restored the modification time alone;
+Linux cannot set ctime back.) A check of the content is stronger than the change time,
+so a change time that alone moved is accepted where the content is checked:
+
+- **Manifests.** The image viewer's worker identity pins its `image-viewer.json` from
+  preparation until an open adopts the worker, with `ManifestPin`
+  (`midnight-plugin-host/src/manifest_pin.rs`). The pin keeps the complete bytes that
+  the host parsed and matched against the catalog (at most 16 KiB). A check that finds
+  the pinned revision reads nothing. When only the change time moved (Windows: the
+  same volume, file ID, length and LastWriteTime; Linux: the same device, inode, length
+  and mtime), the pin captures the path again, reads the whole file once under that
+  fresh capture's exact checks and accepts it only when the bytes equal the pinned
+  ones; the fresh capture then replaces the pinned one, so later checks read nothing
+  again. Any other difference, a capture or read that fails and different bytes are
+  refused with the revision error ("Source changed since capture ..."), so a manifest
+  changed in place with its write time set back is still refused. Equal bytes restored
+  after a change pass: the pin proves the content, not its history. Discovery reads a
+  manifest once, right after its capture, and keeps `Exact`; the video viewer compares
+  its descriptor's bytes rather than its revision.
+- **Executables.** The Windows `TrustedExecutablePin` holds a handle that denies data
+  writes, deletion and renaming for as long as it pins the executable, so it accepts a
+  ChangeTime alone without reading the bytes
+  ([worker preparation](image-viewer-api.md#worker-preparation)). The Linux pin is
+  an exact capture, ctime included: no lease keeps writers out there, and a content
+  check would need a digest of every executable at every capture, which each worker
+  start would pay. A ctime-only change of a Linux executable (a mode, owner or extended
+  attribute change) therefore still refuses that one start; a new open captures again.
+
+`midnight-plugin-host/src/manifest_pin_tests.rs` and its `_windows_tests.rs`
+companion test the pin over real files: a moved change time alone (a read-only
+attribute or mode toggled and restored, and on Windows an added alternate data stream
+with LastWriteTime set back) passes after one re-read and none after it, while other
+bytes behind a restored write time, a moved write time and a replacement with equal
+bytes are refused, the last two without a re-read. The image viewer's
+`startup_manifest_tests.rs` repeats the first two through `ProviderIdentity`.

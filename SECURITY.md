@@ -1546,6 +1546,17 @@ classifications.
   and their process and job limits
   apply as before. This does not turn trusted native code into a sandbox or authenticate
   a publisher's identity.
+- An image viewer's worker keeps its package manifest and executable pinned from its
+  preparation until an open adopts it. The manifest's revision is exact, change time
+  included, because whoever can write the file can set its modification time back after
+  changing it. A manifest whose change time alone moved (the same volume, file ID, length
+  and LastWriteTime; on Linux the same device, inode, length and mtime), as endpoint
+  protection or a backup agent leaves it, is read again completely and accepted only when
+  its bytes are the ones validated at capture; a manifest changed in place with its write
+  time set back is refused. The Windows executable pin holds a handle that denies data
+  writes, deletion and renaming, so a ChangeTime alone passes there without a content
+  check; Linux executable pins stay exact, ctime included
+  ([plugin manifests and executables](docs/developer/content-reads.md#plugin-manifests-and-executables)).
 - <a id="shared-installations"></a>**Shared installations.** Write or replace
   permissions that other accounts hold only
   through the ACL (Windows) or group/other mode bits (Linux) do not refuse plugins. A

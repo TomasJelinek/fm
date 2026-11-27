@@ -226,6 +226,18 @@ impl CapturedFile {
     pub fn revalidate(&self) -> Result<(), Error> {
         self.open().map(|_| ())
     }
+    /// Whether `fresh`, a later native capture, is this native capture's revision with
+    /// nothing but another change time: the same identity, length and write time, a
+    /// different change time. Always false for a provider capture. No I/O.
+    pub(crate) fn change_time_alone_moved(&self, fresh: &Self) -> bool {
+        match (&self.snapshot, &fresh.snapshot, &self.source, &fresh.source) {
+            (Some(captured), Some(current), None, None) => {
+                captured.matches(current, RevisionPolicy::AcceptChangeTimeOnly)
+                    && !captured.matches(current, RevisionPolicy::Exact)
+            }
+            _ => false,
+        }
+    }
     /// Bounded broker read. Reopening validates both pathname replacement and
     /// before/after handle metadata against the original captured revision.
     pub fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {

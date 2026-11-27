@@ -1,5 +1,7 @@
 //! Startup boundaries use real catalog pins; native acceptance requires an explicit installation.
 use super::*;
+#[path = "startup_manifest_tests.rs"]
+mod manifest;
 #[cfg(windows)]
 #[path = "startup_pin_windows_tests.rs"]
 mod pin_windows;
