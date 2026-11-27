@@ -7,7 +7,7 @@ probe numbers below are single runs on one loaded Linux machine, not a qualifica
 Three Architect decisions for the review items 2c and 2a (viewer plugin page size, the
 8000-byte-row limit), 7c (a kept-ready HTML browser, backlog VIEW-08) and 8 (a text viewer
 open under 200 ms). Each decision closes nothing in the
-[backlog](../../IMPLEMENTATION_BACKLOG.md): its rows close only with the evidence its test and
+[backlog](../../implementation-backlog.md): its rows close only with the evidence its test and
 measurement plan names.
 
 **Probe environment** (all three decisions): Ubuntu 26.04.1, kernel 7.0, GNOME on Wayland,
@@ -29,7 +29,7 @@ The basic and Source viewers answer a Text or Source viewport with at most about
 `Anchor` per character, a CBOR map of 5 wire items and about 11 bytes, within 65,536 wire
 items, 16,384 anchors and 1 MiB per message (`api/midnight-plugin-api/src/viewer.rs:5-7`,
 `wire.rs:4-6`). The
-[viewer presentation](../../developer/VIEWER_PRESENTATION.md#refill-reads-and-the-retained-frontier)
+[viewer presentation](../../developer/viewer-presentation.md#refill-reads-and-the-retained-frontier)
 documents this as an API limit of about 13,000 characters per reply.
 
 The engine joins byte-capped replies into one page of up to 120 KiB in at most 16 reads
@@ -138,7 +138,7 @@ row-page memory measurement or report.
 - A page with runs on a session without the advert is a protocol violation, refused like
   any invalid page.
 - The basic viewer moves from SDK `=0.1.0` and Source from `=0.2.0` to `=0.3.0`; Markdown
-  may follow for block text. The [viewer protocol](../../developer/VIEWER_PROTOCOL.md#limits)
+  may follow for block text. The [viewer protocol](../../developer/viewer-protocol.md#limits)
   and the presentation's 8 KiB statement are rewritten when this lands.
 
 ### Tests and measurements
@@ -172,7 +172,7 @@ row-page memory measurement or report.
 | Architect, Backend | `api/midnight-plugin-api/src/messages.rs` (`Open.accepts`), `src/viewer.rs` (`AnchorRun`, `TextPage.runs`, validation), the SDK's `Open` accessor and `Output::text`, `api/Cargo.toml` 0.3.0, the offline bundle (`api/scripts/package.sh`) |
 | Backend | `crates/midnight-plugin-host/src/session.rs` (advertise), `dispatch.rs` (validate, expand), `events.rs` (charges) |
 | Viewer | `plugins/midnight-viewer-basic/src/decode.rs`, `viewer.rs`, `Cargo.toml`; `plugins/midnight-viewer-source/src/paging.rs`, `preparation.rs`, `page_budget.rs`, `plugin.rs`, `decode.rs`, `syntax.rs`, `Cargo.toml`; `crates/midnight-viewer-engine/src/worker.rs` (64 KiB requests), co-simulation reply size |
-| Perf, Documentation | Probe and co-simulation records; `docs/developer/VIEWER_PROTOCOL.md`, `VIEWER_PRESENTATION.md`, backlog SCROLL-02 |
+| Perf, Documentation | Probe and co-simulation records; `docs/developer/viewer-protocol.md`, `viewer-presentation.md`, backlog SCROLL-02 |
 
 ## 2. A kept-ready HTML browser (item 7c, VIEW-08)
 
@@ -212,7 +212,7 @@ Probe, this machine, CEF without the GPU, the `dev` build's provider, a generate
 - **B. One-use warm spare**: one pre-started provider process that has never held a
   document, adopted by the next HTML session and never returned. The image viewer's
   source-free, one-use decoder spare (`crates/midnight-viewer-engine/src/image_startup.rs`,
-  [spare shutdown](../../developer/ENGINE_LIFETIME.md#image-viewer-spare-shutdown)) is the
+  [spare shutdown](../../developer/engine-lifetime.md#image-viewer-spare-shutdown)) is the
   precedent. Selected.
 - **C. One long-lived browser for all documents**, a request context per document: fastest
   and smallest with several windows, but the documents share the browser, network and GPU
@@ -288,7 +288,7 @@ no document, source or grant until then.
 | Backend | `crates/midnight-web-viewer-host/src/session.rs`, `session_actor.rs` (adopt a prepared browser), new `spare.rs`; `crates/midnight-viewer-engine/src/lib.rs`, `worker_web.rs`, new `web_spare.rs` with tests (lifetime as `image_startup.rs`) |
 | Viewer | `plugins/midnight-viewer-html/src/native.rs` (parked loop), its README |
 | Perf | `crates/midnight-web-viewer-host/examples/html_idle.rs` (parked mode), measurements |
-| Documentation | `SECURITY.md` (HTML viewer section), `docs/developer/WEB_VIEWER_API.md`, `ENGINE_LIFETIME.md`, backlog VIEW-08 and VIEW-04 |
+| Documentation | `SECURITY.md` (HTML viewer section), `docs/developer/WEB_VIEWER_API.md`, `engine-lifetime.md`, backlog VIEW-08 and VIEW-04 |
 
 ## 3. A text viewer open under 200 ms (item 8)
 
@@ -387,7 +387,7 @@ comparisons, like `MIDNIGHT_SHARED_WGPU=0`.
 | --- | --- |
 | UI | `crates/midnight-viewer-ui/src/lib.rs` (take from and return to the pool), new `window_pool.rs` with `window_pool_tests.rs`, `window_pool_linux.rs` and `window_pool_windows.rs` (the platform rule), the viewer component's reset function in `ui/` |
 | Perf | `crates/midnight-viewer-ui/examples/open_latency.rs` (first and repeat openings, pool switch), measurements |
-| Documentation | `docs/developer/VIEWER_PRESENTATION.md` (window lifetime), backlog row, dated record |
+| Documentation | `docs/developer/viewer-presentation.md` (window lifetime), backlog row, dated record |
 
 ## After the reboot: GPU measurements
 

@@ -336,7 +336,7 @@ fn between(changes: &[(u128, f32)], from: f32, to: f32) -> usize {
         .count()
 }
 
-/// The notch distance the panels use, Chromium's (docs/developer/SCROLLING.md, "Wheel
+/// The notch distance the panels use, Chromium's (docs/developer/scrolling.md, "Wheel
 /// distance"): 100 px at three lines per notch, in proportion to other line counts, 87.5 %
 /// of the list's visible height for a screen per notch, and 120 px without a setting
 /// (Linux).

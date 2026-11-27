@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Slint 1.18.1 event hook and tooltip lowering adapter; no dependency or generated-code edits.
 
-**Spec:** Existing `tooltip.rs` contract plus `docs/developer/FIND.md`.
+**Spec:** Existing `tooltip.rs` contract plus `docs/developer/find.md`.
 
 ## Constraints and review focus
 

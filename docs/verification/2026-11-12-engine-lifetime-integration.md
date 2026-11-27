@@ -12,7 +12,7 @@ are guarded before first poll. The command receiver closes and drains even outst
 pre-close send permits on that worker. Shared panel snapshots and drag state protect
 actual last owners; Copy and mutation guards retain preparation, native/provider
 owners and admission resources through awaited states and actual destruction.
-See [the engine contract](../developer/ENGINE_LIFETIME.md),
+See [the engine contract](../developer/engine-lifetime.md),
 [primitive qualification](2026-11-12-retirement-primitive.md) and
 [actor qualification](2026-11-12-actor-retirement.md).
 

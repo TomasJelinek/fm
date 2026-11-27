@@ -31,7 +31,7 @@ SUBST and mapped-drive aliases of a protected installation are accepted (and the
 canonical path is returned), while reparse points in the entered spelling are
 still refused first. Other platforms retain the actual executable's location.
 The cached result does not authorize any package or bypass the checks below. See
-the [runtime discovery contract](../../docs/developer/RUNTIME_DISCOVERY.md).
+the [runtime discovery contract](../../docs/developer/runtime-discovery.md).
 
 The thumbnail and image-viewer hosts pass their application executable path through
 `installation_path` before they derive and validate their package root. It returns

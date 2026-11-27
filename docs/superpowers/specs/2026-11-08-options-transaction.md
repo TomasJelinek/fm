@@ -41,7 +41,7 @@ minimum window size, where an icon and tooltip replace the longer label.
 
 Export configuration and Import configuration sit in the same footer and belong to
 the session (added 20 November 2026; user guide:
-[Export and import configuration](../../SETTINGS_FILES.md)). They are optional
+[Export and import configuration](../../settings-files.md)). They are optional
 footer actions: with labels where everything fits, with icons only where only
 that fits, and otherwise at the end of the General page. OK must never scroll out
 of the footer, because Slint 1.18 drops the focus of a control clipped out of view

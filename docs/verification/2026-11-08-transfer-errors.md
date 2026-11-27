@@ -107,4 +107,4 @@ Rustfmt checks pass, and all handwritten files touched here remain below 100 KB.
 
 The design and internal contract are maintained in
 [transfer error decisions](../superpowers/specs/2026-11-08-transfer-errors-design.md)
-and [native transfers](../developer/TRANSFERS.md). No dependency or plugin ABI changed.
+and [native transfers](../developer/transfers.md). No dependency or plugin ABI changed.

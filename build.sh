@@ -133,7 +133,7 @@ if [ "$build_backend" = docker ]; then
 fi
 
 # The explorer records the SHA-256 of the authorization helper that it ships with
-# (docs/RELEASE_BUILD.md): the helper is built first, then both packages with the
+# (docs/release-build.md): the helper is built first, then both packages with the
 # variable naming it. The same package selection keeps the helper's features, so the
 # second build reuses it and links only the explorer.
 cargo_target=${CARGO_TARGET_DIR:-_build}

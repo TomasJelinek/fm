@@ -12,7 +12,7 @@ all remaining native targets before preview, and reuses the existing mutation qu
 **Tech stack:** Rust core/engine contracts, bounded Tokio workers, existing separate Windows/Linux
 MutationService implementations. No new dependencies or OS deletion APIs.
 
-**Spec:** docs/developer/TREE_PANEL.md and the parent task's approved typed Delete capture design.
+**Spec:** docs/developer/tree-panel.md and the parent task's approved typed Delete capture design.
 
 ## Constraints and review focus
 

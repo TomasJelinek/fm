@@ -30,7 +30,7 @@ fixture, with unchanged production and zero drift. This is an overlapping narrow
 rerun, not another 159-test execution or 11 additional unique tests.
 
 Per-target summaries and matching `*-source-and-command.json` captures retain
-artifact/source identities and commands. [Behavior and guard limits](../developer/TREE_PANEL.md#retry-diagnostics-and-recursive-expansion)
+artifact/source identities and commands. [Behavior and guard limits](../developer/tree-panel.md#retry-diagnostics-and-recursive-expansion)
 remain in the tree contract.
 
 ## Thumbnail correction and debug build

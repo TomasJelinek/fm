@@ -3,7 +3,7 @@
 ## Scope
 
 Two fixed-deadline waits each failed once in a Linux workspace test run of
-`ac4c2e87` (TEST-03 in the [backlog](../IMPLEMENTATION_BACKLOG.md)):
+`ac4c2e87` (TEST-03 in the [backlog](../implementation-backlog.md)):
 
 - `navigation::blocked_left_listing_does_not_prevent_right_completion`
   (`midnight-engine` integration tests): `left worker entered provider: Elapsed(())`

@@ -3,7 +3,7 @@
 This slice connects the existing directory-size workflow to adopted native and
 archive trees. It does not complete other tree action consumers or the broad
 application goal. The [plan](../superpowers/plans/2026-11-10-tree-folder-sizes.md)
-and [runtime contract](../developer/TREE_PANEL.md#directory-sizes) describe the
+and [runtime contract](../developer/tree-panel.md#directory-sizes) describe the
 scope. Generated logs live under `_build/qa/tree-folder-sizes/`.
 
 The later [expanded-folder scope correction](2026-11-10-expanded-folder-sizes.md)

@@ -1,5 +1,5 @@
 //! The drive bar and the drive menu name each drive briefly and keep its whole path in
-//! its tooltip and accessible texts (docs/DRIVE_INFORMATION.md, "Drive names"). For
+//! its tooltip and accessible texts (docs/drive-information.md, "Drive names"). For
 //! every drive the backend lists, on the left panel:
 //! - the drive bar button's caption is the drive's name: unique among the drives; on
 //!   Linux never a mount path (`/` itself excepted); at most 16 columns unless only the
@@ -11,7 +11,7 @@
 //! - choosing a drive other than the root in the menu opens its whole path.
 //!
 //! A run with the drive fixture, tmpfs mounts at the paths of [`FIXTURE`] (Linux, see
-//! docs/developer/ACCEPTANCE.md, "Drive names"), also checks their exact names: shared
+//! docs/developer/acceptance.md, "Drive names"), also checks their exact names: shared
 //! folder names take a folder of their path, a long name keeps its start and end.
 //! Without it the rules are checked on the drives the machine has. The bar, a drive's
 //! tooltip and the open menu are pictured.

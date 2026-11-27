@@ -1,7 +1,7 @@
 # Transfer and tools checkpoint — 7 November 2026
 
 This checkpoint implements several accepted tasks from the
-[completion ledger](../IMPLEMENTATION_BACKLOG.md). It does not close the overall
+[completion ledger](../implementation-backlog.md). It does not close the overall
 goal or turn the remaining provider/platform designs into supported features.
 
 ## Implemented scope
@@ -15,17 +15,17 @@ goal or turn the remaining provider/platform designs into supported features.
   publication, durability and complete source/destination proof checks before
   originals are captured into recovery folders. It retains their data and does
   not reclaim source disk space. Directories, links and archive Move are refused.
-  [Transfer contract](../developer/TRANSFERS.md).
+  [Transfer contract](../developer/transfers.md).
 - Alt+F7 opens bounded, modeless Find sessions with filename masks and streamed
   literal UTF-8 content search. Result navigation requires backend validation.
-  [Find contract](../developer/FIND.md).
+  [Find contract](../developer/find.md).
 - Empty-space dragging selects rows in Details, Brief and Thumbnails, including
   archive rows with opaque identities. Preview is immediate; the backend commits
-  revision-checked ranges. [Selection contract](../developer/SELECTION.md).
+  revision-checked ranges. [Selection contract](../developer/selection.md).
 - Ctrl+F8 opens modeless checksum jobs, defaults to SHA-256, and optionally
   computes SHA-512, SHA-1 and MD5. Individual hashes/rows can be copied; manifest
   output uses verified staging and exclusive publication.
-  [Checksum contract](../developer/CHECKSUMS.md).
+  [Checksum contract](../developer/checksums.md).
 - Custom Commands has an ordered settings editor, transient Preview, conditional
   toolbar, right-click settings routing and configurable shortcuts. Program mode
   passes separate native arguments; Terminal mode uses literal authored scripts
@@ -34,8 +34,8 @@ goal or turn the remaining provider/platform designs into supported features.
   order, preserves shortcut identities and saves once on a valid changed drop.
   Explicit images are decoded by the backend;
   automatic executable artwork remains pending.
-  [Command contract](../developer/USER_COMMANDS.md),
-  [settings](../developer/USER_COMMAND_SETTINGS.md).
+  [Command contract](../developer/user-commands.md),
+  [settings](../developer/user-command-settings.md).
 
 All new native bodies remain separated by platform. No filesystem operations,
 process spawning, hashing or image decoding were added to UI callbacks. Native

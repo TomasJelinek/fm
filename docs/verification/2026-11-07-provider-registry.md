@@ -4,7 +4,7 @@ Scope: internal host identities, stored-address types, linked cancellation,
 revocable Browse/Read leases, and transitional native/archive adapters. No public
 plugin ABI, production panel route, selection model or native write capability
 was replaced. This is partial VFS-01 progress; TREE-01 and NET-01 remain pending.
-See [the contract](../developer/PROVIDER_REGISTRY.md).
+See [the contract](../developer/provider-registry.md).
 
 ## Tests and review
 

@@ -2,7 +2,7 @@
 
 ## Scope
 
-The update check ([design](../developer/UPDATES.md)): the `midnight-update` crate, the
+The update check ([design](../developer/updates.md)): the `midnight-update` crate, the
 toolbar button and dialog, About's Check for updates, Options › General › Updates
 (settings schema 39), the release signing tool, and the installation swap with
 rollback. All work was done in an isolated `git archive` export of `700df95f` with its

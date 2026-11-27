@@ -842,7 +842,7 @@ fn a_folder_acl_changed_during_the_job_applies_to_the_files_staged_after_it() {
     }
 }
 
-/// The documented residual (TRANSFERS.md): an inheritable SACL entry marked
+/// The documented residual (transfers.md): an inheritable SACL entry marked
 /// NO_PROPAGATE_INHERIT_ACE reaches the staging folder but not the files staged in it.
 #[test]
 fn a_no_propagate_label_reaches_the_staging_folder_but_not_its_files() {

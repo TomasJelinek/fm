@@ -4,7 +4,7 @@ This change separates immediate scrollbar feedback from asynchronous content wor
 It also fixes starvation during continuous dragging: the engine completes one
 active viewport and retains only the latest deferred target. Completed intermediate
 content can appear without moving the thumb away from the pointer. See the
-[internal contract](../developer/VIEWER_SCROLLING.md).
+[internal contract](../developer/viewer-scrolling.md).
 
 ## Causal evidence
 

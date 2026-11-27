@@ -21,7 +21,7 @@ application and retirement. Navigation, collapse and shutdown cancel stale work
 without replacing the permit of a blocked callback. Archive navigation targets
 retain their registrations across pane replacement and engine shutdown. Root
 budget/provider failure preserves the complete ordinary listing. The resource
-and cleanup contract is in [TREE_CONTROLLER.md](../../crates/midnight-engine/TREE_CONTROLLER.md).
+and cleanup contract is in [tree-controller.md](../../crates/midnight-engine/tree-controller.md).
 
 Two integration-specific additions were made after reviewing the frozen
 candidate:

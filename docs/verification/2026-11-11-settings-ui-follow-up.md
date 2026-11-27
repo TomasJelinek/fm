@@ -21,7 +21,7 @@ application. It introduces no third-party dependency or plugin ABI change.
   Parent/loading rows, relative row text and virtual backing paths are rejected.
   The action uses current shortcut settings and respects command-edit focus.
 - Make File List removes DOS 8.3 choices; legacy templates intentionally resolve
-  those tokens to full Unicode names/paths. See [Make File List](../MAKE_FILE_LIST.md).
+  those tokens to full Unicode names/paths. See [Make File List](../make-file-list.md).
 - Raw slash-prefixed mount labels follow alphabetic names within their navigation
   section. Sorting does not modify paths.
 - Panel metadata widths use bounded backend samples measured with the actual UI

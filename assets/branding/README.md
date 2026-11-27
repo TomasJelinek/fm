@@ -9,7 +9,7 @@ and drive icons continue to come from the operating system.
   exports.
 - `midnight-explorer.png`: 256-pixel window icon, embedded by Slint. On Wayland,
   the compositor uses the installed desktop entry and this PNG instead; see the
-  [Linux launcher instructions](../../docs/USER_GUIDE.md#linux-desktop-launcher).
+  [Linux launcher instructions](../../docs/user-guide.md#linux-desktop-launcher).
   Linux release archives and `scripts/install-linux-desktop.py` install this file.
 - Each design's `ui/` folder holds transparent PNGs at 16, 20, 24, 32, 40, 48,
   64, 72, 96, 128 and 144 pixels. The exporter samples the full artwork at each size so
@@ -22,7 +22,7 @@ and drive icons continue to come from the operating system.
   compiler; the application does not need to load an external icon file at runtime.
 
 The artwork was created with the built-in image generation tool; the design brief and
-its final color refinement are retained in [PROMPT.md](PROMPT.md#harvest-navigator).
+its final color refinement are retained in [prompt.md](prompt.md#harvest-navigator).
 Harvest Navigator replaced the earlier Moon icon as the default in 0.6.0.
 
 To regenerate the size exports on Windows, run `powershell -NoProfile -File

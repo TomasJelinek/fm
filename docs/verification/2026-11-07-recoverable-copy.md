@@ -3,7 +3,7 @@
 The source tree now exposes explicit recoverable replacement and merge choices
 through the existing backend queue. This is independent of F6/Move, which remains
 an integration task. Guarantees and retained-original limitations are defined in
-[TRANSFERS.md](../developer/TRANSFERS.md).
+[transfers.md](../developer/transfers.md).
 
 ## Evidence
 

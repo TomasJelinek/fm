@@ -3,7 +3,7 @@
 //! where the application promises them, permissions and modified times) and in the
 //! panels.
 //!
-//! What is promised (docs/developer/TRANSFERS.md, TRANSFER_OPTIONS.md, SECURITY.md):
+//! What is promised (docs/developer/transfers.md, transfer-options.md, SECURITY.md):
 //! Copy keeps the verified content and exact name, and gives every file and new folder
 //! it creates, inside copied folders too, the source's read, write and execute bits
 //! masked by the process umask (never setuid, setgid or sticky; a new folder may inherit
@@ -60,7 +60,7 @@ fn before_copy(path: &Path) -> Result<fs::Metadata, String> {
     fs::symlink_metadata(path).map_err(|error| io_error(path, error))
 }
 
-/// What "Preserve times and attributes" promises (TRANSFERS.md, preserved times and
+/// What "Preserve times and attributes" promises (transfers.md, preserved times and
 /// attributes), against the source as it was before the copy (`before_copy`): the modified
 /// time exactly, and a file's access time from before the copy read it (reading it moves
 /// the source's own); on Windows also the creation time and the Read-only, Hidden, System,

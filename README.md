@@ -9,34 +9,34 @@ application.
 
 Current version: **0.6.3**, a preview: features and plugin interfaces are still
 changing, archives are read-only, the Windows executable and installer are unsigned and
-macOS is not implemented. [Feature status](docs/FEATURE_STATUS.md) lists the current
+macOS is not implemented. [Feature status](docs/feature-status.md) lists the current
 limits.
 
 ## Start Here
 
 - [Download and install](#download-and-install) a release for Windows or Linux.
 - [Run it and check that it works](#run-and-check).
-- Learn the controls in the [user guide](docs/USER_GUIDE.md) and the
-  [keyboard shortcuts](docs/KEYBOARD_SHORTCUTS.md); F1 shows the shortcuts in the
+- Learn the controls in the [user guide](docs/user-guide.md) and the
+  [keyboard shortcuts](docs/keyboard-shortcuts.md); F1 shows the shortcuts in the
   application.
-- Fix a problem with [Troubleshooting](docs/TROUBLESHOOTING.md), or
+- Fix a problem with [Troubleshooting](docs/troubleshooting.md), or
   [get help](#support).
 - [Build from source](#build-from-source).
 
 ## Features
 
-The terms are defined in the [glossary](docs/GLOSSARY.md).
+The terms are defined in the [glossary](docs/glossary.md).
 
-- **Panels:** two independent [panels](docs/GLOSSARY.md#panel) with tabs, history,
-  [Hot Paths](docs/GLOSSARY.md#hot-paths) (numbered saved locations),
-  [inline folder trees](docs/GLOSSARY.md#inline-folder-tree), the Brief, Detailed and
-  Thumbnails [views](docs/GLOSSARY.md#views), the
-  [panel filter](docs/GLOSSARY.md#panel-filter), selection by mask and folder sizes.
+- **Panels:** two independent [panels](docs/glossary.md#panel) with tabs, history,
+  [Hot Paths](docs/glossary.md#hot-paths) (numbered saved locations),
+  [inline folder trees](docs/glossary.md#inline-folder-tree), the Brief, Detailed and
+  Thumbnails [views](docs/glossary.md#views), the
+  [panel filter](docs/glossary.md#panel-filter), selection by mask and folder sizes.
 - **Copy and Move** (F5, F6, the clipboard and drag and drop): one background queue
   that reads every copied file back and compares it by SHA-256 by default; Skip, a new
   name, folder Merge or a Replace that keeps the original recoverable; Retry, Skip or
   Cancel on I/O errors; a progress window per job with Pause, and a
-  [Jobs](docs/GLOSSARY.md#jobs) list; up to 1,000,000 selected items per job.
+  [Jobs](docs/glossary.md#jobs) list; up to 1,000,000 selected items per job.
 - **Delete, create and rename:** Delete to the system Trash or permanently, new folders
   and files, rename, attributes, times and case.
 - **Viewers (F3):** text and hex, source code with syntax highlighting, Markdown,
@@ -50,15 +50,15 @@ The terms are defined in the [glossary](docs/GLOSSARY.md).
 - **Tools:** file comparison (text, images, hex) and directory comparison; checksums
   (SHA-256, SHA-512, SHA-1, MD5, CRC32) with a Verify page; Make File List; Network
   Neighborhood (the computers and shares of the local network); drive information;
-  [Custom Commands](docs/GLOSSARY.md#custom-commands), the command line and a terminal
+  [Custom Commands](docs/glossary.md#custom-commands), the command line and a terminal
   button.
 - **Options:** four application icons, 30 dark and 16 light themes that follow the
   system appearance, density and fonts, filename colors, configurable keyboard
   shortcuts, file-type assignments and settings export and import.
 
-[Feature status](docs/FEATURE_STATUS.md) lists what is implemented on each platform and
+[Feature status](docs/feature-status.md) lists what is implemented on each platform and
 where it is verified; planned work and known limits are in the
-[implementation backlog](docs/IMPLEMENTATION_BACKLOG.md).
+[implementation backlog](docs/implementation-backlog.md).
 
 ## Platforms
 
@@ -70,7 +70,7 @@ where it is verified; planned work and known limits are in the
 | macOS | Not implemented yet (planned). |
 
 Provision at least 4 GB of RAM (8 GB recommended). Versions, runtime libraries, graphics
-and filesystem notes are in [system requirements](docs/SYSTEM_REQUIREMENTS.md).
+and filesystem notes are in [system requirements](docs/system-requirements.md).
 
 ## Download and install
 
@@ -79,7 +79,7 @@ Preview builds are published on the
 
 - **Windows installer** (`midnight-explorer-<version>-x86_64-pc-windows-msvc.msi`): it
   asks whether to install just for you or for all users
-  ([Windows installer](docs/USER_GUIDE.md#windows-installer)), adds a Start menu entry
+  ([Windows installer](docs/user-guide.md#windows-installer)), adds a Start menu entry
   and updates itself from 0.6.3 on.
 - **Windows archive** (`midnight-explorer-<version>-x86_64-pc-windows-msvc.zip`) or
   **Linux archive** (`midnight-explorer-<version>-x86_64-unknown-linux-gnu.tar.gz`):
@@ -90,9 +90,9 @@ Preview builds are published on the
 On Windows, install Microsoft's
 [Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
 if `VCRUNTIME140.dll` is missing. On Linux, install the runtime packages that
-[system requirements](docs/SYSTEM_REQUIREMENTS.md#runtime-software) list. Each release
+[system requirements](docs/system-requirements.md#runtime-software) list. Each release
 also has `SHA256SUMS` and its signature `SHA256SUMS.minisig` to
-[check a download by hand](docs/TROUBLESHOOTING.md#check-a-download-by-hand).
+[check a download by hand](docs/troubleshooting.md#check-a-download-by-hand).
 
 ### Run and check
 
@@ -103,7 +103,7 @@ also has `SHA256SUMS` and its signature `SHA256SUMS.minisig` to
    panels listing folders. The application icon at the right end of the top toolbar
    opens **About**, which shows the version too.
 3. When the window does not open or the panels stay empty, see
-   [Troubleshooting](docs/TROUBLESHOOTING.md).
+   [Troubleshooting](docs/troubleshooting.md).
 
 ## Build from source
 
@@ -128,35 +128,35 @@ build.bat release      # Windows, optimized release
 ```
 
 Debug is the default; `release` builds with full optimization and
-[LTO](docs/GLOSSARY.md#lto) (link-time optimization). Build output goes to `_build/`
+[LTO](docs/glossary.md#lto) (link-time optimization). Build output goes to `_build/`
 (`_build/debug/` or `_build/release/`, with the executable `midnight-explorer.exe` or
 `midnight-explorer` and its `viewers/`, `filesystems/` and `thumbnailers/` folders);
 toolchain caches go to `.tools/`. On Windows, `build.bat` also deploys the build to a
-[private installation](docs/GLOSSARY.md#private-installation-root) that the built
+[private installation](docs/glossary.md#private-installation-root) that the built
 `midnight-explorer.exe` loads its plugins from.
 
-The [user guide](docs/USER_GUIDE.md#build-and-run) has the complete build and run
-instructions, [release build](docs/RELEASE_BUILD.md) describes release settings and
+The [user guide](docs/user-guide.md#build-and-run) has the complete build and run
+instructions, [release build](docs/release-build.md) describes release settings and
 packaging, and the [developer documentation](docs/developer/README.md) covers the
-plugin APIs and SDKs, with [test execution](docs/developer/TEST_EXECUTION.md) for the
+plugin APIs and SDKs, with [test execution](docs/developer/test-execution.md) for the
 checks.
 
 ## Documentation
 
 - [Documentation map](docs/README.md): every current contract and reference.
-- [User guide](docs/USER_GUIDE.md): running the application, controls, viewers,
+- [User guide](docs/user-guide.md): running the application, controls, viewers,
   operations and settings.
-- [Keyboard shortcuts](docs/KEYBOARD_SHORTCUTS.md), [settings files](docs/SETTINGS_FILES.md)
-  and [viewer associations](docs/VIEWER_ASSOCIATIONS.md).
-- [Troubleshooting](docs/TROUBLESHOOTING.md) and the [glossary](docs/GLOSSARY.md).
-- [Feature status](docs/FEATURE_STATUS.md) and
-  [implementation backlog](docs/IMPLEMENTATION_BACKLOG.md).
-- [System requirements](docs/SYSTEM_REQUIREMENTS.md) and
-  [release build](docs/RELEASE_BUILD.md).
+- [Keyboard shortcuts](docs/keyboard-shortcuts.md), [settings files](docs/settings-files.md)
+  and [viewer associations](docs/viewer-associations.md).
+- [Troubleshooting](docs/troubleshooting.md) and the [glossary](docs/glossary.md).
+- [Feature status](docs/feature-status.md) and
+  [implementation backlog](docs/implementation-backlog.md).
+- [System requirements](docs/system-requirements.md) and
+  [release build](docs/release-build.md).
 - [Security and integrity rules](SECURITY.md).
 - [Developer and plugin API documentation](docs/developer/README.md).
-- [Third-party libraries and licenses](docs/THIRD_PARTY.md) and the
-  [dependency policy](docs/DEPENDENCY_POLICY.md).
+- [Third-party libraries and licenses](docs/third-party.md) and the
+  [dependency policy](docs/dependency-policy.md).
 
 ## Releases
 
@@ -177,17 +177,17 @@ checks.
 - **Updating:** from 0.5.1 on, an extracted copy that your account can change checks
   for, verifies and installs signed updates itself, and so does an MSI installation
   from 0.6.3 on; a 0.6.1 MSI installation is updated by running the newer MSI once
-  ([Updates](docs/USER_GUIDE.md#updates)). Settings are kept. 0.6.2's MSI does not
+  ([Updates](docs/user-guide.md#updates)). Settings are kept. 0.6.2's MSI does not
   install; use a later one.
 - **Source:** the source of each release is its tagged commit in this repository.
 
 ## Support
 
-- **Questions and problems:** read [Troubleshooting](docs/TROUBLESHOOTING.md) first, then
+- **Questions and problems:** read [Troubleshooting](docs/troubleshooting.md) first, then
   search or open an issue in the
   [GitHub issue tracker](https://github.com/TomasJelinek/fm/issues). Include the version,
   how you installed it, the operating system and the message text
-  ([what to include](docs/TROUBLESHOOTING.md#get-help)).
+  ([what to include](docs/troubleshooting.md#get-help)).
 - **Security:** [SECURITY.md](SECURITY.md) states the security and integrity
   requirements. Do not publish the details of a suspected vulnerability in a public
   issue.
@@ -196,7 +196,7 @@ checks.
 
 Read the [project rules](AGENTS.md), the [code style](CODE_STYLE.md) and the
 [security rules](SECURITY.md) before changing code. Third-party dependencies must be
-free of mandatory fees and follow the [dependency policy](docs/DEPENDENCY_POLICY.md).
+free of mandatory fees and follow the [dependency policy](docs/dependency-policy.md).
 
 ## License
 
@@ -208,7 +208,7 @@ for the full text.
 
 The plugins under [plugins/](plugins/) and the public API/SDK workspaces are licensed
 under the same terms, GPL-3.0-or-later. Third-party components keep
-their own licenses; they are listed in [THIRD_PARTY.md](docs/THIRD_PARTY.md), and
+their own licenses; they are listed in [third-party.md](docs/third-party.md), and
 release archives carry their notices. The source of each release is its tagged commit
 in this repository.
 

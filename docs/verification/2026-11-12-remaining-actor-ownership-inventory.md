@@ -15,7 +15,7 @@ retains the original inspection and proposed cases, not new execution evidence.
 [Peer review](2026-11-12-service-boundary-peer-review.md) additionally identifies native
 warning-report storage in folder-size/presence diagnostics; service envelopes alone
 do not close that boundary. Archive outputs/mailboxes and builder replacement remain
-open. Current accounting is in the [engine contract](../developer/ENGINE_LIFETIME.md).
+open. Current accounting is in the [engine contract](../developer/engine-lifetime.md).
 
 ## Highest-priority concrete native owners
 

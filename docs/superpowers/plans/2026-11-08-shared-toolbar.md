@@ -33,7 +33,7 @@ BookmarkMenu dialogs. Popup/pressed-button context includes panel identity.
 ## Task 1: Shared bar and interaction boundaries
 
 Files: new ui/shared-toolbar.slint; ui/main.slint; ui/file-pane.slint;
-ui/action-icons.slint; new ui/icons/checksums.svg; docs/ASSET_PROVENANCE.md.
+ui/action-icons.slint; new ui/icons/checksums.svg; docs/asset-provenance.md.
 Tests: new tests/shared_toolbar.rs, adjusted tests/comparison_toolbar.rs and
 tests/small_window.rs. Existing tests/compact_controls.rs remains a regression.
 

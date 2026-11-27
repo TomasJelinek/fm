@@ -230,7 +230,7 @@ between backend replies. The worker retains lazy byte/line limits and prepares
 coverage ahead of the camera; an unavailable frontier never masquerades as EOF.
 Exact settling uses the original CPU raster phase. See the
 [implementation contract](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
-and [developer scrolling guide](../developer/SCROLLING.md).
+and [developer scrolling guide](../developer/scrolling.md).
 
 The focused integrated gate passed 29 engine, 29 viewer UI and one renderer
 regression. An unfiltered engine run passed 146 tests, with four explicitly

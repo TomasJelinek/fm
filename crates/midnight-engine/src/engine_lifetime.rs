@@ -43,7 +43,7 @@ pub(crate) struct DragRetirement {
     pub(crate) backlog: RetirementWaiter,
 }
 
-/// Payload slots of the engine retirement domain. `docs/developer/ENGINE_LIFETIME.md`
+/// Payload slots of the engine retirement domain. `docs/developer/engine-lifetime.md`
 /// states this total and its per-owner breakdown; a test keeps the two in step.
 // Copy and mutation each retain 32 jobs, one intake and one service context.
 // Drag retains state, pending drops and one serial backlog drain.
@@ -177,7 +177,7 @@ impl DragRetirement {
 mod tests {
     use super::{DOMAIN_CAPACITY, DOMAIN_WAITERS};
 
-    const LIFETIME_DOC: &str = include_str!("../../../docs/developer/ENGINE_LIFETIME.md");
+    const LIFETIME_DOC: &str = include_str!("../../../docs/developer/engine-lifetime.md");
 
     #[test]
     fn lifetime_document_states_the_domain_capacity_and_its_breakdown() {
@@ -192,7 +192,7 @@ mod tests {
             .join(" ");
         assert!(
             text.contains(&capacity) && text.contains(&waiters),
-            "ENGINE_LIFETIME.md must document {capacity} and {waiters}"
+            "engine-lifetime.md must document {capacity} and {waiters}"
         );
 
         let table = LIFETIME_DOC
@@ -217,7 +217,7 @@ mod tests {
             .sum();
         assert_eq!(
             total, DOMAIN_CAPACITY,
-            "the ENGINE_LIFETIME.md capacity table must add up to the domain capacity"
+            "the engine-lifetime.md capacity table must add up to the domain capacity"
         );
     }
 }

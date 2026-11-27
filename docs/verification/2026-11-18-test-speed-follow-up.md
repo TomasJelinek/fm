@@ -134,7 +134,7 @@ higher load.
   disable a target on one platform only, and it holds the crate's Linux unit tests.
 - `spool_linux`, `store_linux` and `worker_policy_linux` of `midnight-worker-platform`
   pass no test on Windows (three first starts, 1.3 to 3.0 s each here), but
-  [test execution](../developer/TEST_EXECUTION.md) keeps one binary per file in this
+  [test execution](../developer/test-execution.md) keeps one binary per file in this
   crate for isolation. For these three files the rule appears stricter than needed:
   `store_linux.rs` only creates private directories and links below its own
   temporary directory; `spool_linux.rs` and `worker_policy_linux.rs` change

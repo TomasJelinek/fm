@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Rust, Swash/Parley and renderer test/probe infrastructure; no dependencies.
 
-**Spec:** The coordinator's approved scope and `docs/verification/2026-11-11-viewer-scrolling.md`; retained raster/paging contracts in `docs/developer/SCROLLING.md`.
+**Spec:** The coordinator's approved scope and `docs/verification/2026-11-11-viewer-scrolling.md`; retained raster/paging contracts in `docs/developer/scrolling.md`.
 
 ## Constraints and ownership
 

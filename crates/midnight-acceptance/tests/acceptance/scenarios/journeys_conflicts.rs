@@ -361,7 +361,7 @@ fn steps(
     journey.step("on disk: replaced, kept, renamed and recovered exactly; nothing else copied");
 
     // 7. Both panels. Windows hides by the hidden attribute, which the recovery folder
-    //    does not get (TRANSFERS.md: an owner-only DACL), so there it is listed while
+    //    does not get (transfers.md: an owner-only DACL), so there it is listed while
     //    hidden files are hidden.
     let mut names = vec!["alpha.txt", "bravo.txt", "delta.txt", RENAMED];
     let recovery_folders: Vec<String> = fs::read_dir(target)

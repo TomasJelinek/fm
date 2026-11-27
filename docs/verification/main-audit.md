@@ -244,8 +244,8 @@ structures rather than claiming one representation is universally fastest.
 
 ## Dependencies and documentation
 
-The new [dependency policy](../DEPENDENCY_POLICY.md),
-[pinned inventory](../THIRD_PARTY.md) and
+The new [dependency policy](../dependency-policy.md),
+[pinned inventory](../third-party.md) and
 [feature/license CSV](../third-party-inventory.csv) record 561 registry packages,
 including 26 direct workspace dependencies. Eight local crates are excluded
 from the third-party count. Windows/Linux build-and-test graphs contain 344/449

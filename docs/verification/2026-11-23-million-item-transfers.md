@@ -5,7 +5,7 @@
 Copy and Move took at most 4,096 selected native items (Move 64), because preparation
 opened and pinned every item before the job started and kept it until it was copied.
 A selection of more than 64 items now streams
-([selection sizes](../developer/TRANSFERS.md#selection-sizes)): the job keeps the paths and
+([selection sizes](../developer/transfers.md#selection-sizes)): the job keeps the paths and
 about 100 bytes per item, reads and totals each item just ahead of the copy, and opens
 each item only when it takes it. This record gives the numbers measured for 1,000,000
 items. All runs were Windows (NTFS, a local SSD), in an isolated export, with other

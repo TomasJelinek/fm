@@ -1,7 +1,7 @@
 # Dual-purpose Windows installer (Just for me or For all users)
 
 Recorded on 26 November 2026, Windows 11 x64, Python 3.15, with `scripts/package-msi.py`
-([Windows installer](../RELEASE_BUILD.md#windows-installer-msi)) at the commit that made
+([Windows installer](../release-build.md#windows-installer-msi)) at the commit that made
 the MSI dual-purpose. Nothing was installed: every check below reads the package, extracts
 it administratively or costs it in a session that installs nothing.
 

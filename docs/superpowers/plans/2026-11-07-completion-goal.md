@@ -19,7 +19,7 @@ distribution-compatible license review and refreshed inventory/notices.
 
 **Spec:** [Main design](../specs/2026-11-04-dual-pane-file-manager-design.md),
 its linked extensions and [accepted stages](2026-11-05-follow-up-stages.md).
-The evidence matrix is [IMPLEMENTATION_BACKLOG.md](../../IMPLEMENTATION_BACKLOG.md).
+The evidence matrix is [implementation-backlog.md](../../implementation-backlog.md).
 
 ## Global constraints
 
@@ -103,7 +103,7 @@ redirected/cloud Desktop shortcut fix, native tests and verification record.
 Fresh Windows regression passed before commit; push to `codex/viewer-plugins`
 was verified under the maintainer's GitHub account. Other goal changes remain separate.
 
-- `goal_design_audit`: requirement/code matrix only, `docs/IMPLEMENTATION_BACKLOG.md`.
+- `goal_design_audit`: requirement/code matrix only, `docs/implementation-backlog.md`.
 - `goal_keyboard_crash`: keyboard-specific diagnostic/presenter/tests; shared UI
   changes require coordination.
 - `goal_transfer_contract`: native overwrite/merge/move feasibility and exact contract

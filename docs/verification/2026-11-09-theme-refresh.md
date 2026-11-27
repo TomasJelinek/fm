@@ -5,7 +5,7 @@ accepts the old saved name as a one-way migration. Verdant Light (14), Catppucci
 Latte (15) and Rosé Pine Dawn (16) bring the catalog to 17 entries. The preceding
 Tokyo Night, One Dark, Rosé Pine and Norton Commander additions are retained.
 The [design](../superpowers/specs/2026-11-06-theme-expansion-design.md) and
-[palette provenance](../THEME_PROVENANCE.md) describe the choices and licenses.
+[palette provenance](../theme-provenance.md) describe the choices and licenses.
 
 ## Checks performed
 

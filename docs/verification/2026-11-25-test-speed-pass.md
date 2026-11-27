@@ -27,7 +27,7 @@ As on 21 November ([Method](2026-11-21-test-speed-pass.md#method)), with these d
    executable listed its tests twice and its ignored tests once. A test's time is libtest's
    `exec_time`, measured beside the other tests of its executable.
 3. **Private installation root.** Unlike 21 November, `HOST_TEST_INSTALL_ROOT` pointed at
-   a private folder in the user profile, made as [test execution](../developer/TEST_EXECUTION.md#private-plugin-installation-root)
+   a private folder in the user profile, made as [test execution](../developer/test-execution.md#private-plugin-installation-root)
    describes. The `midnight-plugin-host` and `midnight-image-viewer-host` library tests that
    failed in every run on 21 November therefore pass and are timed here (134 and 38 tests,
    0.37 s and 0.14 s).
@@ -202,7 +202,7 @@ Looked for, nothing removed:
   checks that the removed Details button stays gone (`621d9468`); it is current.
 - Duplicates: the checksum library tests that the engine integration executable runs again
   (`checksums_backend::checksum::*`, including the two new any-size tests at 3.2 and 3.0 s)
-  are the documented `#[path]` includes of [test execution](../developer/TEST_EXECUTION.md).
+  are the documented `#[path]` includes of [test execution](../developer/test-execution.md).
 - No full dead-code probe (removing every `allow(dead_code)` and building) was made in
   this pass.
 

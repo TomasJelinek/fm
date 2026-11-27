@@ -4,7 +4,7 @@ Scope: backend selection snapshots and Ctrl+A/Ctrl+D/Ctrl+I; folder-size
 continuity across sorting and same-path refresh; marker-free partial totals;
 inline drive/location buttons; four size presentation updates per second.
 The [design](../superpowers/specs/2026-11-04-selection-and-continuous-sizes-design.md)
-and [keyboard map](../KEYBOARD_SHORTCUTS.md) describe the current behavior.
+and [keyboard map](../keyboard-shortcuts.md) describe the current behavior.
 
 ## Regression coverage
 

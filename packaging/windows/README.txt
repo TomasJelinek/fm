@@ -54,8 +54,8 @@ Settings are stored in %LOCALAPPDATA%\Midnight Explorer\preferences.json.
 Releases up to 0.5.0 named the executable me.exe. Settings stay where they were;
 point shortcuts, pinned taskbar items, "Open with" choices and firewall rules
 that named me.exe at midnight-explorer.exe instead.
-See FEATURE_STATUS.md for implemented and pending functionality, and
-SYSTEM_REQUIREMENTS.md, KEYBOARD_SHORTCUTS.md and SECURITY.md for details.
+See feature-status.md for implemented and pending functionality, and
+system-requirements.md, keyboard-shortcuts.md and SECURITY.md for details.
 F1 opens keyboard help; Options allows changing shortcuts and appearance.
 The complete distribution includes all six viewers (text/hex, source, Markdown,
 image, PDF and Chromium HTML), native/network/archive filesystems and both

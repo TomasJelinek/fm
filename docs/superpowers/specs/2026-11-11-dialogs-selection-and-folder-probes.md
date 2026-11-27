@@ -86,6 +86,6 @@ Options provides one Rescan all plugins action shared by the Viewers, Filesystem
 and Thumbnailers pages. It invokes the existing asynchronous rescan of all kinds.
 
 See the [active task/evidence ledger](../plans/2026-11-11-dialog-polish-followup.md),
-[tree provider contracts](../../developer/TREE_PANEL.md),
+[tree provider contracts](../../developer/tree-panel.md),
 [dialog verification](../../verification/2026-11-11-dialog-fonts-metadata-and-drag-feedback.md)
 and [Jobs history verification](../../verification/2026-11-11-jobs-history.md).

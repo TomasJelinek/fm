@@ -40,14 +40,14 @@ Read on 24 November from GitHub (Actions and Releases of the project repository)
 
 Top-level and user documents:
 
-- **FEATURE_STATUS.md:** last passing CI runs (`c8c20f49`, `c6fc88e7` instead of
+- **feature-status.md:** last passing CI runs (`c8c20f49`, `c6fc88e7` instead of
   `2b901122`); the update check's 20-hour startup interval, the published signature and
   REL-04; the path editor's select-all; Shift ranges from the cursor after the anchor
   goes stale; the Delete confirmation's layout; native Wayland and Run directly Linux
   tests now pass in hosted CI (they had "not run on Linux"); `tools_checksum_unlimited`
   is written and passed on both systems on 22 November (tools record), so the Checksums
   "Open" line no longer names it; long lines rewrapped.
-- **IMPLEMENTATION_BACKLOG.md:** PLAT-03 said `MIDNIGHT_WAYLAND_DND=0` turns native
+- **implementation-backlog.md:** PLAT-03 said `MIDNIGHT_WAYLAND_DND=0` turns native
   Wayland drag and drop off; since `c272312d` it is off unless `=1`
   (`drag_input_linux.rs`), and its Linux tests passed in CI. PANEL-03 named the
   acceptance harness as unable to open the Shell sheet; `panels_properties_several`
@@ -56,7 +56,7 @@ Top-level and user documents:
   (`20261122-100257`, `20261122-112449`). New REL-04: CI and validation never run
   `cargo test -p midnight-update --release`, so the release-only refusal of the test
   endpoint and key was checked once by hand.
-- **USER_GUIDE.md:** a duplicated Move paragraph merged; native Wayland drag and drop
+- **user-guide.md:** a duplicated Move paragraph merged; native Wayland drag and drop
   only with `MIDNIGHT_WAYLAND_DND=1`; the path editor opens with the whole path
   selected; the Delete confirmation shortens a long folder as the path bar does; settings
   schemas through 40 (it said 36); the startup update check runs at most every 20 hours
@@ -65,13 +65,13 @@ Top-level and user documents:
   elevated token (`c8c20f49`); long lines rewrapped.
 - **SECURITY.md:** settings schemas through 40 with versions 37 to 40 named (it said 36);
   Secure this folder's owner rule (`CheckTokenMembership` in `trust_repair_windows.rs`).
-- **SETTINGS_FILES.md and MAKE_FILE_LIST.md:** since `f42d2e77` a confirmed replacement
+- **settings-files.md and make-file-list.md:** since `f42d2e77` a confirmed replacement
   of a read-only, hidden, compressed or encrypted Windows file goes ahead and keeps those
   attributes; the settings export said such files are never replaced.
-- **KEYBOARD_SHORTCUTS.md:** Reload reopens a text page where it was but an HTML page at
+- **keyboard-shortcuts.md:** Reload reopens a text page where it was but an HTML page at
   its top (`worker_links.rs`, `reload`).
-- **SYSTEM_REQUIREMENTS.md:** the Wayland opt-in; the update check's network access.
-- **ACTIVE_WORK.md:** 0.5.1 published from `c8c20f49`; what main has since; the CI runs
+- **system-requirements.md:** the Wayland opt-in; the update check's network access.
+- **active-work.md:** 0.5.1 published from `c8c20f49`; what main has since; the CI runs
   above (the page claimed a pass at `2a9e382c` that no record holds); the whole Windows
   suite at `c8c20f49` from the acceptance time record; release validation reduced to
   what is still owed.
@@ -116,9 +116,9 @@ the 22 lock files is in the complete inventory or the lock-only list
 
 ## Remaining
 
-- Not read line by line for lack of time: the middle of TRANSFERS.md, FIND.md and
-  TREE_PANEL.md, the rest of SCROLLING.md, most of SECURITY.md outside the sections named
-  above, ARCHIVE_FORMATS.md, DRIVE_INFORMATION.md, VIEWER_ASSOCIATIONS.md and the
+- Not read line by line for lack of time: the middle of transfers.md, find.md and
+  tree-panel.md, the rest of scrolling.md, most of SECURITY.md outside the sections named
+  above, archive-formats.md, drive-information.md, viewer-associations.md and the
   provenance documents. Their identifiers and constants were sampled.
 - `docs/developer/acceptance/panels.md` has no row for `panels_properties_several`; it
   needs a recorded run first.

@@ -460,7 +460,7 @@ Fix:
   every build under a checkout's `_build/` (the attachment of the manual profile the
   coordinator gave the user, which it replaces). It needs root and says so; `--print`
   shows the profile and `--uninstall` removes it. Linux release archives carry it next
-  to `me`, and the release README and SYSTEM_REQUIREMENTS.md name the step: the tarball
+  to `me`, and the release README and system-requirements.md name the step: the tarball
   has no post-install step to run it from.
 - The Linux browser launcher (`midnight-worker-platform/src/browser_sandbox_linux.rs`)
   checks before the browser can use its sandbox. When the restriction is on and
@@ -491,7 +491,7 @@ uninstall steps were not run here, because they change the system's AppArmor pol
 
 ## Markdown viewer stuck at a tall table
 
-The user's Markdown viewer stopped scrolling inside `docs/IMPLEMENTATION_BACKLOG.md`
+The user's Markdown viewer stopped scrolling inside `docs/implementation-backlog.md`
 (status "Bytes 68698–82097 / 119796", on the table rows PERF-01, UI-PERF-01 and
 META-04, just above "Deferrals and residuals of the 18 November review"). Reproduced
 through the engine (`Service`, 1000 × 700 viewport) with the integration tree's copy
@@ -601,7 +601,7 @@ After the fix, same files and plugins, each sweep after End and Home:
   and without error; the largest differences from a target were 0.0009 and 0.0007
   (both at 51 %). The raster and 0.5 % sweeps ran before the Markdown exemption, which
   changes nothing for text or source windows.
-- The integration tree's current `docs/IMPLEMENTATION_BACKLOG.md` (129,860 bytes) in the
+- The integration tree's current `docs/implementation-backlog.md` (129,860 bytes) in the
   Markdown viewer, 0–100 % in 1 % steps: all 101 drags acknowledged and without error.
   Nine fell in bands beside whole tables and settled at the nearest view: 18–20 % (at
   0.1783 and 0.1840), 43–44 % (0.4244), 58 % (0.5892) and 69–71 % (0.6859–0.6884).
@@ -718,7 +718,7 @@ all acknowledged with their own sequence and without an error:
 - The acceptance fixture `inventory.csv` at 1 % steps:
   - source viewer: 101 of 101;
   - basic viewer: 101 of 101.
-- The integration tree's `docs/IMPLEMENTATION_BACKLOG.md` (Markdown, not joined; now
+- The integration tree's `docs/implementation-backlog.md` (Markdown, not joined; now
   133,059 bytes) at 1 % steps: 101 of 101. Five settled at the nearest view beside whole
   tables, as before this change: 18 % at 0.1740, 19 % at 0.1923, 42 % and 43 % at
   0.4144, and 68 % at 0.6783.

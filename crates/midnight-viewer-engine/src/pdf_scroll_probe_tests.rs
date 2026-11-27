@@ -2,7 +2,7 @@
 //! without both variables it returns at once. `MIDNIGHT_PDF_VIEWER_TEST_APPLICATION` names
 //! a trusted private installation and `MIDNIGHT_PDF_SCROLL_FIXTURES` a directory holding
 //! `report-3.pdf` and `report-300.pdf` (written by the PDF plugin's `render_probe
-//! --write`). See docs/developer/VIEWER_SCROLLING.md.
+//! --write`). See docs/developer/viewer-scrolling.md.
 //!
 //! A wheel flick and a scrollbar drag are paced at 60 Hz for 1.5 s each. With retained
 //! tiles the probe plays the UI's tiled camera: the view moves to the wanted position on a

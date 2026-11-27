@@ -284,7 +284,7 @@ impl TransferDirectoryLinkMoveCapture for Capture {
             })?;
             // Windows takes the link out of its folder when this, its only deleting
             // handle, closes; then its absence is checked and the folder saved, before the
-            // removal is reported (TRANSFERS.md, "Move durability on Windows").
+            // removal is reported (transfers.md, "Move durability on Windows").
             drop(held.take());
             drop(held);
             *state = State::Removed {

@@ -64,7 +64,7 @@ subsection. Parent reviewed this independent implementation scope on 9 November.
 ### Task 2: Packaging and claims
 
 **Files:** plugin README.md/THIRD-PARTY.md; parent owns global inventory and
-IMAGE_VIEWER_API.md.
+image-viewer-api.md.
 
 - [x] Inspect exact MIT license files; retain default enabled codec feature set.
 - [x] Update plugin explanation and license choice; provide registry/config paths

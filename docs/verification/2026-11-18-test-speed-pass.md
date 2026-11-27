@@ -132,7 +132,7 @@ design and scenario, median / slowest of the 54 producer times in ms
 
 ### Linux-only worker platform files
 
-[Test execution](../developer/TEST_EXECUTION.md) keeps one binary per file in this crate
+[Test execution](../developer/test-execution.md) keeps one binary per file in this crate
 because its tests change or inspect process-wide containment. The three Linux-only files
 do so only in a re-executed child: the spool owner test marks its child non-dumpable and
 the worker policy test lowers its child's CPU limit; both children now select their test

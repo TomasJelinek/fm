@@ -21,7 +21,7 @@ component ListView inherits ScrollView {
     callback user-scrolled();
 
     // Every band the viewport intersects is drawn, also one cut by an edge, so
-    // no offset leaves a blank band (docs/developer/SCROLLING.md).
+    // no offset leaves a blank band (docs/developer/scrolling.md).
     private property <int> first-band: floor(-root.content-y / root.row-height);
     private property <int> past-band: ceil((root.visible-height - root.content-y) / root.row-height);
 

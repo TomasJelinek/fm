@@ -53,7 +53,7 @@ impl Budget {
     /// a member renews the budget with every acknowledged append or progress report.
     ///
     /// Listings: the design target is a folder of 1,000,000 members, which the host
-    /// keeps in about 186 bytes per member plus its names (FILESYSTEM_API.md). Ten
+    /// keeps in about 186 bytes per member plus its names (filesystem-api.md). Ten
     /// million members or 2 GiB is ten times the target with long names; the worker's
     /// own 1 GiB index holds at most about nine million TAR members.
     pub(super) const DEFAULT: Self = Self {

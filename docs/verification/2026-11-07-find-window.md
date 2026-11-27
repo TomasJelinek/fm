@@ -1,7 +1,7 @@
 # Modeless Find qualification
 
 Implemented native Windows/Linux search is described in
-[FIND.md](../developer/FIND.md). This report qualifies backend and Slint software
+[find.md](../developer/find.md). This report qualifies backend and Slint software
 window behavior; a rebuilt installed application/native desktop pass remains
 separate. The existing installed release is not claimed to include these changes.
 

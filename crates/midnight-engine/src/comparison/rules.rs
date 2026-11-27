@@ -1,5 +1,5 @@
 //! How Compare directories judges one same-named pair (Open Salamander's rules,
-//! docs/developer/COMPARE_DIRECTORIES.md): names, size, time with tolerance and
+//! docs/developer/compare-directories.md): names, size, time with tolerance and
 //! daylight saving shifts, attributes, and when contents must be read.
 use midnight_core::{
     CompareDetail, CompareFlags, CompareIgnoreMasks, CompareOptions, EntryMetadata, FilterMode,

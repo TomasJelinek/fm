@@ -254,9 +254,9 @@ component InfoRow inherits HorizontalLayout {
 // Slint's attribution, cropped to its Made with Slint pill: the widget's padding and the
 // version and address under the pill are left out, so the pill fits the tab row and lines
 // up with the dialog's content edge. The attribution stays visible whichever of Slint's
-// licenses applies (DEPENDENCY_POLICY.md). The covering TouchArea keeps a click from
+// licenses applies (dependency-policy.md). The covering TouchArea keeps a click from
 // opening its link: Slint would start the browser with std::process::Command on the UI
-// thread, outside the process-creation lock (WORKER_SDK.md).
+// thread, outside the process-creation lock (worker-sdk.md).
 component SlintBadge inherits Rectangle {
     // The pill's height, at most the 48 px box the widget gives its logo.
     in property <length> pill-height: 32px;

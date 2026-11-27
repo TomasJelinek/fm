@@ -5,7 +5,7 @@ shows native filesystem/root/label/source when available, exact and readable
 total/used/free/user-available capacity, conservative storage classification and
 reported filesystem properties. Inside archives it identifies the hosting native
 container. Used space subtracts filesystem-free space, preserving the distinction
-between free space and caller quota availability. See [the contract](../DRIVE_INFORMATION.md).
+between free space and caller quota availability. See [the contract](../drive-information.md).
 
 The actor permits one active native query and one coalesced latest request.
 Request, pane, navigation, raw path, complete archive address and notice occurrence

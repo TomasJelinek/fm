@@ -50,7 +50,7 @@ never patches application sources. Missing/invalid packages expose no image feat
 Ctrl+F12 already supports persistent per-panel masks and bounded Rust regexes.
 Semicolon-separated inclusion masks and `|` exclusions are supported; directories
 stay visible in those two modes. The later metadata Expression implementation
-also evaluates folders; see [the current syntax](../../developer/METADATA_FILTERS.md).
+also evaluates folders; see [the current syntax](../../developer/metadata-filters.md).
 
 Add Options > Colors with ordered enabled rules using the same mask/regex syntax,
 case option and backend compiler. First matching rule wins. Set a base foreground
@@ -121,6 +121,6 @@ validation. Downsample filtering and PDF rasterization retain their own paths.
 Transparent tiles outside the
 image are generated in the backend without decoder IPC; boundary tiles use normal
 sampling. Complete camera coverage, bounded memory, stale-response rejection and
-source validation remain required. See the [image API](../../developer/IMAGE_VIEWER_API.md)
+source validation remain required. See the [image API](../../developer/image-viewer-api.md)
 for the implementation contract and [verification](../../verification/2026-11-11-image-opening-zoom.md)
 for the focused regression and native before/after evidence.

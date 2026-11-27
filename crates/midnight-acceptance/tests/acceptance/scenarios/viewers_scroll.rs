@@ -474,7 +474,7 @@ fn native_notch(
 /// One native notch down, one up and a burst of five, from the middle of the content,
 /// with `notch` pixels expected per notch. A movement that comes to rest short of its
 /// distance is watched for [`LATE_LIMIT`] more: the remaining distance may wait at the
-/// edge of the prepared pixels for a refill (VIEWER_SCROLLING: an uncovered frontier
+/// edge of the prepared pixels for a refill (viewer-scrolling.md: an uncovered frontier
 /// pauses displayed motion until usable pixels arrive). What happened then is returned
 /// with the travels, which count to the first rest.
 fn notch_travel(

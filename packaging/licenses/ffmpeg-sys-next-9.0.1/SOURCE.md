@@ -10,7 +10,7 @@ original manifest/VCS provenance present in the resolved package source.
 - Published source: <https://crates.io/api/v1/crates/ffmpeg-sys-next/9.0.1/download>
 - Pinned crate SHA-256: `c6f932d8c1cede016c65d4f1435f323369c99c74df55143b18676aa10e7603f9`
 - Canonical license text: <http://www.wtfpl.net/txt/copying/>
-- Existing pinned-source review: `docs/THIRD_PARTY.md`, Distribution notices;
+- Existing pinned-source review: `docs/third-party.md`, Distribution notices;
   `docs/verification/2026-11-06-thumbnail-progress.md`, Verified native acquisition and notices.
 
 This supplement applies only to that crate version with its WTFPL declaration.

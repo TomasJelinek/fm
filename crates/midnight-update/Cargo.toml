@@ -9,7 +9,7 @@ license.workspace = true
 autotests = false
 
 # Update checks, signed downloads, staging and the installation swap
-# (docs/developer/UPDATES.md). The only network code of the application.
+# (docs/developer/updates.md). The only network code of the application.
 [dependencies]
 minisign-verify = "=0.3.0"
 semver = "=1.0.28"

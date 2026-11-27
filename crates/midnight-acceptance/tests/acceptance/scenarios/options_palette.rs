@@ -1,5 +1,5 @@
 //! The filename colour palette as rendered and as migrated (docs/developer/
-//! FILENAME_COLOR_OPTIONS.md):
+//! filename-color-options.md):
 //!
 //! - Source code (`.rs`) is sky blue `#23AAF2`; word-processor documents (`.docx`) and
 //!   text and Markdown (`.txt`, `.md`) are blue `#3B82F6`. Each name's rendered glyph

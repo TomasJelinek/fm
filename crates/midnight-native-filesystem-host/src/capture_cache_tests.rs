@@ -67,7 +67,7 @@ impl Transport for ContentTransport {
                 let bytes = BYTES[*offset as usize..end as usize].to_vec();
                 let eof = end == state.length;
                 // Model the required native SDK contract: native/content.rs validates
-                // before and after reading, as documented in NATIVE_PLUGIN_PROTOCOL.md.
+                // before and after reading, as documented in native-plugin-protocol.md.
                 if state.change_after_read {
                     state.revision = vec![2];
                 }

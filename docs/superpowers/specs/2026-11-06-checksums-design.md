@@ -4,12 +4,12 @@
 verification from SFV/MD5/SHA-1/SHA-256/SHA-512 files, including GNU/BSD records
 and hash-only sidecars. Native Open/Save dialogs and a Verify file page share the
 existing modeless window. The older exclusions of CRC32/import below are historical
-milestone scope; the [current API](../../developer/CHECKSUMS.md) supersedes them.
+milestone scope; the [current API](../../developer/checksums.md) supersedes them.
 See the [implementation plan](../plans/2026-11-08-checksum-files.md).
 
 Date: 6 November 2026. **Implementation update, 7 November:** the native backend
 and actor are implemented and verified; modeless UI integration and qualification
-are in progress. See [the current API contract](../../developer/CHECKSUMS.md)
+are in progress. See [the current API contract](../../developer/checksums.md)
 and [backend evidence](../../verification/2026-11-07-checksum-backend.md).
 The remaining sections preserve the design baseline and proposed follow-ups;
 they are not a claim that every proposal is already released. The workflow follows
@@ -19,7 +19,7 @@ editor. Those existing operations are not reassigned.
 
 This design follows [security requirements](../../../SECURITY.md),
 [code style](../../../CODE_STYLE.md), the
-[dependency policy](../../DEPENDENCY_POLICY.md), and the
+[dependency policy](../../dependency-policy.md), and the
 [main architecture](2026-11-04-dual-pane-file-manager-design.md). Numerical bounds
 and defaults below are design proposals to validate during implementation, not
 claims of existing performance or interfaces.
@@ -194,9 +194,9 @@ same instructions. The public manifests identify optional assembly dependencies;
 they are not required for the proposed feature set.
 
 Every dependency must permit development, use and distribution without mandatory
-fees/subscriptions/royalties, under [project policy](../../DEPENDENCY_POLICY.md).
+fees/subscriptions/royalties, under [project policy](../../dependency-policy.md).
 Before adding either candidate, inspect its distributed licence texts, update
-the [inventory](../../THIRD_PARTY.md) and all affected distribution notices, and
+the [inventory](../../third-party.md) and all affected distribution notices, and
 run the actual target builds/advisory checks. This document adds no dependency,
 selects no paid licence and changes no project licence. Candidate versions may
 change during that review; algorithm and file-format behavior must remain stable.

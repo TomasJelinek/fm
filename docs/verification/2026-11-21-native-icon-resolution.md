@@ -6,7 +6,7 @@ The user's report: in the Thumbnails view of `C:\Windows\System32` at a high
 display scale, every icon was visibly pixelated. Tiles are about 216 device pixels
 there (96 px at 225 %), and each icon was a small bitmap enlarged to that size.
 This record covers the fix on Windows and Linux, its tests and a measurement. The
-contract is in [native icons](../developer/NATIVE_ICONS.md).
+contract is in [native icons](../developer/native-icons.md).
 
 Source: commit `2b901122` plus the icon change's files only, built in an isolated
 export (`git archive` of `2b901122` with the changed files copied in; `protocol.rs`,
@@ -70,7 +70,7 @@ without this request. No package, version, licence or notice changes, `Cargo.loc
 unchanged (every build used `--locked`), and the Linux SVG path uses the existing resvg
 0.48.1 with its features unchanged. The capture and the package's
 `resolve.nodes[].features` are kept in `_build/qa/native-icons-20261121/`; see
-[third-party inventory](../THIRD_PARTY.md).
+[third-party inventory](../third-party.md).
 
 ## Probe of the system image lists
 

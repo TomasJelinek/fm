@@ -2,7 +2,7 @@
 //!
 //! Generation is deterministic: the same [`Scale`] and seed produce byte-identical
 //! files (timestamps aside), so a failure can be reproduced from the report. The
-//! catalogue is documented in docs/developer/ACCEPTANCE.md; keep the two in step.
+//! catalogue is documented in docs/developer/acceptance.md; keep the two in step.
 use super::encode::{self, Member};
 use std::{
     fs,

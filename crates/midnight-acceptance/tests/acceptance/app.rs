@@ -5,7 +5,7 @@
 //! Engine services where they work headless, `install_with_owned`, the owned command
 //! scope, the event pump of its `backend_ready` callback and its startup deadline for a
 //! slow settings read. Differences, all deliberate and documented in
-//! docs/developer/ACCEPTANCE.md: settings are in memory (the user's profile is never read
+//! docs/developer/acceptance.md: settings are in memory (the user's profile is never read
 //! or written), browsing uses the host-native `LocalFileSystem` service rather than the
 //! installed native filesystem plugin, the clipboard is an opt-in in-process one
 //! (`Config::clipboard`), the desktop service is an opt-in stand-in that records its

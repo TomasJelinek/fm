@@ -3,7 +3,7 @@
 The source implementation adds Masks/Regex/Expression matching, live scanned
 directory status, five sortable columns and one compact row per result. Native
 search remains read-only; content matching remains literal UTF-8. No dependencies
-or saved settings were added by this slice. See [FIND.md](../developer/FIND.md).
+or saved settings were added by this slice. See [find.md](../developer/find.md).
 
 The directory slot is updated before native root open/enumeration, and sampled
 by the async controller at most four times per second while the worker can be

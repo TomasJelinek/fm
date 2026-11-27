@@ -6,8 +6,8 @@ implementované. Nativní Windows/Linux filesystémy dosud tvoří interní crat
 jejich převod na nezávislé pluginy ještě zbývá. Interní registr už zavádí typované
 identity, odvolatelné čtecí lease a přechodové adaptéry native/archive; produkční
 panely a zápisové operace se na něj dosud nepřevedly. Kontrakt a zbývající kroky
-popisuje [provider registry](../../developer/PROVIDER_REGISTRY.md).
-Aktuální rozsah a důkazy sleduje [implementační přehled](../../IMPLEMENTATION_BACKLOG.md).
+popisuje [provider registry](../../developer/provider-registry.md).
+Aktuální rozsah a důkazy sleduje [implementační přehled](../../implementation-backlog.md).
 Navazuje na [hlavní architekturu](2026-11-04-dual-pane-file-manager-design.md)
 a [původní viewer/VFS návrh](2026-11-04-viewer-vfs-design.md).
 Tento dokument určuje registraci, binární hranici a balení. Novější

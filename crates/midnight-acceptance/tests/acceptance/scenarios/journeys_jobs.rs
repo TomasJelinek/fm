@@ -8,7 +8,7 @@
 //! 3. Shift+F8 of `doomed/` (a tree) in the same panel: no question; it waits queued and
 //!    deletes nothing while the copy stays paused. A Delete holds the whole namespace,
 //!    and every transfer keeps its namespace share until it ends, paused or not
-//!    (`docs/developer/OPERATION_PROGRESS.md`, "Admission policy and waits").
+//!    (`docs/developer/operation-progress.md`, "Admission policy and waits").
 //! 4. Jobs lists the paused copy, the completed copy and the queued delete.
 //! 5. Resume: the first copy completes; its window closes; then the delete completes;
 //!    both copies equal their sources, the sources are unchanged, `doomed/` is gone; no

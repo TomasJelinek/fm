@@ -1,4 +1,4 @@
-//! A Copy job's private staging folder in one destination folder (WIN-8; TRANSFERS.md,
+//! A Copy job's private staging folder in one destination folder (WIN-8; transfers.md,
 //! "Verification and ownership"). The folder is created in one namespace turn before the
 //! job's first stage there, as a `.midnight-recovery-*` directory is, and its private pin
 //! covers everything below it: stages are created in it through its handle outside any

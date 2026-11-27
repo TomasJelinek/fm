@@ -20,7 +20,7 @@ The current executable contract is filesystem API 0.4, explicit protocol 3.
 It preserves protocol-2 staging records and adds request-local cancellation at
 validated member staging/progress checkpoints. Legacy protocol-1/2 behavior and
 default protocol-1 helper bytes remain unchanged. See the
-[current cancellation contract](../../developer/FILESYSTEM_API.md) and
+[current cancellation contract](../../developer/filesystem-api.md) and
 [MEDIA-01 evidence](../../verification/2026-11-10-archive-thumbnails.md). SourceRead is valid during
 any operation. Host stages support bounded append/ack, seal, scratch reads and a
 terminal ContentReady range; IDs never expose a path or native handle. Sealed
@@ -329,7 +329,7 @@ preflight where adequate (ZIP/7z top-level sizes) and obtain narrowly scoped
 upstream/pinned-source limit support for encoded 7z header and decoder allocations.
 Do not write a second general-purpose archive parser in the host. Any patched
 dependency version/source must receive the license, checksum, notices and isolated
-package review required by `docs/DEPENDENCY_POLICY.md` before shipment.
+package review required by `docs/dependency-policy.md` before shipment.
 
 The raster JPEG issue is separate. `image 0.25.10`'s JpegDecoder first calls
 `read_to_end`; the already pinned zune-jpeg 0.5.15 accepts `ZByteReaderTrait`, and
@@ -375,7 +375,7 @@ and Unicode/raw identity contracts. Do not copy its pathname or MAX_PATH limits.
    draining. Metadata/dictionary qualification is part of this step, not deferred
    until after source limits are raised in production.
 6. Host sandbox acceptance, large-source/RAM/disk measurement, docs and release
-   packaging. Update IMAGE_VIEWER_API.md, ARCHIVE_FORMATS.md and archive developer
+   packaging. Update image-viewer-api.md, archive-formats.md and archive developer
    docs with measured behavior and any remaining per-format limits.
 
 The JPEG adapter can be implemented/tested independently inside

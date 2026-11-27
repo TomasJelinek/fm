@@ -60,7 +60,7 @@ Content that is not drawn is skipped, never refused, and named in the note that
   damaged, or exceed a raster limit or the shared budget.
 
 The note is computed and tested, but image viewer API 0.4.0 cannot carry it to the
-status line yet (VIEW-06 in the [backlog](../../docs/IMPLEMENTATION_BACKLOG.md)).
+status line yet (VIEW-06 in the [backlog](../../docs/implementation-backlog.md)).
 
 A document that is malformed or over a bound is refused with the exact reason and
 bound. Damage is a fragment that continues the host's "This image is damaged or

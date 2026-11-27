@@ -407,7 +407,7 @@ pub fn html_viewer_missing() -> Option<String> {
     (!missing.is_empty()).then(|| {
         format!(
             "the HTML viewer's browser cannot load on this machine: the system libraries {} \
-             are missing (docs/SYSTEM_REQUIREMENTS.md names them)",
+             are missing (docs/system-requirements.md names them)",
             missing.join(", ")
         )
     })
@@ -423,7 +423,7 @@ fn html_viewer_package() -> Option<PathBuf> {
 }
 
 /// On Linux, the shared libraries the HTML viewer's browser and its helpers link that
-/// the dynamic loader cannot find (docs/SYSTEM_REQUIREMENTS.md: NSS, NSPR, ALSA and
+/// the dynamic loader cannot find (docs/system-requirements.md: NSS, NSPR, ALSA and
 /// more), sorted; empty elsewhere, without the package, or when `ldd` is unavailable.
 /// Decided once per process.
 pub fn html_viewer_missing_libraries() -> Vec<String> {

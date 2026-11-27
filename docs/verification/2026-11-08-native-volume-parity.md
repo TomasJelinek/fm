@@ -12,7 +12,7 @@ The optional `volume-details` capability (64) adds VolumeLabel (15) and
 VolumeInformation (16), with reply tags 12 and 13. Existing adapters inherit
 Unsupported defaults; old plugins remain compatible. Old hosts reject the unknown
 manifest capability before loading a newer package. See
-[the protocol](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md) for exact wire order,
+[the protocol](../../filesystem-api/native-plugin-protocol.md) for exact wire order,
 limits, raw text semantics and capability negotiation.
 
 Returned roots and textual metadata preserve raw UTF-16/Unix bytes. Physical total,

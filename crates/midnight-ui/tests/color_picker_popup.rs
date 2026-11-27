@@ -246,7 +246,7 @@ fn picker_footer_stays_visible_and_controls_scroll_at_the_minimum_window_size() 
         // The palette keeps one whole swatch row beside the fixed footer. Touch
         // density at 32px cannot: its 45px title, two 46px footer rows and a
         // 46px swatch row need 9px more than the 320x200 popup has. This is the
-        // known limit in DIALOG_ERGONOMICS.md; drop the exception with its fix.
+        // known limit in dialog-ergonomics.md; drop the exception with its fix.
         if (density, font) != (1, 32) {
             h.inside("RGB 239, 68, 68");
         }

@@ -6,8 +6,8 @@ Enter/double-click navigation. The backend model and Slint disclosure widget
 exist, but the production panel still renders flat rows. This plan does not
 redefine completion as model tests or disclosure artwork alone.
 
-Authority: `docs/developer/INLINE_TREES.md`, TREE-01/FILTER-01/VFS-01 in
-`docs/IMPLEMENTATION_BACKLOG.md`, and the user's approved inline-branch behavior.
+Authority: `docs/developer/inline-trees.md`, TREE-01/FILTER-01/VFS-01 in
+`docs/implementation-backlog.md`, and the user's approved inline-branch behavior.
 The filesystem backend baseline is committed as `9df66c5`; the current working
 tree contains further reviewed application composition and tree primitives.
 

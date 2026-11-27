@@ -238,7 +238,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertIn(f"the run folders {runs} are on {self.root} (unqualified by "
                       "MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME)", result.stderr)
         self.assertIn("opaque lane", result.stderr)
-        self.assertIn('docs/developer/TEST_EXECUTION.md, "Windows Copy/Move qualification volume"',
+        self.assertIn('docs/developer/test-execution.md, "Windows Copy/Move qualification volume"',
                       result.stderr)
         # Nothing ran and nothing was made: no installation, no run folder, no record.
         self.assertFalse(record.exists())

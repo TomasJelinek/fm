@@ -9,7 +9,7 @@ Reviewed General, Appearance, Keyboard, Editors, Plugins, Previews, Archives,
 Colors and Custom Commands; Rename/Create/Delete/Copy/Move and conflicts;
 Attributes/Times/Case; Find; Checksums; Jobs; Make File List; Hot Paths; panel
 filter and directory comparison; Help/About/Notices; viewers and file comparison.
-The shared design contract is [Dialog ergonomics](../developer/DIALOG_ERGONOMICS.md).
+The shared design contract is [Dialog ergonomics](../developer/dialog-ergonomics.md).
 
 ## Changes
 

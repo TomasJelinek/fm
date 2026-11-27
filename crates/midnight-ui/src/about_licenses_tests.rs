@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::HashSet;
 
-/// Each shipped scope's own lockfile, as `docs/THIRD_PARTY.md` lists the manifests.
+/// Each shipped scope's own lockfile, as `docs/third-party.md` lists the manifests.
 const LOCKFILES: [(&str, &str); 14] = [
     ("app", include_str!("../../../Cargo.lock")),
     (
@@ -184,7 +184,7 @@ fn every_listed_library_is_pinned_by_the_lockfile_of_each_component_that_ships_i
             assert!(
                 lock.contains(&(name.clone(), version.clone())),
                 "the inventory is out of date: {scope} no longer pins {name} {version}; \
-                 regenerate docs/dependencies (docs/THIRD_PARTY.md)"
+                 regenerate docs/dependencies (docs/third-party.md)"
             );
         }
     }
@@ -193,8 +193,8 @@ fn every_listed_library_is_pinned_by_the_lockfile_of_each_component_that_ships_i
 
 #[test]
 fn bundled_components_match_their_records() {
-    let third_party = include_str!("../../../docs/THIRD_PARTY.md");
-    let themes = include_str!("../../../docs/THEME_PROVENANCE.md");
+    let third_party = include_str!("../../../docs/third-party.md");
+    let themes = include_str!("../../../docs/theme-provenance.md");
     let records = [
         (
             "Rust standard library",

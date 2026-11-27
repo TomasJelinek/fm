@@ -1,8 +1,8 @@
 # Bounded requirements-gap audit, 11 November 2026
 
 Baseline: `bc5c112` (clean checkout before this audit). This is a read-only
-comparison of current source and tests with `FEATURE_STATUS.md`,
-`IMPLEMENTATION_BACKLOG.md`, and the linked accepted designs/plans. No Cargo,
+comparison of current source and tests with `feature-status.md`,
+`implementation-backlog.md`, and the linked accepted designs/plans. No Cargo,
 application execution, native operation, or benchmark was run. “Proven” below means
 the cited source establishes the implementation boundary; it does not mean a new
 runtime test passed. Viewer scrolling is owned by the separate investigation.
@@ -38,19 +38,19 @@ permission or general design restart is needed.
 
 These are **unverified**, not evidence that the implementation is broken:
 
-- **Actual integrated archive Hot Paths:** baseline `FEATURE_STATUS.md:161` and
+- **Actual integrated archive Hot Paths:** baseline `feature-status.md:161` and
   backlog line 134 still require a real-plugin menu/shortcut, application restart,
   unavailable-provider and changed-source workflow. Source/presenter persistence
   tests are narrower than the full installed workflow.
-- **Final Slint application → Explorer drag:** `FEATURE_STATUS.md:35` and
+- **Final Slint application → Explorer drag:** `feature-status.md:35` and
   `verification/file-drag-drop.md:165` explicitly distinguish successful owned
   native/Shell probes from a final application-to-running-Explorer gesture.
 - **Live SMB/FUSE and native Linux desktop:** network verification's Limits section
-  explicitly excludes live SMB interoperability; `SYSTEM_REQUIREMENTS.md:15–19`
+  explicitly excludes live SMB interoperability; `system-requirements.md:15–19`
   retains Mint/Fedora/openSUSE/macOS qualification, separate from WSL checks.
   Archive thumbnail verification lines 193 onward retains Linux execution,
   physical panel interaction and large/all-format cache qualification.
-- **Adverse transfer environments:** `developer/OPERATIONS_REAL_QA.md:81–100`
+- **Adverse transfer environments:** `developer/operations-real-qa.md:81–100`
   explains that disk-full and partial-write errors are injected, not a real filled
   volume or physical disconnect, and that that particular target does not prove
   actual cross-volume Move. Other Shell tests do cover cross-volume outcomes.
@@ -62,7 +62,7 @@ These are **unverified**, not evidence that the implementation is broken:
 
 ## Baseline stale statements corrected or excluded from the work queue
 
-- `FEATURE_STATUS.md:135` says Unix symbolic/octal permissions remain. Current
+- `feature-status.md:135` says Unix symbolic/octal permissions remain. Current
   `midnight-ui/src/detail_attributes/linux.rs:12` implements them, including
   special bits and tests at line 48; `presenter/panel_details.rs:152` uses them.
 - Backlog line 152 says compact errors use plain text and need a close control.
@@ -84,7 +84,7 @@ These are **unverified**, not evidence that the implementation is broken:
   Keep them as separate later scope, not an invented failure of the implemented
   validated Go-to-file workflow.
 
-No production or test source was changed by this audit. This report was added, and the inspected stale statements in FEATURE_STATUS.md and IMPLEMENTATION_BACKLOG.md were corrected without claiming new runtime qualification.
+No production or test source was changed by this audit. This report was added, and the inspected stale statements in feature-status.md and implementation-backlog.md were corrected without claiming new runtime qualification.
 
 ## Subsequent implementation on 11 November
 

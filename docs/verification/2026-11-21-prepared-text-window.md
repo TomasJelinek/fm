@@ -38,7 +38,7 @@ Measured before the change (release, co-simulation below, 60 px notch):
 
 ## Design
 
-The [prepared text window](../developer/SCROLLING.md#prepared-text-window) keeps the
+The [prepared text window](../developer/scrolling.md#prepared-text-window) keeps the
 text prepared several screens around the window as world-aligned strips of 256 rows,
 each painted once and then reused:
 

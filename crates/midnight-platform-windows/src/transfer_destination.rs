@@ -255,7 +255,7 @@ impl TransferDirectory for Directory {
             directory_merge: true,
             conditional_overwrite: false,
             recoverable_replacement: recovery::supported(self),
-            // A link is published only without replacing anything (TRANSFERS.md, "Links
+            // A link is published only without replacing anything (transfers.md, "Links
             // in Copy and Move"): an existing name is skipped or renamed.
             link_replacement: false,
         }

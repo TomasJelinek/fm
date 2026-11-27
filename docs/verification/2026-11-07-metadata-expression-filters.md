@@ -4,7 +4,7 @@ Scope: Expression mode alongside existing panel Masks/Regex, backend validation
 and immutable projection, preference schema 18, and the filter dialog. No new
 dependencies, filesystem reads during evaluation, scripts or live preference
 changes were introduced. The language and missing-value semantics are described
-in [METADATA_FILTERS.md](../developer/METADATA_FILTERS.md).
+in [metadata-filters.md](../developer/metadata-filters.md).
 
 ## Causal tests
 

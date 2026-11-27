@@ -9,7 +9,7 @@ the original position does not save. No gesture launches an external command.
 The list scrolls near its visible edges. Escape, right-click, pointer cancellation,
 closing Options, configuration changes and an outside drop cancel the gesture.
 An unapplied form draft prevents reordering. Up/Down buttons remain available.
-See [the settings contract](../developer/USER_COMMAND_SETTINGS.md) and
+See [the settings contract](../developer/user-command-settings.md) and
 [the implementation plan](../superpowers/plans/2026-11-07-command-settings-drag-reorder.md).
 
 ## Regressions and review

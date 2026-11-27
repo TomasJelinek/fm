@@ -128,7 +128,7 @@ passed **1**, failed **0** in
 `_build/viewer-find-polish/source-position-native.log`.
 The dependency inventory records the pinned compiler/helper licenses and that
 all **615** resolved package/version/source/checksum identities remain unchanged;
-only direct-dependant edges changed. See `docs/THIRD_PARTY.md`.
+only direct-dependant edges changed. See `docs/third-party.md`.
 
 ### HTML timing evidence and pending work
 
@@ -195,4 +195,4 @@ These narrow passes do not qualify all Copy/Move workflows or Linux behavior.
   establish that the operating system property sheet was displayed.
 - The full suite, packaged executable, Linux behavior and the remaining backlog
   are not qualified by this checkpoint. The earlier screenshot follow-up and
-  all 54 retained requirements remain open in `ACTIVE_WORK.md`.
+  all 54 retained requirements remain open in `active-work.md`.

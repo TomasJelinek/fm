@@ -650,7 +650,7 @@ jobs:
       - name: Native viewer open, viewport, search and quiescent close
         run: python -B scripts/ci-workspace-tests.py run midnight-plugin-host lib --ignored
       # The native CEF Office/HTML tests are manual qualifications (trusted CEF installation;
-      # FEATURE_STATUS.md).
+      # feature-status.md).
       - name: Native viewer engine rendering, search, copy, mode and file-cycle integration
         run: python -B scripts/ci-workspace-tests.py run midnight-viewer-engine lib --ignored --nocapture --skip office_preview::native_tests
       - name: Installed native filesystem browse, read, volumes and absence checks
@@ -684,7 +684,7 @@ jobs:
       - name: Restricted PDF process pagination, source validation and cancellation
         run: python -B scripts/ci-workspace-tests.py run midnight-image-viewer-host test:pdf_native --ignored --test-threads=1
       # Listing archives of millions of members is a manual measurement with archives that
-      # the archive plugin's measure_index_memory generates (TEST_EXECUTION.md).
+      # the archive plugin's measure_index_memory generates (test-execution.md).
       - name: Restricted archive worker listing, source validation and cancellation
         run: python -B scripts/ci-workspace-tests.py run midnight-filesystem-host test:worker --ignored --test-threads=1 --skip real_sandboxed_worker_lists_archives_of_millions_of_members
       - name: Restricted archive workers open archives inside archives
@@ -757,7 +757,7 @@ jobs:
         shell: pwsh
         run: |
           # The explorer records the SHA-256 of the authorization helper it ships with
-          # (RELEASE_BUILD.md): the helper first, then both with the variable naming it.
+          # (release-build.md): the helper first, then both with the variable naming it.
           cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --release --locked
           if ($LASTEXITCODE -ne 0) { throw 'Authorization helper build failed' }
           $helper = if ($IsWindows) { 'midnight-elevated-listing.exe' } else { 'midnight-elevated-listing' }
@@ -800,7 +800,7 @@ jobs:
       # The Windows MSI installed for real on this disposable runner (an administrator):
       # built from a release-shaped ZIP of this build and its plugin packages, ICE-validated,
       # then installed, upgraded, repaired and removed in both scopes, and over the
-      # published per-user MSIs (scripts/test-msi-install.py; RELEASE_BUILD.md).
+      # published per-user MSIs (scripts/test-msi-install.py; release-build.md).
       - name: MSI of a release-shaped ZIP of this build and its ICE validation
         if: runner.os == 'Windows'
         shell: pwsh

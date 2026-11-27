@@ -36,7 +36,7 @@ and preserved the source; the unchanged test succeeded outside that restriction.
 Logs: `recycle-native.log` and `recycle-desktop.log`. This is an environment
 distinction, not a production workaround or permission relaxation.
 
-Detailed fixture expectations: [real operation QA](../developer/OPERATIONS_REAL_QA.md).
+Detailed fixture expectations: [real operation QA](../developer/operations-real-qa.md).
 
 ## Verified Find backend
 

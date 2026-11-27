@@ -3,7 +3,7 @@
 Six original palettes append stable IDs 17–22: Paper Contrast, Sandstone Contrast,
 Deep Ocean, Graphite Contrast, High Contrast Dark and High Contrast Light. The
 catalog now contains 23 entries. Existing IDs and the DOS-to-Amber migration are
-preserved. [Palette provenance](../THEME_PROVENANCE.md) records the contrast
+preserved. [Palette provenance](../theme-provenance.md) records the contrast
 targets and the limits of the palette-level accessibility checks.
 
 The top toolbar uses the semantic header background. Muted helper text in Blue,

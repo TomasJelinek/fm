@@ -137,7 +137,7 @@ come from development dependencies), and `cargo build -p midnight-ui`,
 own, which select no platform crate, so that zbus, fontdb and icu_collections resolve
 differently. The application's units are unchanged except `midnight-ui-input` and
 the crates that depend on it. No package, version or license changes
-([third-party record](../THIRD_PARTY.md)).
+([third-party record](../third-party.md)).
 
 ### 4. Test helpers were compiled once per test module
 

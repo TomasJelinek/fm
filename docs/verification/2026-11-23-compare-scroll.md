@@ -6,7 +6,7 @@ already used the shared wheel glide (`midnight_ui_input::WheelMotion` through
 `NativeScroll`), but the comparison handed every glide frame to its worker, which moved
 its text by whole rows and painted a new frame for each step. This record measures both
 before and after the change; the design is in
-[file comparison](../developer/FILE_COMPARISON.md#scrolling-text-and-bytes).
+[file comparison](../developer/file-comparison.md#scrolling-text-and-bytes).
 
 ## Method
 

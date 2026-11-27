@@ -21,7 +21,7 @@ checkpoint is recorded separately after the final integrated build.
 - Invalid native units and control characters remain distinguishable in error
   paths. An unavailable report or a storage/queue/viewer failure is explicit.
 
-The [developer contract](../developer/PANEL_DIAGNOSTICS.md) describes ownership,
+The [developer contract](../developer/panel-diagnostics.md) describes ownership,
 concurrency, cancellation and backing-file lifetimes. No dependency or plugin ABI
 change is introduced.
 

@@ -18,7 +18,7 @@ carry display state, indentation and context, without plugin-owned resources.
 filesystem and archive adapters, Slint virtualized panel rows. No new dependency.
 
 **Spec:** Stage 7 of `2026-11-05-follow-up-stages.md`, TREE-01 and FILTER-01 in
-`../../IMPLEMENTATION_BACKLOG.md`; VFS identity and selection security contracts.
+`../../implementation-backlog.md`; VFS identity and selection security contracts.
 
 ## Global constraints
 

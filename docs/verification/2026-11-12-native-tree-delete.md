@@ -37,7 +37,7 @@ provider registrations and capture permits are released. Rejected/replayed input
 queue-input disposal and cancellation use backend retirement, including an async-abort
 ownership guard for those inputs. The existing forced-shutdown ownership gap for
 already prepared/running jobs remains separately tracked as LIFE-01 in the
-[backlog](../IMPLEMENTATION_BACKLOG.md); this work does not claim that gap is fixed.
+[backlog](../implementation-backlog.md); this work does not claim that gap is fixed.
 
 Capture is not a filesystem snapshot. Native identity starts at ordinary preparation.
 The selected topmost roots are pinned; their recursively visited descendants are

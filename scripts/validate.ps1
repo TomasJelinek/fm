@@ -11,7 +11,7 @@ Each step runs in its own PowerShell 7 process (Windows PowerShell 5.1 when Powe
 is not installed) and logs to _build\validate\logs\<run>\. A step whose prerequisite is
 missing is SKIPPED with the reason. Exit codes: 0 no step failed (with --strict: also
 none skipped for a missing prerequisite), 1 a step failed, 2 invalid arguments,
-127 cargo, rustc or Python 3.12+ is missing. See docs/developer/TEST_EXECUTION.md.
+127 cargo, rustc or Python 3.12+ is missing. See docs/developer/test-execution.md.
 #>
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -718,7 +718,7 @@ try {
     Add-Step @{ Id = 'x11-clipboard'; Job = 'check'; Title = 'Native X11 clipboard (isolated display)'; Platform = 'linux' }
     Add-Step @{ Id = 'host-build'; Job = 'release'; Title = "Host build ($profileName)"; Body = {
         # The explorer records the SHA-256 of the authorization helper it ships with
-        # (RELEASE_BUILD.md): the helper first, then both with the variable naming it.
+        # (release-build.md): the helper first, then both with the variable naming it.
         $profileFlag = if ($BuildProfile -eq 'release') { @('--release') } else { @() }
         cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked @profileFlag
         if ($LASTEXITCODE -ne 0) { throw 'Authorization helper build failed' }

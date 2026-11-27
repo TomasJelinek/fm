@@ -11,7 +11,7 @@ autotests = false
 [features]
 # Native-equivalent input for the acceptance harness's software windows
 # (src/acceptance_seams.rs). Only midnight-acceptance enables it; the application and
-# every other package build without it (docs/developer/SCROLLING.md).
+# every other package build without it (docs/developer/scrolling.md).
 acceptance-seams = []
 
 [dependencies]

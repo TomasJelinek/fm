@@ -7,7 +7,7 @@
 //! `on_winit_window_event` calls. This seam hands native-equivalent events to that same
 //! stored closure, forwards what the observer leaves alone to Slint as Winit's backend
 //! does, and sends the `RedrawRequested` that Winit sends before each frame. See
-//! docs/developer/SCROLLING.md ("Acceptance seam").
+//! docs/developer/scrolling.md ("Acceptance seam").
 use crate::{MainWindow, scroll_input::NativeObserver};
 use i_slint_core::{
     input::{BackendMouseEvent, TouchPhase as SlintPhase},

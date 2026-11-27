@@ -35,7 +35,7 @@ enum { ME_FS_RESOLVE=1, ME_FS_STAT=2, ME_FS_LIST_BEGIN=3, ME_FS_LIST_NEXT=4,
        ME_FS_PREPARE_RENAME=20, ME_FS_RENAME=21, ME_FS_GET_RENAME_STATE=22,
        ME_FS_CLOSE_RENAME=23, ME_FS_SIGN_IN=24 };
 
-/* FSBR payload values; NATIVE_PLUGIN_PROTOCOL.md gives each payload's field order. */
+/* FSBR payload values; native-plugin-protocol.md gives each payload's field order. */
 /* u16 response tags */
 enum { ME_FS_REPLY_UNIT=1, ME_FS_REPLY_RESOLVED=2, ME_FS_REPLY_NODE=3,
        ME_FS_REPLY_PAGE=4, ME_FS_REPLY_PARENT=5, ME_FS_REPLY_OPENED=6,

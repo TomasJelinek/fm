@@ -7,7 +7,7 @@ import { ActionButton } from "action-icons.slint";
 // With `clear-button` it is the dialogs' common edit, as the stock LineEdit
 // (HintedLineEdit) is, for fields that need its caret offsets or the theme's selection
 // colours: while it has the keyboard and text it shows the same inline clear ×
-// (docs/developer/DIALOG_ERGONOMICS.md, "Common edit").
+// (docs/developer/dialog-ergonomics.md, "Common edit").
 export component ThemedLineEdit inherits Rectangle {
     in-out property <string> text <=> edit.text;
     in property <bool> enabled: true;

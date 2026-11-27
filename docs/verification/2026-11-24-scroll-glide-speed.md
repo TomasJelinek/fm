@@ -60,7 +60,7 @@ the frame rate). The fix starts each glide at its input's own moment.
   50 ms: with a curve that leaves at speed, 50 ms would be half of the rest in one step.
 - Unchanged: a reverse notch drops the old direction's rest (a deliberate difference from
   Chromium and from Off), keyboard navigation, a scrollbar drag and focus loss still stop a
-  glide (the input contract in [SCROLLING.md](../developer/SCROLLING.md)), each frame counts
+  glide (the input contract in [scrolling.md](../developer/scrolling.md)), each frame counts
   at most 50 ms, and Off or Windows' Animation effects off move every input at once
   (`push_direct`).
 

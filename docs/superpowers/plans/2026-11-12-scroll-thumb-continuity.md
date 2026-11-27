@@ -12,7 +12,7 @@ rebuilds its bounded map; no history, source scanning, or extra provider request
 
 **Tech Stack:** Existing Rust renderer, core contracts, viewer engine, and Slint host.
 
-**Spec:** SCROLL-01 in docs/IMPLEMENTATION_BACKLOG.md and the BAT evidence in
+**Spec:** SCROLL-01 in docs/implementation-backlog.md and the BAT evidence in
 `docs/verification/2026-11-12-glyph-compositing.md`.
 
 ## Constraints and ownership

@@ -14,7 +14,7 @@ integration batch 10b: source `93d36411` plus commits `30118b08`, `08b6bbd3`,
 - Windows 11 Enterprise 10.0.26200, NTFS, Microsoft Defender real-time protection on.
 - WSL2 Ubuntu 24.04, ext4 (build label `l-10d`).
 - Rust toolchain 1.99.1, debug test profile. Windows runs used `TEMP` on the
-  qualified D: volume (see [Targeted test execution](../developer/TEST_EXECUTION.md)).
+  qualified D: volume (see [Targeted test execution](../developer/test-execution.md)).
 
 ## Before the change (`93d36411`)
 

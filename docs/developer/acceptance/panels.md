@@ -6,10 +6,10 @@ status of that check in the latest recorded run. The inventory follows the panel
 (`crates/midnight-ui/ui/file-pane.slint` and the controls it uses, `main.slint`,
 `shared-toolbar.slint`, the embedded dialogs, `crates/midnight-ui/src/presenter/`), the
 shortcut catalog (`crates/midnight-core/src/shortcuts/catalog.rs`) and the documents
-[KEYBOARD_SHORTCUTS.md](../../KEYBOARD_SHORTCUTS.md), [FEATURE_STATUS.md](../../FEATURE_STATUS.md),
-[MAKE_FILE_LIST.md](../../MAKE_FILE_LIST.md), [TREE_PANEL.md](../TREE_PANEL.md),
-[SELECTION.md](../SELECTION.md) and [PANEL_DIAGNOSTICS.md](../PANEL_DIAGNOSTICS.md). The
-suite itself is described in [ACCEPTANCE.md](../ACCEPTANCE.md).
+[keyboard-shortcuts.md](../../keyboard-shortcuts.md), [feature-status.md](../../feature-status.md),
+[make-file-list.md](../../make-file-list.md), [tree-panel.md](../tree-panel.md),
+[selection.md](../selection.md) and [panel-diagnostics.md](../panel-diagnostics.md). The
+suite itself is described in [acceptance.md](../acceptance.md).
 
 Statuses:
 

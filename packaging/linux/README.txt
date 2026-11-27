@@ -23,7 +23,7 @@ Use the graphics driver and Vulkan implementation supplied for your hardware.
 Ubuntu 23.10+ / Mint 22 deny Chromium's sandbox the user namespaces it needs. When
 the HTML viewer reports this, choose Install... in its notice: once an administrator
 authorizes it, it installs an AppArmor profile that lets this installation's HTML
-viewer use them (see SYSTEM_REQUIREMENTS.md). Never run a script from a folder that you
+viewer use them (see system-requirements.md). Never run a script from a folder that you
 own, such as this extracted one, with sudo: any program you run could have replaced
 it. To install the profile by hand, install system-wide first (below) and run the copy
 that only root can change. The permission serves one installation at a time:
@@ -51,7 +51,7 @@ transport, which has not been qualified on a compositor yet. --software is a
 diagnostic fallback with known bitmap-emoji limitations. System fonts must cover the
 displayed scripts.
 Fedora 44+ and openSUSE Leap 16/Tumbleweed are compatibility targets, but this
-preview has not been qualified on their native desktops. See SYSTEM_REQUIREMENTS.md.
+preview has not been qualified on their native desktops. See system-requirements.md.
 
 Optional per-user desktop installation from the extracted folder:
   install -Dm755 midnight-explorer "$HOME/.local/bin/midnight-explorer"
@@ -101,7 +101,7 @@ SECURITY.md (Update check).
 Releases up to 0.5.0 named the executable me. Settings stay where they were;
 install the desktop entry again as above and delete an earlier per-user copy,
 such as "$HOME/.local/bin/me".
-See FEATURE_STATUS.md, KEYBOARD_SHORTCUTS.md and SECURITY.md for capabilities/limits.
+See feature-status.md, keyboard-shortcuts.md and SECURITY.md for capabilities/limits.
 The complete distribution includes all six viewers (text/hex, source, Markdown,
 image, PDF and Chromium HTML), native/network/archive filesystems and both
 image/video thumbnailers. Keep their complete runtimes, sources and notices.

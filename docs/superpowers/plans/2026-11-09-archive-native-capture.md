@@ -14,8 +14,8 @@ compatibility; archive decoders remain independent and receive only bytes.
 **Tech Stack:** Existing Rust/Tokio and public native/filesystem protocols. No new
 dependency or plugin/API rebuild is required.
 
-**Spec:** VFS-01 and ARCH-02 in `docs/IMPLEMENTATION_BACKLOG.md`, native media
-capture plan and `docs/developer/FILESYSTEM_MIGRATION.md`. The user already asked
+**Spec:** VFS-01 and ARCH-02 in `docs/implementation-backlog.md`, native media
+capture plan and `docs/developer/filesystem-migration.md`. The user already asked
 to finish migration; this is an implementation boundary within that scope.
 
 ## Global constraints and review focus

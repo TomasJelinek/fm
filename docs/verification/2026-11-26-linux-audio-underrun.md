@@ -5,7 +5,7 @@ ALSA default device is PipeWire's plugin: the canvas stayed black at 0:00 with P
 shown, and the status line read "ALSA underrun left unconfirmed downstream media · ALSA
 underrun left unconfirmed downstream media". Playback now recovers from an underrun and
 continues, and a failure shows once in the status line
-([audio clock and underruns](../developer/VIEWER_PRESENTATION.md#audio-clock-and-underruns)).
+([audio clock and underruns](../developer/viewer-presentation.md#audio-clock-and-underruns)).
 
 ## Cause
 

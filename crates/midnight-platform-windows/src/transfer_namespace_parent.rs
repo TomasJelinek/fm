@@ -360,7 +360,7 @@ impl Parent {
     }
 
     /// The handle proof of a qualified folder's pinned ancestry (see "Windows namespace
-    /// pins" in `docs/developer/TRANSFERS.md`): the held folder keeps its pinned
+    /// pins" in `docs/developer/transfers.md`): the held folder keeps its pinned
     /// normalized NT path and identity and no delete is pending on it, and each held level
     /// is still linked, under exactly its pinned name, in the held level above it. Nothing
     /// is opened by name. A failed query or any unexpected reply counts as a change.
@@ -649,7 +649,7 @@ fn persistent_short_names_disabled(
         && response.VolumeFlags & PERSISTENT_VOLUME_STATE_SHORT_NAME_CREATION_DISABLED != 0
 }
 
-/// Test seam for the namespace tests (see `docs/developer/TRANSFERS.md`): with
+/// Test seam for the namespace tests (see `docs/developer/transfers.md`): with
 /// `short-names-disabled` they run their qualified (incremental) branches on an NTFS
 /// volume that still creates 8.3 names (their fixtures never use short names); with
 /// `unqualified` they run the full-refresh branches on any volume. The forced mode is

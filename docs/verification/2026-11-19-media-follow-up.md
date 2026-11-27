@@ -559,7 +559,7 @@ confirms that the actual `1fa0c8d8…` application compiled Slint/core/Winit wit
 `accessibility` or `accessibility-text`. This identifies a real accessibility
 configuration blocker, rather than evidence of successful F3 playback. Enabling
 Slint's existing default accessibility feature is now approved; its eighteen
-additional pins and exact notices are tracked in the [dependency inventory](../THIRD_PARTY.md).
+additional pins and exact notices are tracked in the [dependency inventory](../third-party.md).
 The corrected QA application build now exists as `27dd0c65…` above. The separate
 native canary below supplies a scoped accessibility/capture prerequisite; it
 does not establish normal-app playback. R3v2's later stage fails before writes
@@ -697,7 +697,7 @@ cleanup status is superseded only by that later explicit cleanup receipt.
 No native F3, playback, installed, MP4, Linux or performance qualification follows.
 
 Current selected viewer checks are tracked in the
-parallel verification checkpoint of that date (in the Git history of ACTIVE_WORK.md).
+parallel verification checkpoint of that date (in the Git history of active-work.md).
 They retain their own failures and scopes rather than qualifying the F3 attempts.
 
 ## R7–R10 native attempts and VIDEO presentation fixes
@@ -924,7 +924,7 @@ The normal builds `981b8583…`, palette-fix `442d307b…` and resize-fix `2f5f7
 are separate from the earlier Cargo TEST artifact; HTML probe `17bd4731…` is not
 rebuilt by the two VIDEO fixes. The direct user-ZIP observation and selected
 results retain their scopes in the
-parallel checkpoint of that date (in the Git history of ACTIVE_WORK.md);
+parallel checkpoint of that date (in the Git history of active-work.md);
 concurrent compilation prevents isolated speedup claims. R9's failed progression
 remains historical; R10 qualifies the scoped silent-AVI pixel/control workflow
 above. Source/Text now has 91 targeted passes after R6 exposed a real Text

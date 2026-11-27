@@ -753,7 +753,7 @@ pub fn custom_commands(context: &mut Context) -> Result<(), String> {
     options::page(&mut app, "Custom Commands")?;
     select_command(&mut app, LIST_RENAMED)?;
     options::press(&mut app, "Preview Custom Command")?;
-    // The preview shows each argument Debug-escaped (USER_COMMAND_SETTINGS.md): quoted,
+    // The preview shows each argument Debug-escaped (user-command-settings.md): quoted,
     // with a Windows path's `\` doubled.
     let gamma = setup.panel.join("gamma.md").to_string_lossy().into_owned();
     let gamma_shown = format!("{gamma:?}");

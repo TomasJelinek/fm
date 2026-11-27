@@ -10,7 +10,7 @@ and late-result fences remain authoritative. No persistence or new dependency.
 
 **Tech Stack:** Rust, existing presenter and Slint job-row model.
 
-**Spec:** docs/developer/OPERATION_PROGRESS.md, session history requirement.
+**Spec:** docs/developer/operation-progress.md, session history requirement.
 
 ## Constraints and review focus
 

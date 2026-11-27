@@ -17,7 +17,7 @@ F1–F12 cell now uses the effective shortcut map, including all 16 modifier mas
 filename-search scope, explicit remaps and disabled bindings. Unassigned cells
 are disabled. Pointer-down retains the original action and pane through modifier
 release, pane switching and scrolling. The current default matrix is maintained
-in ../KEYBOARD_SHORTCUTS.md.
+in ../keyboard-shortcuts.md.
 
 Native modifier edges track both physical sides and clear on focus loss. Aggregate
 focus snapshots without side information retain authority until updated; this

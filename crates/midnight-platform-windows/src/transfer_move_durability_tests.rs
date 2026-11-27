@@ -1,4 +1,4 @@
-//! WIN-6: a committed native Move saves the folders it changed (TRANSFERS.md, "Move
+//! WIN-6: a committed native Move saves the folders it changed (transfers.md, "Move
 //! durability on Windows") and is confirmed; a folder it cannot save leaves the committed
 //! Move unconfirmed. A removal by delete disposition is confirmed once its name is gone.
 use super::*;

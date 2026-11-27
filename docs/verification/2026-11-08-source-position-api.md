@@ -1,7 +1,7 @@
 # Optional source-coordinate API verification
 
 Source viewers can answer exact logical line/column lookups independently of
-viewport delivery through the additive [Locate contract](../../api/SOURCE_POSITION.md).
+viewport delivery through the additive [Locate contract](../../api/source-position.md).
 Existing page payloads and C tables are unchanged. Older SDKs reject the optional
 request as `UNSUPPORTED`; the host preserves that code and keeps viewing usable.
 

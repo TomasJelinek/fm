@@ -43,7 +43,7 @@ runs:
           cargo-${{ runner.os }}-${{ github.job }}-
     # The key covers the job, the rustc version and host, the Cargo manifests, lockfiles
     # and configuration and the CARGO_*/RUST* environment; a miss restores the newest
-    # entry of the same job and OS. LGPL-3.0, used unmodified (docs/DEPENDENCY_POLICY.md).
+    # entry of the same job and OS. LGPL-3.0, used unmodified (docs/dependency-policy.md).
     - if: inputs.build-cache == 'true'
       uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:

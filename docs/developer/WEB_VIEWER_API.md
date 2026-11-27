@@ -156,7 +156,7 @@ under WSLg XWayland ([Linux record](../verification/2026-11-10-html-linux.md)). 
 does not cover AppArmor's user-namespace restriction, which WSLg does not apply: on Ubuntu 23.10+ desktops the browser needs the
 `midnight-explorer-html-viewer` profile that `scripts/install-html-viewer-apparmor.sh`
 installs, or a setuid-root `chrome-sandbox` (see
-[system requirements](../SYSTEM_REQUIREMENTS.md)). The Linux launcher checks for this
+[system requirements](../system-requirements.md)). The Linux launcher checks for this
 before the browser can use its sandbox. When `kernel.apparmor_restrict_unprivileged_userns`
 is 1 and `chrome-sandbox` is not setuid root, it reads the started browser's AppArmor
 label; a browser without any profile, where an `unshare --user --map-root-user` probe
@@ -253,7 +253,7 @@ stream began (or a second has passed); a
 [proposal](#proposal-scroll-offsets-or-wheel-acknowledgements)
 would let the provider report the page's motion instead. A wheel with
 Ctrl, Alt or Super acts once, unglided, with a 40 px line, so Chromium's Ctrl+wheel
-zoom keeps its rate. See [HTML pages](SCROLLING.md#html-pages); the timing was measured
+zoom keeps its rate. See [HTML pages](scrolling.md#html-pages); the timing was measured
 on Linux only.
 
 Keys scroll a page by Chromium's own distances, a product decision: an arrow moves 40 px
@@ -410,7 +410,7 @@ The application's viewer engine (`crates/midnight-viewer-engine/src/worker_web.r
 opens ordinary HTML documents with `LinkRouting::Host` and the Office preview with
 `LinkRouting::Browser`. A `LinkHover` target is described on the status line, with the
 pointer cursor, and a `LinkActivated` target is followed by the same host link policy
-as a Markdown link ([links](VIEWER_PREFERENCES.md#links)): a relative target resolves
+as a Markdown link ([links](viewer-preferences.md#links)): a relative target resolves
 against the document's folder, and another generation's private origin (a `.invalid`
 host) is refused. Offline with scripts, an activated target with a scheme (a web or mail
 address) is followed only when it equals the newest `LinkHover` target: a navigation a

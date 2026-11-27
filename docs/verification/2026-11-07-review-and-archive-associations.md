@@ -26,7 +26,7 @@ blank-tab-strip gesture. It does not complete the remaining Move/extraction work
 - Options lists all 57 known archive associations, with 51 ZIP-container suffixes.
   User documents/installers are opt-in. Available handlers, saved choices and
   regular-file identity govern both activation and the archive entrance badge.
-  See the [format table and current limits](../ARCHIVE_FORMATS.md).
+  See the [format table and current limits](../archive-formats.md).
 - The Options sidebar scrolls at large fonts in small windows, keeping the Done
   button reachable. Topic navigation supports Up/Down and Left/Right.
 

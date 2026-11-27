@@ -52,5 +52,5 @@ case-only change of the same entry is allowed. A recoverable replacement of an
 existing regular file is offered only on local fixed NTFS and keeps the displaced
 target in a protected `.midnight-recovery-*` directory beside it, reported as a
 recovery receipt. Results report `durability_confirmed: false`. See
-[protocol](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md) for bounds and explicit
+[protocol](../../filesystem-api/native-plugin-protocol.md) for bounds and explicit
 unsupported namespaces. Watching and other mutations are outside this ABI.

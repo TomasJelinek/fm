@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sign a release's SHA256SUMS for the update check (docs/developer/UPDATES.md).
+"""Sign a release's SHA256SUMS for the update check (docs/developer/updates.md).
 
 Commands:
   generate-key --secret-key PATH   once: a new Ed25519 key pair in minisign format; the

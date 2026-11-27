@@ -11,7 +11,7 @@
 //! opens through the same callback once the dialog has closed, a typed zoom reads the
 //! presenter's number format, and the thumbnail pulse offers program tiles for their
 //! own artwork (`refresh_file_icons`). Deliberate differences, documented in
-//! docs/developer/ACCEPTANCE.md: no parent-folder pin cache for viewer resources (each
+//! docs/developer/acceptance.md: no parent-folder pin cache for viewer resources (each
 //! open prepares its folder), no external comparator programs, and the thumbnail pulse
 //! presents native files only (no archive members, command artwork, animation or
 //! upload retries); the thumbnail cache lives in the scenario's folder.
@@ -1368,7 +1368,7 @@ fn ready_viewer(
 /// report) is one of the refusals that depend on the machine, not on Midnight Explorer
 /// (`midnight-worker-platform`'s `browser.rs` and `browser_cgroup_linux.rs`): AppArmor
 /// denies Chromium's sandbox, or no writable cgroup-v2 delegation exists. As in
-/// `viewers_files` (ACCEPTANCE.md), a case refused so is skipped with this reason; any
+/// `viewers_files` (acceptance.md), a case refused so is skipped with this reason; any
 /// other viewer error fails.
 pub fn browser_refused(error: &str) -> Option<&'static str> {
     if error.contains("The HTML viewer needs permission for Chromium's sandbox") {

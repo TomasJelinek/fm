@@ -18,12 +18,12 @@ read-only; there is no fallback to a temporary extraction or permanent deletion.
 Two reviewers checked the frontend retirement/admission paths and backend
 capture/preparation/controller lifetime. They found no remaining issue in normal capture/admission after
 review corrections. A separate existing forced-shutdown ownership gap is recorded
-as LIFE-01 in the [backlog](../IMPLEMENTATION_BACKLOG.md); it is not claimed fixed. An initially suspected link-ancestry overlap was not a live
+as LIFE-01 in the [backlog](../implementation-backlog.md); it is not claimed fixed. An initially suspected link-ancestry overlap was not a live
 reproduction: both tree expansion and projection validation reject directory-link
 expansion today. A defensive ancestry rule still rejects overlapping roots across
 such a boundary. It does not claim to freeze descendants between capture and
 execution. Existing no-follow deletion preserves links' targets and moved-away
-subtrees; see the [tree contract](../developer/TREE_PANEL.md).
+subtrees; see the [tree contract](../developer/tree-panel.md).
 
 Metadata results now use operation-ID lookup and have session lifetime. Each
 result still retains at most 32 sampled outcomes. Replacement, explicit clearing,

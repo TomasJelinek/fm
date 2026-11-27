@@ -44,7 +44,7 @@ snapshots do not establish interactive compositor smoothness. Logs, scripts and 
 under `_build/qa/report-arena-20261112/` and are intentionally not committed.
 
 The unchanged shared Copy/Move/Delete progress component also passed its focused visible-progress,
-current-file-meter and Delete-chart case. `TRANSFERS.md` now explicitly identifies the shared
+current-file-meter and Delete-chart case. `transfers.md` now explicitly identifies the shared
 component and reiterates that X/Escape cancels the exact active operation.
 
 ## CI settings-test correction

@@ -16,8 +16,8 @@ projection, so progress changes values without changing row order.
 or plugin ABI. Windows and Linux use their existing separate native adapters.
 
 **Spec:** [accepted inline branches](2026-11-05-follow-up-stages.md),
-[tree identities](../../developer/INLINE_TREES.md),
-[production integration](../../developer/TREE_PANEL.md), and the user's existing
+[tree identities](../../developer/inline-trees.md),
+[production integration](../../developer/tree-panel.md), and the user's existing
 selection-only size, Space toggle/advance, four-updates-per-second and no-progress
 resorting requirements. This connects an already requested action to the adopted
 tree representation; it does not introduce a new product choice.

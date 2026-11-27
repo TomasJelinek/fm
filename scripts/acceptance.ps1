@@ -1,5 +1,5 @@
 <#
-Opt-in end-to-end acceptance suite on Windows (docs/developer/ACCEPTANCE.md), the
+Opt-in end-to-end acceptance suite on Windows (docs/developer/acceptance.md), the
 counterpart of scripts/acceptance.sh.
 
 Usage: pwsh -File scripts\acceptance.ps1 [debug|release] [--dry-run] [--list]
@@ -42,7 +42,7 @@ the run folders (default _build\acceptance). --stress runs the opt-in stress siz
 _REMOVABLE_DIR, _NETWORK_DIR, _OTHER_EXT_DIR, _NO_TMPFILE_DIR, _WIN_SYMLINKS) name
 absolute folders; the suite and its staged children get them as they are. A run stops
 (exit 2) when the run folders' volume is not qualified for Copy and Move: NTFS with 8.3
-short-name creation disabled (docs\developer\TEST_EXECUTION.md); when the filesystem
+short-name creation disabled (docs\developer\test-execution.md); when the filesystem
 packages are newer than this build; and, with MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE naming a
 lease's lock file, when that lock names neither this run nor a process that started it.
 Results: _build\acceptance\<run>\index.html; exit 0 pass, 1 failure, 2 usage, 127 no cargo.
@@ -146,7 +146,7 @@ function Remove-Installation([string]$Path) {
 }
 
 # Whether the volume of `Folder` (or of its nearest existing parent) is qualified for Copy
-# and Move as the platform decides it (docs/developer/TEST_EXECUTION.md, "Windows Copy/Move
+# and Move as the platform decides it (docs/developer/test-execution.md, "Windows Copy/Move
 # qualification volume"): NTFS whose persistent volume state has 8.3 short-name creation
 # disabled, read with FSCTL_QUERY_PERSISTENT_VOLUME_STATE on the volume's root folder (no
 # elevation needed). Elsewhere the engine takes its opaque lane, where Copy and Move jobs
@@ -432,7 +432,7 @@ try {
             "there take the engine's opaque lane and wait for each other, so the scenarios " +
             "that run jobs side by side would fail for no fault of the product. Run on an NTFS " +
             "volume whose 8.3 short-name creation is disabled, with --run-dir " +
-            "(docs/developer/TEST_EXECUTION.md, `"Windows Copy/Move qualification volume`").") -f
+            "(docs/developer/test-execution.md, `"Windows Copy/Move qualification volume`").") -f
             $runFolders, $copyVolume.Root, $copyVolume.Reason
         [Console]::Error.WriteLine($refusal)
         exit 2

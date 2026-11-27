@@ -11,7 +11,7 @@ The fix selects a separately deployed private runtime for that exact host hash.
 It neither loads shared plugin code nor changes permissions on the checkout,
 its ancestors or D:. All installed plugin consumers use the same backend resolver;
 explicit-root test APIs and built-in text comparison remain available. See the
-[developer contract](../developer/RUNTIME_DISCOVERY.md).
+[developer contract](../developer/runtime-discovery.md).
 
 ## Regression evidence
 

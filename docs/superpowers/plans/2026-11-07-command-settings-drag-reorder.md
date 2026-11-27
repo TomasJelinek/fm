@@ -45,7 +45,7 @@ command or alter the backend, schema, protocol, shortcut identities or native pa
 5. Extend `tests/user_command_settings_ui.rs`: actual Slint pointer drag in both
    directions, one preference save, Escape/dirty/stale cancellation, autoscroll
    and continued Up/Down accessibility. Add captures only when useful.
-6. Update `docs/developer/USER_COMMAND_SETTINGS.md` and the settings report with
+6. Update `docs/developer/user-command-settings.md` and the settings report with
    final evidence. Existing qualification remains explicitly the pre-drag build.
 
 ## Gates

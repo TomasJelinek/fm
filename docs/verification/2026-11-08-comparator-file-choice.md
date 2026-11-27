@@ -1,6 +1,6 @@
 # Comparator File A / File B fallback — 2026-11-08
 
-Implemented the manual fallback described in [the comparison contract](../developer/FILE_COMPARISON.md).
+Implemented the manual fallback described in [the comparison contract](../developer/file-comparison.md).
 Automatic panel pairing remains the first choice. Missing/ambiguous inputs now open
 the existing native comparator window with two editable fields and native Browse.
 

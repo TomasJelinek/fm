@@ -147,8 +147,8 @@ class ArchivePermissionsTests(unittest.TestCase):
                 relative = Path("licenses/themes") / author / "LICENSE"
                 self.assertTrue((stage / relative).is_file(), f"Missing palette notice: {author}")
                 self.assertEqual((stage / relative).read_bytes(), (root / "docs" / relative).read_bytes())
-            self.assertEqual((stage / "THEME_PROVENANCE.md").read_bytes(),
-                             (root / "docs/THEME_PROVENANCE.md").read_bytes())
+            self.assertEqual((stage / "theme-provenance.md").read_bytes(),
+                             (root / "docs/theme-provenance.md").read_bytes())
 
     def test_inventory_records_package_authors_for_the_about_dialog(self):
         temporary = Path(__file__).resolve().parents[2] / "_build" / "tmp"

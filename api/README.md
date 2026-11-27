@@ -15,16 +15,16 @@ each instance keeps its own bounds. The SDK manifest declares its version, so th
 unchanged API 0.2.0 keeps its released bytes. This ABI's `KIND_FILESYSTEM` constant
 stays reserved and unused: filesystem providers are implemented through separate
 public contracts, the native filesystem ABI 1.5 (`midnight_filesystem_entry_v1`, see
-[the protocol](../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md)) and the restricted
+[the protocol](../filesystem-api/native-plugin-protocol.md)) and the restricted
 archive worker protocol (`midnight-filesystem-api`).
 
 The [developer guide](../docs/developer/README.md) covers architecture and package
-independence, [build/test/install commands](../docs/developer/QUICK_START.md),
-[ABI ownership and lifecycle](../docs/developer/ABI_AND_LIFECYCLE.md), and the
-[viewer protocol](../docs/developer/VIEWER_PROTOCOL.md). It includes a small Rust
+independence, [build/test/install commands](../docs/developer/quick-start.md),
+[ABI ownership and lifecycle](../docs/developer/abi-and-lifecycle.md), and the
+[viewer protocol](../docs/developer/viewer-protocol.md). It includes a small Rust
 example written against the released SDK 0.1.0, which no CI job builds yet (SDK-05 in
-the [backlog](../docs/IMPLEMENTATION_BACKLOG.md)). Review the project's
-[dependency policy](../docs/DEPENDENCY_POLICY.md) before adding third-party libraries.
+the [backlog](../docs/implementation-backlog.md)). Review the project's
+[dependency policy](../docs/dependency-policy.md) before adding third-party libraries.
 The SDK package README's introductory integration status reflects its earlier
 release milestone; preserving that packaged file keeps consumer checksums stable.
 Use this page and the developer guide for current implementation status.

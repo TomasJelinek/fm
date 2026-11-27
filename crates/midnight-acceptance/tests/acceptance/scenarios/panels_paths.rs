@@ -1081,7 +1081,7 @@ fn typed_unshown(
 }
 
 /// Paths typed in the path editor that name a file (2b901122;
-/// docs/developer/PATH_PASTE.md): the file's folder opens with the cursor on the file, as
+/// docs/developer/path-paste.md): the file's folder opens with the cursor on the file, as
 /// typed, pasted ("Copy as path" quotes, a final separator) or relative; a file
 /// the panel does not show is noted with the reason; a missing file is reported; an
 /// archive is focused, not opened; on Windows a name in other letter case finds the

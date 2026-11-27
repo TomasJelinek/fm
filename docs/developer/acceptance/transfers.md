@@ -3,7 +3,7 @@
 The inventory of user-visible Copy (F5), Move (F6), Delete (F8, Shift+F8), clipboard,
 drag-and-drop and job-window behavior, with the acceptance scenario and check that
 covers each item and its last verified status. The suite is described in
-[ACCEPTANCE.md](../ACCEPTANCE.md); scenarios live in
+[acceptance.md](../acceptance.md); scenarios live in
 `crates/midnight-acceptance/tests/acceptance/scenarios/`.
 
 Status: **PASS** (the check passed in the run named below), **FAIL** (a product bug,
@@ -140,13 +140,13 @@ and the first Enter holds with "… Select Copy again to keep links anyway, or c
 the files links point to”."; after the second Enter the job stops at the first link with
 "Copy/Move needs attention": "No links are created at a network location, so this link is
 left out" (Skip, Skip all this error type, Cancel job, Decide later). The question is the
-documented behavior ([TRANSFERS.md](../TRANSFERS.md): a link the destination cannot create
+documented behavior ([transfers.md](../transfers.md): a link the destination cannot create
 is reported with Skip and Skip all); the warning promises that each link is simply left
 out. A FAT drive takes the same path ("This drive cannot store links (FAT32), so this link
 is left out"), not run here. Decided (Architect): the warning is the contract; such links
 are left out and named in the job details, the job never asks about each one, and
 drag and drop and paste follow the same rule. Fixed in 0a6d5a4a (the job counts and names
-each link it leaves out, TRANSFERS.md); T-L08 and T-L11 check the fixed behavior.
+each link it leaves out, transfers.md); T-L08 and T-L11 check the fixed behavior.
 
 Finding O-1 (a Move admitted where it cannot happen; same runs): F6 of the project to the
 network location shows the Move's warning ("… each link is left out and stays where it is,

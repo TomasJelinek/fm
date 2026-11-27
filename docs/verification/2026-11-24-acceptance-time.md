@@ -89,7 +89,7 @@ and controls read, the folders hashed) 145 ms.
      pending, not loading), shows the content where the thumb is (to 1e-4) and its
      positions held still for 100 ms (`viewers_probe::land`); otherwise the 300 ms quiet
      of `settle` applies. An acknowledgement means the target's pixels are there
-     ([viewer scrolling](../developer/VIEWER_SCROLLING.md): a final acknowledgement needs
+     ([viewer scrolling](../developer/viewer-scrolling.md): a final acknowledgement needs
      usable pixels covering the target), so no refill pause can follow it.
      Covered as before: the landing position, error statuses, thumb against content and
      the page's bytes at every target; a late correction within 100 ms still restarts the
@@ -199,7 +199,7 @@ pressed while the previous page is being rendered is lost. A person who presses
 Ctrl+PageDown quickly, or holds it, gets fewer pages than presses. The scenario is
 right. **Fixed** the same day ("Viewer: document page steps pressed before the page is
 shown all count"): a page step is fenced by the document, not by the latest frame, and
-steps add up against the requested page ([page steps](../developer/VIEWER_SCROLLING.md));
+steps add up against the requested page ([page steps](../developer/viewer-scrolling.md));
 with the fix `viewers_presentation`'s six presses reached page 6 in every run.
 
 ## Rust tests

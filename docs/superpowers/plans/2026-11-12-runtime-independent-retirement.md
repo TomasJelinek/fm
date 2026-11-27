@@ -17,7 +17,7 @@ requiring Tokio. Reservations remain occupied until actual destruction finishes.
 **Tech stack:** Safe Rust, standard threads/synchronization, existing Tokio engine. No new dependency
 or platform mutation API is proposed.
 
-**Spec:** [LIFE-01](../../IMPLEMENTATION_BACKLOG.md#lifecycle-follow-up-found-on-12-november),
+**Spec:** [LIFE-01](../../implementation-backlog.md#lifecycle-follow-up-found-on-12-november),
 [code style](../../../CODE_STYLE.md) and [security requirements](../../../SECURITY.md).
 
 ## Scope, evidence and constraints

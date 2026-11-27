@@ -216,7 +216,7 @@ is retained only with functional GPU checks and a measured native improvement.
 source, Slint's FemtoVG renderer crate.
 - License: **GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR
   LicenseRef-Slint-Software-3.0**. The application uses Slint under the GPL-3.0-only branch
-  ([Slint choice](../docs/THIRD_PARTY.md#slint)), which permits a modified copy conveyed
+  ([Slint choice](../docs/third-party.md#slint)), which permits a modified copy conveyed
   under GPL version 3. The project's own license does not change.
 - Upstream: https://github.com/slint-ui/slint, package directory
   `internal/renderers/femtovg`.

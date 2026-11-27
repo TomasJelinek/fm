@@ -2,7 +2,7 @@
 
 The owner reported that the drive bar and the drive dropdown noticed an inserted or
 removed USB stick only after a long delay. The drive list now follows the system's
-notifications ([when drives come and go](../DRIVE_INFORMATION.md#when-drives-come-and-go)).
+notifications ([when drives come and go](../drive-information.md#when-drives-come-and-go)).
 
 ## Cause
 

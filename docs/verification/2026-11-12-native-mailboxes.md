@@ -77,8 +77,8 @@ follow-ups. Two real report-spool failures are reproduced on Linux; the
 QA patch and next implementation contract. Temporary failing registrations were
 removed and the original production file restored exactly before final gates. A tree metadata-only result must not be confused with a generated report
 that really owns native file handles. The current
-[engine contract](../developer/ENGINE_LIFETIME.md) and
-[backlog](../IMPLEMENTATION_BACKLOG.md#lifecycle-follow-up-found-on-12-november)
+[engine contract](../developer/engine-lifetime.md) and
+[backlog](../implementation-backlog.md#lifecycle-follow-up-found-on-12-november)
 retain that distinction. No plugin ABI or dependency/license changed.
 
 ## Final Windows source checks

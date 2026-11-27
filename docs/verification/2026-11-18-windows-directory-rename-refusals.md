@@ -12,7 +12,7 @@ after confirming that the caller still has the access the rename needs; a paused
 waits paused and a cancellation ends the wait at once. Other errors are reported at
 once. Same-volume Move and Move capture, which hold the process-wide namespace turn,
 and recycling are not waited out; they stop with Retry/Skip/Cancel. See
-[native mutation safety](../../crates/midnight-platform-windows/MUTATION_SAFETY.md).
+[native mutation safety](../../crates/midnight-platform-windows/mutation-safety.md).
 
 Source: integration batch 10d, commits `796a6be8`, `d165f939` and `02b9ff5e` on
 `60257c4b`, merged as `26bb126b`.

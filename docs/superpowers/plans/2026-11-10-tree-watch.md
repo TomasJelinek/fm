@@ -238,5 +238,5 @@ fixture helpers remain separate. QA logs/progress under `_build/qa/tree-watch`.
   or unresolved concerns. Record exact commands/counts/limitations, including
   software-window versus installed GPU scope. No deploy/commit is implied here.
 - [ ] Fresh implementation review resolves actionable findings before updating
-  `docs/developer/TREE_PANEL.md`, relevant security/verification notes and progress.
+  `docs/developer/tree-panel.md`, relevant security/verification notes and progress.
   Do not claim archive watch, generic plugin migration or complete TREE-01 parity.

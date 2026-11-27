@@ -9,7 +9,7 @@ decoded by the distribution's own FFmpeg (libavcodec 58 to 63), else by GStreame
 both loaded at run time before the worker sandbox, plus the host's Linux wording
 (`crates/midnight-media-host/src/system_decoders_linux.rs`). Design, version support
 and sandbox rules are in the [video worker guide](../../plugins/midnight-thumbnail-video/README.md),
-[SECURITY.md](../../SECURITY.md) and the [dependency policy](../DEPENDENCY_POLICY.md).
+[SECURITY.md](../../SECURITY.md) and the [dependency policy](../dependency-policy.md).
 
 Not covered here: the host routing (bundled helper, then platform helper) and the
 packaging, which the viewer agent owns; an installed-package run through the viewer.

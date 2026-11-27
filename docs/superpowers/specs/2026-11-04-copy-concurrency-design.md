@@ -31,7 +31,7 @@ Neznámá geometrie vyloučí ostatní transfery, nikoli odhad podle textových 
 Starší návrhy krátkých lease a obecné přestavby retirement byly nahrazeny.
 Přesný
 [kontrakt čekání](2026-11-07-copy-predecessor-fence.md) a
-[kontrakt průběhu](../../developer/OPERATION_PROGRESS.md) rozlišují přijatou
+[kontrakt průběhu](../../developer/operation-progress.md) rozlišují přijatou
 politiku od dosud neověřené implementace. Starší měření a návrh jsou zachovány.
 
 Historický návrh. Aktuální Move a přepínatelné ověřování popisuje

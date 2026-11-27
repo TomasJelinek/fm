@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Rust workspace, Tokio bounded workers, immutable `Arc` snapshots, current filter compiler and Slint presenter/widgets. No new dependencies or plugin ABI changes.
 
-**Spec:** [Inline trees](../../developer/INLINE_TREES.md), [current panel integration](../../developer/TREE_PANEL.md), [metadata filters](../../developer/METADATA_FILTERS.md), TREE-01/FILTER-01 in [the backlog](../../IMPLEMENTATION_BACKLOG.md), and the user's accepted persistent-filter/sort follow-up. This is a continuation of the existing production integration, not completion of TREE-01.
+**Spec:** [Inline trees](../../developer/inline-trees.md), [current panel integration](../../developer/tree-panel.md), [metadata filters](../../developer/metadata-filters.md), TREE-01/FILTER-01 in [the backlog](../../implementation-backlog.md), and the user's accepted persistent-filter/sort follow-up. This is a continuation of the existing production integration, not completion of TREE-01.
 
 ## Global Constraints
 
@@ -84,7 +84,7 @@ The public options deliberately contain no locale service, provider handle, nati
 
 ## Ownership and parallel execution
 
-1. **Backend owner:** core protocol, `tree_actor.rs`, `tree_projection.rs` only if needed, `tree_controller.rs`, `tree_controller/{mailbox,worker}.rs`, focused engine tests and `TREE_CONTROLLER.md`.
+1. **Backend owner:** core protocol, `tree_actor.rs`, `tree_projection.rs` only if needed, `tree_controller.rs`, `tree_controller/{mailbox,worker}.rs`, focused engine tests and `tree-controller.md`.
 2. **UI owner:** `presenter.rs`, `presenter/{tree,filter,search,preferences}.rs`, new `presenter/tree_options.rs`, tests and minimal existing widget/status wiring if required. The UI owner consumes the frozen interface above and does not edit core/engine files.
 3. **Root integrator:** combined application/installed-plugin qualification, final status documentation and scoped integration/commit. Backend and UI owners may implement in parallel after agreeing the interface; shared builds remain serialized by the integrator.
 
@@ -147,7 +147,7 @@ The existing `apply_tree_event` delegates the two receipts into this module. Cha
 **Files:**
 - Create: `crates/midnight-ui/tests/tree_filters.rs`.
 - Extend only as needed: existing `tests/support/ui.rs`, `tests/tree_panel.rs`, `tests/commander_dialogs.rs`, `tests/panel_toolbar.rs` and `tests/shared_toolbar.rs` helpers.
-- Update: `docs/developer/TREE_PANEL.md`, `crates/midnight-engine/TREE_CONTROLLER.md`, `docs/FEATURE_STATUS.md`, `docs/IMPLEMENTATION_BACKLOG.md` and a focused dated verification report.
+- Update: `docs/developer/tree-panel.md`, `crates/midnight-engine/tree-controller.md`, `docs/feature-status.md`, `docs/implementation-backlog.md` and a focused dated verification report.
 
 **Interfaces:** Uses the frozen core protocol, real Engine controller and installed `midnight_ui::install` callbacks. Fixture providers may supply controlled native/archive data; do not replace presenter/controller logic with copied test code.
 

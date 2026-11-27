@@ -37,7 +37,7 @@ fn expect_text(failures: &mut Vec<String>, path: &Path, wanted: &str, what: &str
 /// Recovery folders the application created in `folder` and the files they keep: its
 /// `.midnight-recovery-*` folders and the private `.midnight-move-*` stage in which a
 /// Move on Linux keeps a replaced original as recovery data, beside the source
-/// (TRANSFERS.md).
+/// (transfers.md).
 fn recovered(folder: &Path) -> Vec<(String, String)> {
     let mut found = Vec::new();
     for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
@@ -462,7 +462,7 @@ pub fn conflicts(context: &mut Context) -> Result<(), String> {
     panel::select_row(&mut app, left, "c1.txt")?;
     // A Move renames on one volume. Linux exchanges the replaced original into the
     // private stage the moved file left, beside the source; Windows keeps it in a
-    // recovery folder beside the destination (TRANSFERS.md), so both folders count.
+    // recovery folder beside the destination (transfers.md), so both folders count.
     let recovery = [recovered(&source), recovered(&target)];
     let run = support::transfer(
         &mut app,

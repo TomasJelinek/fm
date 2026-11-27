@@ -5,7 +5,7 @@ The selected profile reduces `me.exe` by **5,329,408 bytes (12.56%)**, from
 `midnight-ui-bindings` crate. The other application crates, runtime services,
 renderers and font/text engines retain level 3. Fat LTO, one codegen unit, symbol
 stripping, disabled incremental/debug output, overflow checks and unwinding
-remain enabled as specified in [release builds](../RELEASE_BUILD.md).
+remain enabled as specified in [release builds](../release-build.md).
 
 Six interleaved native runs per profile showed overlapping timing ranges without
 a consistent regression. The median of the reported resize medians was **1.424 ms

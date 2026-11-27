@@ -204,7 +204,7 @@ archive share its worker. A tab that leaves its archive for another one gives it
 the next archive takes its place, at the latest after 10 seconds; while another tab, the
 other panel or a viewer still shows it, the new archive is refused with "Two archives
 are already open; close one of them first"
-([limits](../../docs/ARCHIVE_FORMATS.md#current-operation-limits)).
+([limits](../../docs/archive-formats.md#current-operation-limits)).
 
 F3 receives a bounded content lease. F5 captures the archive selection and queues
 copy-out through the host's ordinary 32-job FIFO, with exclusive staging, SHA-256

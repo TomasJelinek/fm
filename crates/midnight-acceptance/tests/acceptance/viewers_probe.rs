@@ -400,7 +400,7 @@ pub fn settle(app: &mut App, viewing: &Viewing, limit: Duration) -> Result<Settl
 
 /// How long the positions must hold still after an absolute move (a scrollbar drag) the
 /// viewer acknowledged: nothing pending, and the content shows the thumb's position. The
-/// acknowledgement already means the target's pixels are there (VIEWER_SCROLLING: a final
+/// acknowledgement already means the target's pixels are there (viewer-scrolling.md: a final
 /// acknowledgement needs usable pixels covering the target), so no refill pause can
 /// follow; a few frames still catch a late correction.
 pub const LANDED_QUIET: Duration = Duration::from_millis(100);

@@ -111,7 +111,7 @@ thumbnail cache test now runs in the library's unit tests:
 
 What changed: most crates link their integration tests into one `integration`
 executable (`010f3b62`; the exceptions are in
-[test execution](../developer/TEST_EXECUTION.md)), so one process runs a crate's
+[test execution](../developer/test-execution.md)), so one process runs a crate's
 integration tests in parallel instead of one process per test file. UI tests advance
 virtual clocks instead of sleeping, and the every-theme geometry sweeps still lay out
 and check every theme but software-render only their first theme of each page, size

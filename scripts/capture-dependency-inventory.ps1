@@ -7,7 +7,7 @@ Writes <scope>-<target>.json and <scope>-<target>.tree for every scope of
 scripts/dependency-inventory.py, for the host the script runs on: x86_64-pc-windows-msvc
 on Windows x64, x86_64-unknown-linux-gnu on Linux x86-64. Build dependencies and
 procedural macros follow the host, so each target is captured on its own host
-(docs/THIRD_PARTY.md, "Regenerating the inventory"). -IncludeMacOS adds the two Darwin
+(docs/third-party.md, "Regenerating the inventory"). -IncludeMacOS adds the two Darwin
 pairs of native-macos after checking that its graph still has no build or
 procedural-macro dependency, which is what makes them independent of the host.
 
@@ -302,7 +302,7 @@ try {
                 Where-Object { $_.kind -eq 'build' })
             $macros = @($graph.packages | Where-Object { @($_.targets | Where-Object { $_.kind -contains 'proc-macro' }).Count })
             if ($build.Count -or $macros.Count) {
-                throw "native-macos now has build or procedural-macro dependencies; capture $triple on a Mac (docs/THIRD_PARTY.md)."
+                throw "native-macos now has build or procedural-macro dependencies; capture $triple on a Mac (docs/third-party.md)."
             }
         }
     }

@@ -2,7 +2,7 @@
 //! keeps a table whole, so it cannot always fit one page together with the content after
 //! (or before) it, and it answers a continuation anchored inside the table with the same
 //! window again. The Markdown viewer stopped this way inside
-//! `docs/IMPLEMENTATION_BACKLOG.md`: every wheel step asked for that window once more.
+//! `docs/implementation-backlog.md`: every wheel step asked for that window once more.
 use super::*;
 use midnight_plugin_host::api::document;
 

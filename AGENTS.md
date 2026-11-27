@@ -3,7 +3,7 @@
 Starting context for agents (and people) working in this repository: what it holds,
 what to read first, the commands that build, test and validate it, and the project
 rules that every change follows. Project terms are defined in the
-[glossary](docs/GLOSSARY.md).
+[glossary](docs/glossary.md).
 
 ## What this repository owns
 
@@ -20,8 +20,8 @@ rules that every change follows. Project terms are defined in the
   `packaging/` and the CI workflows in `.github/`.
 
 Not owned here: third-party dependencies (listed in
-[THIRD_PARTY.md](docs/THIRD_PARTY.md)), apart from the patched renderer sources in
-`vendor/`; and the [Open Salamander](docs/GLOSSARY.md#salamander) sources that some
+[third-party.md](docs/third-party.md)), apart from the patched renderer sources in
+`vendor/`; and the [Open Salamander](docs/glossary.md#salamander) sources that some
 documents cite as behavioral reference, which are never copied.
 
 ## Start here
@@ -34,8 +34,8 @@ documents cite as behavioral reference, which are never copied.
 
 Before changing code, also read [CODE_STYLE.md](CODE_STYLE.md),
 [SECURITY.md](SECURITY.md) and the [project rules](#project-rules) below. The
-[user guide](docs/USER_GUIDE.md) describes the behavior users see, and
-[feature status](docs/FEATURE_STATUS.md) what is implemented and verified.
+[user guide](docs/user-guide.md) describes the behavior users see, and
+[feature status](docs/feature-status.md) what is implemented and verified.
 
 ## Repository layout
 
@@ -44,7 +44,7 @@ Before changing code, also read [CODE_STYLE.md](CODE_STYLE.md),
 | `README.md` | Product purpose, download, first run, build and support. |
 | `AGENTS.md` | This guide and the project rules. |
 | `docs/README.md` | Documentation entry point. |
-| `docs/developer/` | Developer and plugin API documents, with the [quick start](docs/developer/QUICK_START.md) for a plugin. |
+| `docs/developer/` | Developer and plugin API documents, with the [quick start](docs/developer/quick-start.md) for a plugin. |
 | `docs/releases/` | Release notes of each preview. |
 | `docs/verification/` | Dated test evidence; records, not current documentation. |
 | `crates/` | The application workspace: core, engine, platform adapters, UI and the executable. |
@@ -62,7 +62,7 @@ Run every command from the repository root. Prerequisites for all of them: Rust
 1.99.1 with rustfmt and Clippy ([rust-toolchain.toml](rust-toolchain.toml)); on Windows
 the MSVC C++ build tools, PowerShell 7 and Python 3.12 or later; on Linux a C compiler,
 `pkg-config`, the libraries that `scripts/setup-linux.sh` installs and Python 3.11 or
-later (3.12 for validation). The [user guide](docs/USER_GUIDE.md#build-and-run) lists
+later (3.12 for validation). The [user guide](docs/user-guide.md#build-and-run) lists
 them in full.
 
 | Task | Windows | Linux |
@@ -71,14 +71,14 @@ them in full.
 | Format check | `cargo fmt --all -- --check` | Same |
 | Lint | `cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings` | Same |
 | Workspace tests, as CI runs them | `python -B scripts/ci-workspace-tests.py --keep-test-artifacts` | Same |
-| Targeted tests of a change | Build the affected tests once with `cargo test --no-run`, then run them with `scripts/run-targeted-tests.py` ([targeted test execution](docs/developer/TEST_EXECUTION.md#targeted-test-execution)) | Same |
+| Targeted tests of a change | Build the affected tests once with `cargo test --no-run`, then run them with `scripts/run-targeted-tests.py` ([targeted test execution](docs/developer/test-execution.md#targeted-test-execution)) | Same |
 | Source-size check | `pwsh scripts/check-source-size.ps1` | `bash scripts/check-source-size.sh` |
 | Full validation (every CI test of the platform) | `build.bat --validate` or `pwsh -NoProfile -File scripts\validate.ps1` | `./build.sh --validate` or `bash scripts/validate.sh` |
 | End-to-end acceptance suite (opt-in) | `pwsh -File scripts\acceptance.ps1` | `bash scripts/acceptance.sh` |
 
 Validation and the acceptance suite are long; follow the
 [project rules](#project-rules) on when to run broad suites, and the
-[test execution guide](docs/developer/TEST_EXECUTION.md) for steps, options and
+[test execution guide](docs/developer/test-execution.md) for steps, options and
 environment.
 
 ## Confirm the application runs
@@ -96,10 +96,10 @@ It prints `volumes: N`, the number of entries in each panel's start folder (`Lef
 entries`, `Right: N entries`) and whether other accounts can change the installation
 (`installation: private`, or `installation: shared; …`), and exits with status 0. Run directly, `midnight-explorer.exe` on Windows is a GUI
 program whose output a console does not show, so read its exit code instead (the
-[user guide](docs/USER_GUIDE.md#windows-x64) has the command). With a display,
+[user guide](docs/user-guide.md#windows-x64) has the command). With a display,
 `cargo run -p midnight-explorer --locked -- --ui-smoke-test --software` also starts the
 main window with fresh in-memory settings and exits. A failing start is diagnosed in
-[Troubleshooting](docs/TROUBLESHOOTING.md).
+[Troubleshooting](docs/troubleshooting.md).
 
 ## Project rules
 
@@ -111,8 +111,8 @@ main window with fresh in-memory settings and exits. A failing start is diagnose
   independent plugins, build tools and tests. Free of charge does not waive
   attribution, source-distribution or other license obligations.
 - On dependency changes, check the actual pinned license and enabled features,
-  update the [inventory](docs/THIRD_PARTY.md) and distribution notices, and follow
-  the [dependency policy](docs/DEPENDENCY_POLICY.md). Do not silently change the
+  update the [inventory](docs/third-party.md) and distribution notices, and follow
+  the [dependency policy](docs/dependency-policy.md). Do not silently change the
   project's own license or select a paid alternative of a multi-licensed library.
 - Follow [CODE_STYLE.md](CODE_STYLE.md) and [SECURITY.md](SECURITY.md). Keep platform
   implementations separate and all non-UI work in backend services. Build, test
@@ -129,7 +129,7 @@ main window with fresh in-memory settings and exits. A failing start is diagnose
 The Orchestrator coordinates seven specialist chats. Each role works on scoped assignments
 with acceptance criteria and exclusive file ownership; creating a role chat does
 not authorize unrelated backlog work. The detailed working agreement is in
-[Agent workflow](docs/developer/AGENT_WORKFLOW.md).
+[Agent workflow](docs/developer/agent-workflow.md).
 
 | Role | Responsibility |
 | --- | --- |
@@ -167,5 +167,5 @@ not authorize unrelated backlog work. The detailed working agreement is in
   from plans and records only verified evidence; a test or CI job's existence is
   not proof that it passed.
 
-[Build, desktop and WSL leases](docs/GLOSSARY.md#lease) are coordination rules for
+[Build, desktop and WSL leases](docs/glossary.md#lease) are coordination rules for
 development only.

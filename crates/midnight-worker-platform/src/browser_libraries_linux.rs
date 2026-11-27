@@ -601,7 +601,7 @@ fn message(missing: &[String], family: Family, checkout: bool) -> String {
     if packages.is_empty() {
         text.push_str(
             " Install the packages of your distribution that provide them \
-             (see SYSTEM_REQUIREMENTS.md).",
+             (see system-requirements.md).",
         );
         return text;
     }

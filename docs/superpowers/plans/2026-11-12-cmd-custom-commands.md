@@ -15,7 +15,7 @@ existing native process tracker. Ordinary command-bar Cmd remains `/V:OFF`.
 **Tech stack:** Existing Rust/Win32 process/environment APIs, native Cmd and the
 owned UTF-16 argv/cwd/environment helper. No dependency or plugin ABI change.
 
-**Spec:** `docs/developer/USER_COMMANDS.md` and the existing Custom Commands spec;
+**Spec:** `docs/developer/user-commands.md` and the existing Custom Commands spec;
 this plan records the explicitly approved language-specific extension.
 
 ## Contract and limits

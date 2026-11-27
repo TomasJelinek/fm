@@ -18,7 +18,7 @@ pub enum CopyLinkPolicy {
     Preserve,
     /// Materialize each qualified directory link as a directory with verified contents.
     /// A qualified target may lie on another filesystem than the link (each platform
-    /// qualifies it; see TRANSFERS.md), but never on a system filesystem such as
+    /// qualifies it; see transfers.md), but never on a system filesystem such as
     /// Linux's /proc.
     FollowDirectoryContents,
     /// Materialize each qualified directory link as an empty ordinary directory.

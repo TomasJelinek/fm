@@ -2,7 +2,7 @@
 
 Scope: the opt-in acceptance scenarios for the tools area (`tools_*` in
 `crates/midnight-acceptance/tests/acceptance/scenarios/`, helpers in
-`tests/acceptance/tools_support.rs`; see [the acceptance suite](../developer/ACCEPTANCE.md)):
+`tests/acceptance/tools_support.rs`; see [the acceptance suite](../developer/acceptance.md)):
 Compare directories, Find, Checksums, folder sizes, the Jobs window, Help, Drive
 information and the main menu. Every result below names the command that produced
 it; nothing is claimed from a test's existence alone.
@@ -109,8 +109,8 @@ Severity is a first estimate; owners decide. Screenshots are in the run's
 | ID | Severity | Area | Finding | Steps | Expected | Actual | Suspected location |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | ACC-TOOLS-01 | Medium | Checksums | A manifest that cannot be parsed fails without a reason. | Ctrl+F8 on `mixed.sha256` (one SHA-256 and one MD5 line), Verify. | The window says why, e.g. "Checksum manifest mixes different algorithms.". | "Failed · 0 verified · 0 mismatched · 0 missing · 0 B read", the banner "Verification needs attention" and the Calculate page's "Choose the checksums in the list above, then press Calculate."; the reason exists only in `ChecksumRun.summary.diagnostics`, which nothing presents (`verify-mixed.png`). | `crates/midnight-ui/src/presenter/checksums/events.rs:27-33` (Finished ignores diagnostics); `checksum_windows.rs:268-277` (the error comes from `s.error` only). |
-| ACC-TOOLS-02 | Low (decision) | Find | The Expression syntax help offers `attributes has hidden/readonly/…` ("Items with the hidden or system attribute") without saying that Linux listings report no attribute flags, so on Linux these predicates never match (`missing(attributes)` matches everything). The behaviour itself is documented in `docs/developer/METADATA_FILTERS.md`; the scenario asserts it. | Find, Expression `attributes has readonly or attributes has hidden` over a tree with a dot-file and a mode-0444 file. | The in-app help mentions the platform limit. | 0 results, no hint. | `crates/midnight-ui/ui/find-help.slint:67,81` |
-| ACC-TOOLS-03 | Low | Help | The keyboard help says "Native size scans follow directory links and junctions with cycle detection". Links inside a measured folder are skipped (measured `links/` is 0 bytes); only a marked link row is measured through its target, as `docs/developer/TREE_PANEL.md` says. | F1. | Help matches the behaviour. | The outdated sentence (`help.png`). | `crates/midnight-ui/ui/help-dialog.slint:38` |
+| ACC-TOOLS-02 | Low (decision) | Find | The Expression syntax help offers `attributes has hidden/readonly/…` ("Items with the hidden or system attribute") without saying that Linux listings report no attribute flags, so on Linux these predicates never match (`missing(attributes)` matches everything). The behaviour itself is documented in `docs/developer/metadata-filters.md`; the scenario asserts it. | Find, Expression `attributes has readonly or attributes has hidden` over a tree with a dot-file and a mode-0444 file. | The in-app help mentions the platform limit. | 0 results, no hint. | `crates/midnight-ui/ui/find-help.slint:67,81` |
+| ACC-TOOLS-03 | Low | Help | The keyboard help says "Native size scans follow directory links and junctions with cycle detection". Links inside a measured folder are skipped (measured `links/` is 0 bytes); only a marked link row is measured through its target, as `docs/developer/tree-panel.md` says. | F1. | Help matches the behaviour. | The outdated sentence (`help.png`). | `crates/midnight-ui/ui/help-dialog.slint:38` |
 | ACC-TOOLS-04 | Low | Jobs | The Jobs window lists a paused copy by its phase ("Copying" or "Verifying SHA-256"); only its progress window says "Paused". | F5 of a large file and `many/`, Pause, Jobs. | The Jobs row says Paused. | "Copying"/"Verifying SHA-256" (`jobs-paused.png`). | `crates/midnight-ui/src/job_presentation.rs:252-289` (row state from `copy_waiting_label`, not `copy_status_label`). |
 | ACC-TOOLS-05 | Low | Checksums | After Replace is clicked in the save prompt, Escape no longer closes the Checksums window; Tab gives it focus again. | Save manifest… onto an existing file, Replace, Escape. | Escape closes the window. | The window stays open (`escape-after-replace.png`). | Suspected: the focused prompt button is removed with the prompt row (`checksum-window.slint:148-162`) and nothing takes focus. |
 | ACC-TOOLS-06 | Low | Checksums | A Checksums window that opens on the Verify page ignores Escape until something else takes focus. | Ctrl+F8 on `all.md5`, Escape at once. | The window closes. | It stays open (`escape-on-verify-page.png`). | Suspected: `begin()` focuses the results list (`checksum-window.slint:20`, called from `checksum_windows.rs:314`), which the Verify page hides, so Slint drops the key. |
@@ -120,7 +120,7 @@ Harness and tooling notes (not application bugs):
 - `App::notice()` keeps returning the last notice after it was dismissed: the main
   window's message properties are only written while a notice exists
   (`crates/midnight-ui/src/lib.rs:862-870`). The tools scenarios use
-  `NoticePresentation.token` instead (`tools_support::shown_notice`); ACCEPTANCE.md
+  `NoticePresentation.token` instead (`tools_support::shown_notice`); acceptance.md
   lists this and the other pitfalls.
 - The test binary rejects `--only`; pass scenario names as plain arguments.
 - Compare directories' Engine failure notice is not reachable through input in this

@@ -29,7 +29,7 @@ impl DialogSessions {
 }
 
 /// Every shipped native tool window is `Modeless`; modal flows are embedded
-/// popups in the main window (docs/developer/DIALOG_ERGONOMICS.md).
+/// popups in the main window (docs/developer/dialog-ergonomics.md).
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum DialogModality {
     Modeless,

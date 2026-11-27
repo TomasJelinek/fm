@@ -68,7 +68,7 @@ were inspected. Both enable only `std`, selecting MIT with attribution; no
 optional assembly/OID/compression features. Existing sha2 0.10.9 supplies SHA-256
 and SHA-512. SHA-1 0.10.7 changes only a disabled optional assembly feature.
 Refreshed native Windows/Linux app captures regenerate **58 direct / 488 total /
-456 names** in [the inventories](../THIRD_PARTY.md); full new license texts are
+456 names** in [the inventories](../third-party.md); full new license texts are
 staged under `_build/goal/checksums/notices/` and the normal release packager
 collects them from the refreshed selected graph.
 

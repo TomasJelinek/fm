@@ -1,4 +1,4 @@
-//! The update check in the application (docs/developer/UPDATES.md): the update service
+//! The update check in the application (docs/developer/updates.md): the update service
 //! runs on its own thread; this module connects it to the toolbar button, the dialog and
 //! the Options choices, runs the startup check and confirms a new version's start, and
 //! hands "Restart now" to the updater (an extracted release folder) or "Install now" to

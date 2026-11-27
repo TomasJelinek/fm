@@ -188,7 +188,7 @@ Protocol 2 has no artificial archive-source, member or extracted-disk byte ceili
 Full-member or solid-block verification can consume the available private TEMP
 storage even for a thumbnail request; storage failure aborts staging and cannot
 publish partial content. Archive worker memory, metadata and decoder-window
-limits remain those in the [filesystem contract](../developer/FILESYSTEM_API.md).
+limits remain those in the [filesystem contract](../developer/filesystem-api.md).
 The tiny ZIP/AVI fixture does not qualify large-content latency or disk capacity.
 
 Linux execution, physical native panel scroll/selection/view-switch behavior, archive
@@ -203,7 +203,7 @@ full UI behavior, all-format reopen qualification or generic remote-provider pre
 Status: scoped implementation, unit/lint and installed-worker gates passed. Final
 combined application verification belongs to the enclosing batch. The 10 November
 evidence above is unchanged. The approved change is the protocol-3 cooperative member-staging
-contract in FILESYSTEM_API.md, using independent public API packages only.
+contract in filesystem-api.md, using independent public API packages only.
 Passing a live viewport flag into the old read would kill the shared mount;
 spawning a separate preview mount would consume extra process/memory capacity.
 The chosen path cancels one negotiated staging request and drains its terminal

@@ -4,7 +4,7 @@
 //! An MSI copy has no `BUILD-INFO.json`, so it is never swapped in place (`apply`):
 //! Windows Installer owns its files, its registration and its uninstall entry, and only a
 //! newer MSI of the same `UpgradeCode` may replace them. The flow
-//! (docs/developer/UPDATES.md, "Windows Installer copies"):
+//! (docs/developer/updates.md, "Windows Installer copies"):
 //!
 //! 1. `detect` asks Windows Installer for the products of the MSI's fixed `UpgradeCode`
 //!    and finds the one whose `InstallLocation` is the running executable's folder, in

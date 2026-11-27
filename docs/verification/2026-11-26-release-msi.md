@@ -1,7 +1,7 @@
 # Windows installer (MSI) from a release ZIP
 
 Recorded on 26 November 2026, Windows 11 x64, Python 3.15, with `scripts/package-msi.py`
-([Windows installer](../RELEASE_BUILD.md#windows-installer-msi)) at the commit that
+([Windows installer](../release-build.md#windows-installer-msi)) at the commit that
 added it.
 
 ## Input

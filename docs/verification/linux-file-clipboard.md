@@ -32,7 +32,7 @@ has not been exercised by the native verification described below.
 ## Native regression harness
 
 CI's Linux `check` job, with the command in [Targeted test
-execution](../developer/TEST_EXECUTION.md#isolated-x11-tests), starts a separate
+execution](../developer/test-execution.md#isolated-x11-tests), starts a separate
 Xvfb server and runs the ignored `file_clipboard::x11::tests` tests and the
 clipboard session test with `MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1` and
 `WAYLAND_DISPLAY` unset. The tests run serially because they share that

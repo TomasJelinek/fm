@@ -69,4 +69,4 @@ restricted thumbnail worker. Seven original license notices for the four relevan
 pinned packages were copied and SHA-verified in the QA notice staging directory.
 Evidence: `inventory-generate.log`, `inventory-check.log`, `notices-verified.json` and
 `notices/` under `_build/qa/icon-picker-20261112/`; policy and feature details are in
-[THIRD_PARTY.md](../THIRD_PARTY.md).
+[third-party.md](../third-party.md).

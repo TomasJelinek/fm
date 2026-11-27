@@ -2,7 +2,7 @@
 
 Verified on Linux on 2026-11-24 using the existing offline Docker build image and
 the pinned Rust 1.99.1 toolchain. No dependencies or enabled dependency features
-changed. Implemented behavior is documented in [Find](../developer/FIND.md).
+changed. Implemented behavior is documented in [Find](../developer/find.md).
 
 ## Targeted results
 

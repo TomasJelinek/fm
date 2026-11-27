@@ -1,5 +1,5 @@
 //! The scenario registry. Add a scenario by writing `fn(&mut Context) -> Result<(), String>`
-//! in a module here and listing it in [`all`] (docs/developer/ACCEPTANCE.md). A module
+//! in a module here and listing it in [`all`] (docs/developer/acceptance.md). A module
 //! listed in [`OWNED`] registers its own scenarios (`pub fn scenarios() -> Vec<Scenario>`),
 //! so they change without an edit here.
 pub mod about_box;

@@ -2,8 +2,8 @@
 
 Scope: acceptance findings AF-4 (no hidden-files toggle) and AF-6 (keypad + − *
 started a filename search) of the [files acceptance run](2026-11-20-acceptance-acc-files.md).
-Behavior is described in [keyboard shortcuts](../KEYBOARD_SHORTCUTS.md#hidden-files-and-selection-by-mask)
-and the [selection contract](../developer/SELECTION.md#selection-by-mask).
+Behavior is described in [keyboard shortcuts](../keyboard-shortcuts.md#hidden-files-and-selection-by-mask)
+and the [selection contract](../developer/selection.md#selection-by-mask).
 
 ## Design
 

@@ -29,8 +29,8 @@ preferences, independently of Text and Source.
   use the documented readable source fallback. HTML stays inert; remote images,
   fonts, mathematics and diagrams are not rendered/fetched.
 
-See [presentation](../developer/VIEWER_PRESENTATION.md),
-[wire contract](../developer/VIEWER_PROTOCOL.md) and
+See [presentation](../developer/viewer-presentation.md),
+[wire contract](../developer/viewer-protocol.md) and
 [plugin limits](../../plugins/midnight-viewer-markdown/README.md).
 
 ## Tests and build evidence

@@ -1,6 +1,6 @@
 //! Read-only comparison of the two panels' displayed directories, with the options
 //! and semantics of Open Salamander's Compare Directories (see
-//! docs/developer/COMPARE_DIRECTORIES.md). Metadata criteria never read file
+//! docs/developer/compare-directories.md). Metadata criteria never read file
 //! contents; the content criterion reads both files of a pair byte by byte on
 //! backend workers. With subfolders, a per-entry outcome (`CompareMarks`) lets the
 //! panels show which subfolders and files match.

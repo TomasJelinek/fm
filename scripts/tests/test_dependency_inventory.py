@@ -216,8 +216,8 @@ class InventoryTests(unittest.TestCase):
                 lock = (root / manifest).with_name("Cargo.lock").read_text(encoding="utf-8")
                 pinned = f'source = "{self.module.PROJECT_REGISTRY_SOURCE}"' in lock
                 self.assertEqual("Sdk = " in rest, pinned)
-        # The features of docs/THIRD_PARTY.md, and no others.
-        documentation = (root / "docs/THIRD_PARTY.md").read_text(encoding="utf-8")
+        # The features of docs/third-party.md, and no others.
+        documentation = (root / "docs/third-party.md").read_text(encoding="utf-8")
         options = {name: " ".join(re.findall(r"'([^']+)'", re.search(r"Options = @\(([^)]*)\)", rest).group(1)))
                    for name, (_, rest) in scopes.items() if "Options = " in rest}
         self.assertEqual(options, {"renderer-tests": "--no-default-features --features wgpu",

@@ -118,7 +118,7 @@ This recheck does not establish behavior for every archive/network plugin.
 
 Midnight Explorer retains full SHA-256 destination readback as the default
 and additional Move finalization proofs, as specified in
-[the current transfer contract](../developer/TRANSFERS.md). A subsequent explicit
+[the current transfer contract](../developer/transfers.md). A subsequent explicit
 user request adds optional length + first/middle/last64 KiB verification and
 native same-volume rename without content reads; see the
 [accepted refinement](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md).

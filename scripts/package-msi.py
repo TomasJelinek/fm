@@ -770,7 +770,7 @@ def check_scope_rules(tables):
     if actions.get("SetUserInstallFolder", (None,) * 4)[2:] != ("INSTALLDIR", USER_INSTALL_FOLDER):
         raise ValueError("A per-user installation must go to the per-user MSI's folder")
     # The application finds its installation by the InstallLocation that this records
-    # (docs/developer/UPDATES.md#windows-installer-copies) and updates it with INSTALLDIR.
+    # (docs/developer/updates.md#windows-installer-copies) and updates it with INSTALLDIR.
     execute = {row[0] for row in tables["InstallExecuteSequence"]}
     if (actions.get("SetInstallLocation", (None,) * 4)[2:] != ("ARPINSTALLLOCATION", "[INSTALLDIR]")
             or "SetInstallLocation" not in execute):

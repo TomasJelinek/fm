@@ -14,7 +14,7 @@ separate projects and depend only on the public API/SDK. Host adapters preserve
 raw native paths during migration; display labels never grant native authority.
 
 **Spec:** `docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md`,
-`docs/developer/FILESYSTEM_MIGRATION.md`, and backlog VFS-01.
+`docs/developer/filesystem-migration.md`, and backlog VFS-01.
 
 ## Constraints and ownership
 

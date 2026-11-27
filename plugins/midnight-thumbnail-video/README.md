@@ -55,7 +55,7 @@ each successfully generated frame in its ordinary bounded disk cache.
 
 Samples sit at 10%, 25%, 40%, 55%, 70% and 85% of the container duration, counted
 from the container start time; the panel shows them in that order, each for 0.8 s
-([video cycles](../../docs/developer/NATIVE_ICONS.md#video-cycles)). A seek lands on
+([video cycles](../../docs/developer/native-icons.md#video-cycles)). A seek lands on
 the key frame at or before the target and decoding continues forward from there, so
 key-frame spacing never moves a sample: the bundled profile takes the frame displayed
 at the target, the Media Foundation helper the first frame at or after it. When no

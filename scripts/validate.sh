@@ -6,7 +6,7 @@
 # prerequisite is missing is SKIPPED with the reason. Exit codes: 0 no step failed
 # (with --strict: also none skipped for a missing prerequisite), 1 a step failed,
 # 2 invalid arguments, 127 cargo, rustc or Python 3.12+ is missing.
-# See docs/developer/TEST_EXECUTION.md.
+# See docs/developer/test-execution.md.
 set -euo pipefail
 
 usage() {
@@ -474,7 +474,7 @@ step_x11_clipboard() {
 }
 step_host_build() {
     # The explorer records the SHA-256 of the authorization helper it ships with
-    # (RELEASE_BUILD.md): the helper first, then both with the variable naming it.
+    # (release-build.md): the helper first, then both with the variable naming it.
     local profile_flag=()
     [[ $build_profile == release ]] && profile_flag=(--release)
     cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --locked "${profile_flag[@]}" ||

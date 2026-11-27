@@ -15,8 +15,8 @@ not wait for a provider call or create an unbounded command backlog.
 **Tech Stack:** Existing Rust, Tokio and Slint; no new dependencies or plugin ABI.
 
 **Spec:** [Accepted panel search](../specs/2026-11-05-panel-search-and-metadata-design.md),
-[inline trees](../../developer/INLINE_TREES.md), and
-[current panel integration](../../developer/TREE_PANEL.md).
+[inline trees](../../developer/inline-trees.md), and
+[current panel integration](../../developer/tree-panel.md).
 
 ## Global constraints and decisions
 

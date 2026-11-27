@@ -3,7 +3,7 @@
 //! `HistoryLineEdit`, which adds recent entries), or `ThemedLineEdit` with
 //! `clear-button: true` where a field needs its caret offsets or the theme's selection
 //! colours. Anything else is listed below with its reason, and the list holds nothing
-//! that no longer exists (docs/developer/DIALOG_ERGONOMICS.md, "Common edit").
+//! that no longer exists (docs/developer/dialog-ergonomics.md, "Common edit").
 use std::path::{Path, PathBuf};
 
 /// Text field elements, longest names first so that `LineEdit` is not found inside

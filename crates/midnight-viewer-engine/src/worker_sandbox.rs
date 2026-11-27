@@ -43,7 +43,7 @@ const DECLINED: &str = "Authorization was cancelled or refused, so nothing was i
 const NO_AGENT: &str = "No authentication agent runs in this session, so nobody can be asked \
                         to authorize it from here.";
 const STILL_REFUSED: &str = "Its AppArmor profile was installed from this viewer, but the system \
-                             still refuses the sandbox (see SYSTEM_REQUIREMENTS.md).";
+                             still refuses the sandbox (see system-requirements.md).";
 
 /// The platform's offer: the HTML viewer's AppArmor profile on Linux, nothing elsewhere.
 pub(super) fn system_offer() -> Offer {

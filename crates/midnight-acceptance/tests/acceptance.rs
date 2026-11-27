@@ -5,7 +5,7 @@
 //! This target needs the `acceptance` feature and has its own `main` (`harness = false`):
 //! parallel scenarios use private worker processes, and shared-desktop scenarios run
 //! exclusively, each under a watchdog. Run it with `./build.sh --acceptance` or
-//! `scripts/acceptance.sh`; see docs/developer/ACCEPTANCE.md.
+//! `scripts/acceptance.sh`; see docs/developer/acceptance.md.
 // Deny, not forbid: the slint! fixture windows of the UI polish gate's red cases are
 // generated bindings that carry their own narrow allowance (CODE_STYLE.md).
 #![deny(unsafe_code)]

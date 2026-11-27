@@ -257,7 +257,7 @@ fn message_with(
         None => format!(
             "{cause} An administrator can allow it once by installing the package's AppArmor \
              profile for this installation with {SCRIPT} (see README.txt and \
-             SYSTEM_REQUIREMENTS.md)."
+             system-requirements.md)."
         ),
     }
 }

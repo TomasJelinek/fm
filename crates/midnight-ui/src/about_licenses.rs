@@ -3,7 +3,7 @@
 //!
 //! The list is the current dependency inventory (`docs/dependencies/cargo-licenses.csv`)
 //! restricted to the components a release ships for this platform, plus the
-//! bundled components outside Cargo that `docs/THIRD_PARTY.md` records. Like the
+//! bundled components outside Cargo that `docs/third-party.md` records. Like the
 //! release notice, it conservatively includes build- and test-time libraries. A
 //! library's license text and authors come from the backend
 //! (`Command::ReadLicenseNotice`); this module reads no files. The program's own
@@ -56,7 +56,7 @@ const SHIPPED: [(&str, &str); 14] = [
     ("thumbnail-video", "video thumbnails and playback"),
 ];
 
-/// A shipped component outside Cargo, as `docs/THIRD_PARTY.md` records it.
+/// A shipped component outside Cargo, as `docs/third-party.md` records it.
 struct Bundled {
     name: &'static str,
     version: &'static str,

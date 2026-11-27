@@ -1,5 +1,5 @@
 //! The update check's button, dialog, About entry and Options choices in the real
-//! window (docs/developer/UPDATES.md). The update service is the application's; here
+//! window (docs/developer/updates.md). The update service is the application's; here
 //! its state is handed to `show_update` as the application does, and its actions are
 //! recorded. With `MIDNIGHT_UI_RENDER_DIR` set, every state is saved as a picture.
 #[path = "support/render.rs"]

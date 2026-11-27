@@ -40,7 +40,7 @@ change was required. The native owned-dialog test also passed
 (`native-owner-final.log`): the dialog has the expected HWND owner and no
 `WS_EX_APPWINDOW`, restores its owner's enabled state, and leaves independent
 working tools separate. Salamander's modal output-admission references are recorded
-in [Make File List services](../developer/MAKE_FILE_LIST.md).
+in [Make File List services](../developer/make-file-list.md).
 
 Three warning-detail tests initially failed because the shared
 `_build/tmp/MidnightExplorer-size-warnings` directory belonged to

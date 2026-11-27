@@ -15,7 +15,7 @@ intent until the OS publishes it. Cut itself does not mutate files.
 **Tech stack:** Existing Rust crates, Slint presenter, Tokio backend and Windows/
 Linux clipboard services. No new dependency or plugin ABI.
 
-**Spec:** [Tree panel contract](../../developer/TREE_PANEL.md), main design's
+**Spec:** [Tree panel contract](../../developer/tree-panel.md), main design's
 clipboard/inline-tree requirements and the user's Ctrl+C/Ctrl+V request.
 
 ## Constraints and boundaries

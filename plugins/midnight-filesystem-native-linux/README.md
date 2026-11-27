@@ -73,7 +73,7 @@ the stage is used leave nothing behind. NFS mounts and FUSE mounts without
 rename flags cannot use this Rename: the kernel NFS client refuses every
 `renameat2` flag, so preparation is refused on NFS, and a FUSE server's refusal
 of `RENAME_NOREPLACE` is reported as Unsupported after the unused stage is
-removed. See [protocol](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md).
+removed. See [protocol](../../filesystem-api/native-plugin-protocol.md).
 
 `plugin.toml` describes the `filesystem-native` package for `x86_64-unknown-linux-gnu`
 (ABI 1, minimum host minor 4). The application loads it from

@@ -29,7 +29,7 @@ while copied data uses the job's selected full/quick verification policy.
 
 Progress separates explicit earlier-transfer waiting, capacity waiting and
 actual discovery, then shows current-readback bytes and a fresh 0..100% chart per
-file/attempt. The [progress amendment](../../developer/OPERATION_PROGRESS.md)
+file/attempt. The [progress amendment](../../developer/operation-progress.md)
 defines those meters. The first increment and dated evidence below remain
 baseline history; they do not qualify this new form or concurrent execution.
 
@@ -87,7 +87,7 @@ pre-delete failures/cancellation restore without replacement, and exceptional
 restore conflicts report the retained path without overwriting a newer source.
 Successful Move retains no source copy or empty staging directory. Current native
 capability and safety limits are defined in the
-[transfer contract](../../developer/TRANSFERS.md); Copy remains source-preserving.
+[transfer contract](../../developer/transfers.md); Copy remains source-preserving.
 
 Directory merging and explicit per-file replacement are available through the
 existing conflict flow. Destination replacement retention is a separate declared

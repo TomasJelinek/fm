@@ -1,7 +1,7 @@
 # Dependency inventory from each host's captures
 
 The tables in `docs/dependencies/` are generated from the Cargo metadata and trees of
-the 23 inventory workspaces ([procedure](../THIRD_PARTY.md#regenerating-the-inventory)).
+the 23 inventory workspaces ([procedure](../third-party.md#regenerating-the-inventory)).
 Build dependencies and procedural macros follow the host, so each target is captured on
 its own host. A Windows query on Linux is not equivalent: for the application it listed
 Linux-only build dependencies of Slint (`dlib`, `yeslogic-fontconfig-sys`) that the
@@ -32,7 +32,7 @@ Windows metadata lacks, and the generator refused it.
   edits had placed out of the generator's order moved; their content is unchanged. The
   columns that the About dialog reads are identical. `fdd8a369` committed these tables;
   tables generated locally from the run's captures are byte-identical to them.
-- [LOCKFILE_ONLY.md](../dependencies/LOCKFILE_ONLY.md) needed no row change: every
+- [lockfile-only.md](../dependencies/lockfile-only.md) needed no row change: every
   third-party package of the 23 lock files is an inventory record or a row there, never
   both, and each row names exactly the workspaces whose lock files pin it.
 - Locally on Linux, the script under PowerShell 7.7.0 gave the same 22 Linux and 2 macOS

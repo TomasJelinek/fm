@@ -23,7 +23,7 @@ end-to-end UI qualification.
   so pre-tree native marks cannot silently return.
 
 Implementation and current limits are described in
-[TREE_PANEL.md](../developer/TREE_PANEL.md). No dependencies, index entries,
+[tree-panel.md](../developer/tree-panel.md). No dependencies, index entries,
 commits or remote branches were changed by this UI task.
 
 ## Evidence

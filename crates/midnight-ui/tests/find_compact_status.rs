@@ -1,5 +1,5 @@
 //! WIN-7 of the Windows acceptance run (the find record's F-L04): a Find window under
-//! 360 px high with text over 20 px shows its idle status in the query area, as FIND.md
+//! 360 px high with text over 20 px shows its idle status in the query area, as find.md
 //! says, and keeps it in view there: on the area's last line, below the scrolled query
 //! form, instead of at the end of that form, scrolled out of view, where the user did
 //! not see how the search ended. The query's mask field stays in view above it.

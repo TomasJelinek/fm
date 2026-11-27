@@ -1,7 +1,7 @@
 # Midnight Explorer — dvoupanelový souborový manažer v Rustu
 
 Datum: 4. listopadu 2026; doplněno 9. listopadu 2026
-Aktualizace 11. listopadu: [plynulé pixelové posouvání](../../developer/SCROLLING.md)
+Aktualizace 11. listopadu: [plynulé pixelové posouvání](../../developer/scrolling.md)
 platí pro panely, seznamy v Nastavení, Find, Jobs, nabídky i viewery. Kolečko má
 krátký přerušitelný dojezd; přesné touchpadové vstupy zůstávají nativní. Panely
 se zarovnávají na řádek až po skončení pohybu. Podmínkou ověření je kromě
@@ -60,7 +60,7 @@ Find s Masks/Regex/Expression a jednořádkovými výsledky, známé velikosti s
 bez hlášky „unknown“, podrobné informace o disku, Markdown GitHub/Compact/Comfortable
 a čísla řádků s pozicí ve source vieweru. Výslovně ruší režim „Move with recovery“
 a požadují skutečná přesunutelná/resizovatelná okna dialogů mimo hlavní okno.
-[Stav funkcí](../../FEATURE_STATUS.md) a [backlog](../../IMPLEMENTATION_BACKLOG.md)
+[Stav funkcí](../../feature-status.md) a [backlog](../../implementation-backlog.md)
 oddělují hotové funkce od rozpracovaných oprav a dosud neověřeného nasazení.
 
 [Společná horní lišta](2026-11-08-shared-toolbar-design.md) nahrazuje dvě stejné
@@ -98,7 +98,7 @@ Porovnání souborů bez výběru v protějším panelu vyhledá stejný přesn�
 název v jeho viditelném seznamu. Výslovně označený protějšek má přednost;
 nesouvisející soubor pod kurzorem není náhradním kandidátem.
 
-Aktuální [ovládání source a Markdown vieweru](../../developer/VIEWER_PRESENTATION.md)
+Aktuální [ovládání source a Markdown vieweru](../../developer/viewer-presentation.md)
 zahrnuje výchozí číslování řádků, skutečnou logickou pozici, písma a profily
 GitHub/Compact/Comfortable. Indexování vzdálených pozic nesmí blokovat zobrazení;
 číslování se nezapočítává do kopírovaného textu. PDF při přechodu na jinou stránku
@@ -112,7 +112,7 @@ softwarový fallback; Windows nyní vybírá skutečné WGPU/DX12 a debug sestav
 optimalizuje i kritické smyčky softwarového rendereru.
 
 Nativní Browse/Stat/Storage a čtení pro F3 nyní používají samostatné Windows/Linux
-filesystem knihovny přes [veřejné API](../../developer/NATIVE_FILESYSTEM_API.md).
+filesystem knihovny přes [veřejné API](../../developer/native-filesystem-api.md).
 Chybějící plugin nesmí aktivovat skrytý vestavěný fallback. Převod ostatních operací,
 watcherů a obecných identit providerů zůstává samostatnou částí migrace.
 Rekurzivní obyčejný Move odstraňuje každý soubor ihned po ověření a prázdné zdrojové
@@ -164,7 +164,7 @@ jeho vlastním úspěšném zápisu, nezávislém SHA-256/readback ověření a 
 kontrolách; další soubor se začne kopírovat až potom. První mazací schopnost je
 omezena na běžné soubory na lokálním NTFS ve Windows. Linux přesun nyní odmítá
 před publikováním, protože vyloučení rozpracovaného otevření zdroje není zaručeno.
-Rozsah, limity a zbývající ověření určuje [transferový kontrakt](../../developer/TRANSFERS.md).
+Rozsah, limity a zbývající ověření určuje [transferový kontrakt](../../developer/transfers.md).
 
 ## 1. Záměr a potvrzená rozhodnutí
 
@@ -176,8 +176,8 @@ Požadavky uživatele:
 - Všechny knihovny třetích stran musejí umožnit zamýšlený vývoj, použití a distribuci
   bez povinných poplatků či royalties; preferujeme open source. Platí i pro
   transitivní závislosti, API/SDK, pluginy, build a testy. Licence a povinnosti
-  eviduje [licenční politika](../../DEPENDENCY_POLICY.md) a
-  [úplný seznam knihoven](../../THIRD_PARTY.md).
+  eviduje [licenční politika](../../dependency-policy.md) a
+  [úplný seznam knihoven](../../third-party.md).
 - Oddělený front-end a back-end. Uživatel zvolil **jednu aplikaci s oddělenými Rust crates a komunikací přes zprávy**.
 - Dva nezávislé panely, zobrazení disků/připojených svazků a přepínání mezi nimi.
 - Kopírování s povinným ověřením kontrolním součtem.
@@ -352,8 +352,8 @@ virtuální zdroje odmítá bez tichého snížení záruky. UI volba zachován�
 času změny je ve výchozím stavu vypnutá; její testy UI prošly na Windows i Linuxu
 a aktuální Windows release prošel nativním ověřením spuštění.
 [Ověření](../../verification/2026-11-07-metadata-filters-provider-checkpoint.md),
-[kontrakt](../../developer/TRANSFERS.md) a
-[volba dialogu](../../developer/TRANSFER_OPTIONS.md) vymezují skutečný rozsah.
+[kontrakt](../../developer/transfers.md) a
+[volba dialogu](../../developer/transfer-options.md) vymezují skutečný rozsah.
 
 Backend zachytí čas ze zdrojového handle před čtením dat. Po zdrojovém SHA-256 a
 úplném nezávislém čtení cíle nastaví čas na vlastním neveřejném souboru, provede
@@ -1071,7 +1071,7 @@ schopnosti je silné podmíněné přepsání Unsupported; případná slabší 
 zvolená, nikdy tichý fallback. Test musí změnit cíl i po poslední revalidaci těsně
 před publikováním a prokázat, že nový soubor nepřepsal starý souhlas.
 
-Implementační doplněk k oddílu 25: [nativní transfer kontrakt](../../developer/TRANSFERS.md)
+Implementační doplněk k oddílu 25: [nativní transfer kontrakt](../../developer/transfers.md)
 odděluje výslovné „Replace · keep original“ od silné podmíněné výměny identity.
 Původní objekty zůstávají v soukromém recovery adresáři; částečný commit nikdy
 neopravňuje smazat zdroj. Merge a Replace all mají nezávislý rozsah jediné úlohy.
@@ -1190,7 +1190,7 @@ Ctrl+I invertuje pouze soubory aktivního panelu (také uvnitř archivu), se zac
 výběru složek a odkazů na složky. Hromadné výpočty běží v backendu; UI čte sdílený neměnný
 bitový snapshot a potvrzuje odpovídající kontext a revizi výběru. Editory si
 zachovají běžné Ctrl+A pro text. Úplná aktuální mapa je v
-[KEYBOARD_SHORTCUTS.md](../../KEYBOARD_SHORTCUTS.md).
+[keyboard-shortcuts.md](../../keyboard-shortcuts.md).
 
 ## 28. Plynulý výpočet velikostí a sjednocená navigační lišta
 
@@ -1252,7 +1252,7 @@ Vkládání cest a jmen do příkazového editoru nepřidává uvozovky, escapov
 oddělovací mezery. Jde o přesnou editaci textu, nikoli vytvoření chráněného
 shellového argumentu. Pravidla ukládání nastavení, výběru barev/souborů,
 responzivních dialogů a navazující optimalizace viewerů doplňuje
-[ergonomie dialogů](../../developer/DIALOG_ERGONOMICS.md).
+[ergonomie dialogů](../../developer/dialog-ergonomics.md).
 
 ## 30. Hledání psaním, tooltipy a atribut komprese
 
@@ -1313,7 +1313,7 @@ obsahovat označení komprese. Koncový odkaz se sleduje až při výslovné nav
 
 Podrobná rozhraní, prior art Salamanderu a ověřovací scénáře jsou v
 [návrhu hledání, tooltipů a metadat](2026-11-05-panel-search-and-metadata-design.md).
-[README](../../USER_GUIDE.md) obsahuje sestavení a spuštění Windows x64 a
+[README](../../user-guide.md) obsahuje sestavení a spuštění Windows x64 a
 Linuxu/Ubuntu/Mintu včetně `build.bat` a `build.sh`; macOS zůstává budoucí etapou.
 
 ## 31. Sdílení kódu a velikost generovaného Rustu
@@ -1354,7 +1354,7 @@ spolu s nastavením před prvním vykreslením; zápis zajišťuje asynchronní 
 
 Produkt se jmenuje **Midnight Explorer**; release používá optimalizaci 3, fat LTO
 a jednu codegen jednotku, s kontrolami přetečení a obnovou chyb workerů.
-Podrobnosti jsou v [release konfiguraci](../../RELEASE_BUILD.md).
+Podrobnosti jsou v [release konfiguraci](../../release-build.md).
 [Viewer rozšíření](2026-11-05-viewer-implementation-extension.md) nyní požaduje
 tři samostatné pluginy, Escape/Space, velikost okna podle aplikace a externí editor F4.
 Následuje ověřené dávkové copy/move, změna atributů/časů a nemodální hledání podle
@@ -1439,7 +1439,7 @@ výraznější rozlišení ploch, výběru a okrajů; kontrast se kontroluje spo
 ## 39. Podporované systémy a minimální prostředky
 
 Závazný přehled cílových verzí OS, architektur, knihoven a ověření obsahují
-[systémové požadavky](../../SYSTEM_REQUIREMENTS.md). Pro verzi 0.1 je cílem
+[systémové požadavky](../../system-requirements.md). Pro verzi 0.1 je cílem
 Windows 10 22H2 / Windows 11 x64 s MSVC, Ubuntu od 24.04 LTS a Mint 22.x x86-64.
 macOS nemá implementovaný adaptér, proto zatím nemá podporovanou verzi ani
 ověřené minimum RAM. Nová platforma musí projít vlastní kvalifikací.
@@ -1540,12 +1540,12 @@ rozpočty 64 MiB pro archiv/člena a 128 MiB pro dekódovaný součet. Neprovád
 do archivů, vnořené mounty, dešifrování ani spuštění člena externí aplikací. F5
 vykopírování do nativního cíle doplňuje navazující etapa z 2026-11-07.
 Tyto rozpočty neomezují délku nativních cest. Přesné smlouvy a další limity uvádí
-[filesystem API](../../developer/FILESYSTEM_API.md).
+[filesystem API](../../developer/filesystem-api.md).
 
 ### Rozpoznávání a volitelné asociace archivů
 
 Hostitel sdílí jednu tabulku 67 přípon (51 ZIP kontejnerů a šestnáct přípon ostatních
-dekodérů). Seznam a zdroje jsou v [archivních asociacích](../../ARCHIVE_FORMATS.md).
+dekodérů). Seznam a zdroje jsou v [archivních asociacích](../../archive-formats.md).
 Options → Archives nabízí každou příponu se zaškrtávátkem a ukládá jednotlivé
 uživatelské odchylky od výchozího stavu. ZIP a vývojářské balíčky WHL, EGG, WAR,
 EAR, AAR, AAB, NUPKG a SNUPKG jsou zapnuté. Dokumenty Office/OpenDocument, knihy,
@@ -1580,10 +1580,10 @@ střídají nejvýše šest snímků, s předností souboru pod myší. Verze zd
 panelu i vymazání cache musí zneplatnit staré výsledky. Nastavení Previews umožní
 náhledy vypnout, výslovně povolit síťová umístění a asynchronně vymazat cache.
 Podrobnosti: [náhledy](2026-11-05-panel-views-thumbnails-design.md) a
-[worker SDK](../../developer/WORKER_SDK.md).
+[worker SDK](../../developer/worker-sdk.md).
 
 Seznam všech knihoven a skutečně připnutých licencí je v
-[licenčním přehledu](../../THIRD_PARTY.md). Distribuce přikládá příslušné copyright
+[licenčním přehledu](../../third-party.md). Distribuce přikládá příslušné copyright
 a licenční texty; volitelný FFmpeg také odpovídající zdroj a konfiguraci sestavení.
 
 ## 2026-11-07: prohlížeče, barvy a navigace
@@ -1595,7 +1595,7 @@ stejné knihovny `image 0.25.10` a `moxcms 0.8.1` jako náhledy. Izolovaný proc
 drží dekódovaný originál; host zprostředkuje čtení a dostává pouze omezený výřez.
 Fit, 1:1, přiblížení kolem kurzoru a tažení fungují bez I/O na UI vlákně.
 Public API/SDK, testy a plugin zůstávají samostatnými Cargo projekty; viz
-[API obrazového vieweru](../../developer/IMAGE_VIEWER_API.md).
+[API obrazového vieweru](../../developer/image-viewer-api.md).
 
 Options → Colors obsahuje pořadí pravidel masek/regexu, jednu základní barvu
 písma a volitelné pozadí. Barevný vzorek otevírá samostatný přesouvatelný a
@@ -1615,7 +1615,7 @@ Backend kontroluje 4096 UTF-8 bajtů, 512 tokenů, 256 uzlů, zanoření 32 a ne
 jmenných vzorů; neprovádí I/O, skripty ani čtení obsahu. Chybný či zastaralý návrh
 nezmění platný filtr; dialog zachová text a ukáže řádek/sloupec chyby. Verze
 nastavení 18 zachovává dřívější příkazy i volby kontrolních součtů. Kontext předků v inline stromu
-čeká na TREE-01. [Syntaxe a limity](../../developer/METADATA_FILTERS.md),
+čeká na TREE-01. [Syntaxe a limity](../../developer/metadata-filters.md),
 [ověření Windows/Linux](../../verification/2026-11-07-metadata-expression-filters.md).
 Carbon Green je deváté téma,
 přidané bez změny identit předchozích témat.
@@ -1628,7 +1628,7 @@ různé účty mají rozlišené položky v nabídce; stejné fyzické cíle se 
 Ikony zvláštních složek jsou větší v nezměněných tlačítkách. Archivní cesty mají
 nativní oddělovače bez vložených mezer. Generickou ikonu listu u podporovaného
 archivu nahrazuje vlastní SVG; konkrétní systémové ikony mají přednost.
-[Původ prostředků](../../ASSET_PROVENANCE.md) je zdokumentovaný samostatně.
+[Původ prostředků](../../asset-provenance.md) je zdokumentovaný samostatně.
 
 ## 2026-11-07: rychlejší výpis, extrakce, PDF a porovnávání
 
@@ -1718,7 +1718,7 @@ používají dávky nesouvislých rozsahů vůči zachycené revizi seznamu a v�
 podporují Ctrl/Shift, archivy a posun při přiblížení k okraji. Změna řazení,
 filtru nebo složky zneplatní staré gesto. Tažení skutečné položky zachovává
 souborový drag-and-drop. Aktuální implementaci a ověření popisuje
-[výběrový kontrakt](../../developer/SELECTION.md).
+[výběrový kontrakt](../../developer/selection.md).
 
 ### Spuštění pluginů ze sdíleného Windows buildu
 
@@ -1730,7 +1730,7 @@ její cíl nesmějí být přepsatelné jiným účtem nebo vést přes junction
 pluginů zůstávají aktivní a při startu se žádný plugin automaticky nekopíruje.
 Soukromé přenosné instalace nadále používají sousední složky. Viz
 [návrh](2026-11-07-trusted-runtime-resolution.md) a
-[vývojářský kontrakt](../../developer/RUNTIME_DISCOVERY.md).
+[vývojářský kontrakt](../../developer/runtime-discovery.md).
 
 ### Samostatné hledání souborů
 
@@ -1746,7 +1746,7 @@ zavře konkrétní hledání. Enter, dvojklik nebo Go to file požádá backend 
 identity a revize výsledku a potom otevře nadřazenou složku v původním panelu.
 Soubor se touto akcí nespouští. Nativní cesty se zachovávají odděleně od textu UI.
 Otevření, editace či mazání z výsledků vyžaduje samostatný bezpečný backendový
-kontrakt. Rozsah a limity: [Find API](../../developer/FIND.md).
+kontrakt. Rozsah a limity: [Find API](../../developer/find.md).
 
 ### Priorita názvu ve stavovém řádku a čitelnost vieweru
 
@@ -1799,8 +1799,8 @@ Další konzumenti bezpečných cílů operací a produkční připojování vno
 kontejnerů zůstávají nedokončené. Nativní změnové události a ruční refresh nyní
 zachovávají přijatý strom; sledování archivních větví zůstává samostatnou etapou.
 Kontrakt a přesný stav ověření jsou v
-[API větví](../../developer/INLINE_TREES.md) a
-[produkčním napojení](../../developer/TREE_PANEL.md), včetně
+[API větví](../../developer/inline-trees.md) a
+[produkčním napojení](../../developer/tree-panel.md), včetně
 [výpočtu velikostí](../../verification/2026-11-10-tree-folder-sizes.md).
 
 ### Zjednodušení ovládání — 8. listopadu
@@ -1854,7 +1854,7 @@ také BSD zápis, komentáře a samotný hash v souboru s odpovídající příp
 Výsledky odlišují shodu, rozdíl, chybějící soubor a chybu čtení. Zrušení zachová
 hotové výsledky. Parser a nativní čtecí handly brání úniku mimo složku manifestu,
 průchodu odkazy i záměně načítaného souboru; nevalidní Unicode se tiše nepřevádí.
-Přesné formáty, limity a rozhraní: [checksum API](../../developer/CHECKSUMS.md).
+Přesné formáty, limity a rozhraní: [checksum API](../../developer/checksums.md).
 
 ### Průběžné odznačování kopírování a přesunu (8. listopadu 2026)
 
@@ -1916,7 +1916,7 @@ otevřené; záznamy se uzavřením okna nemažou. Chyby a zrušené či přesko
 zůstávají viditelné. Escape/Decide later odloží rozhodnutí do Jobs → Resolve.
 Podrobnosti, omezení a porovnání se Salamanderem:
 [návrh obnovy přenosu](2026-11-08-transfer-errors-design.md),
-[API přenosů](../../developer/TRANSFERS.md).
+[API přenosů](../../developer/transfers.md).
 
 ### Klávesové procházení rozdílů a plynulé porovnání obrázků (8. listopadu 2026)
 
@@ -1926,7 +1926,7 @@ Alt+Right/Left, N/P a Alt+Home/End vycházejí z komparátoru Salamanderu.
 Skok zarovná změněný řádek v obou pohledech, na krajích nepřetáčí a rychlá
 opakování kláves neztrácí slučováním vstupů. Přenastavení nahradí všechny
 výchozí aliasy; editační pole si ponechávají své klávesy. Přehled:
-[klávesové zkratky](../../KEYBOARD_SHORTCUTS.md).
+[klávesové zkratky](../../keyboard-shortcuts.md).
 
 Režimy Swipe a Onion Skin skládá renderer ze dvou uchovaných obrazů pomocí
 ořezu a průhlednosti. Pohyb dělicí čáry nebo změna opacity již nevyvolává
@@ -1964,7 +1964,7 @@ volitelná; starší host zobrazí prostý text řádků. Limity parseru, 64 slo
 stránkování a bezpečný textový fallback zůstávají explicitní. Obrázky používají
 alternativní text, HTML je neaktivní; matematika, diagramy a vzdálené zdroje se
 nevykonávají ani automaticky nestahují. Podrobnosti:
-[prezentace viewerů](../../developer/VIEWER_PRESENTATION.md).
+[prezentace viewerů](../../developer/viewer-presentation.md).
 
 ### Zpětná vazba panelů a reset nastavení (9. listopadu 2026)
 
@@ -2057,7 +2057,7 @@ zápisu SHA-256. Zachycený seznam není snapshot obsahu disku.
 výskytu a session. Změny výběru a projekce se zpracují v pořadí; opožděné dokončení
 nesmí ovlivnit jinou složku. Clipboard a destruktivní operace vyžadují vlastní
 navazující implementaci; F6 rozšiřuje následující kontrakt. Podrobný [návrh](2026-11-10-tree-copy-design.md),
-[kontrakt](../../developer/TREE_PANEL.md#copy-from-expanded-panels) a
+[kontrakt](../../developer/tree-panel.md#copy-from-expanded-panels) a
 [ověření](../../verification/2026-11-10-tree-copy.md) uvádějí limity a aktuální stav.
 
 ### Přesun ze stromu a obnova po přenosu (10. listopadu 2026)
@@ -2169,7 +2169,7 @@ Zkrácený text panelové chyby a její úplný report mají společnou identitu
 Nová chyba se stejným krátkým textem nesmí otevřít starý report ani změnit cíl
 rozpracovaného kliknutí. Kopírování úplných podrobností používá backendový zdroj,
 ne zkrácený popisek panelu. Kontrakt popisuje
-[Panel diagnostics](../../developer/PANEL_DIAGNOSTICS.md).
+[Panel diagnostics](../../developer/panel-diagnostics.md).
 
 ### Jednotky velikosti a menu řazení
 
@@ -2227,7 +2227,7 @@ bod i bez celého měřicího intervalu. Výška křivky není procentem dokonč
 měřením fyzické propustnosti disku. Samostatná vodorovná výplň grafu vyjadřuje
 celkové dokončení podle zjištěných počtů/objemu; historie se vejde do této
 vyplněné části. Neznámý rozsah má neurčitý indikátor a stav Discovering.
-Viz [společný průběh operací](../../developer/OPERATION_PROGRESS.md). UI pouze formátuje omezené vzorky a přizpůsobuje graf
+Viz [společný průběh operací](../../developer/operation-progress.md). UI pouze formátuje omezené vzorky a přizpůsobuje graf
 tématu a velikosti okna; nemění bezpečnostní ani kontrolní podmínky operací.
 Podrobnosti: [návrh grafu](2026-11-10-operation-speed-chart-design.md).
 
@@ -2246,7 +2246,7 @@ AltGr is excluded. Releasing modifiers or switching panes during a mouse press
 preserves the originally pressed action and pane. An unassigned slot is disabled.
 At normal widths action text takes priority over icons; compact minimum-width
 cells retain key labels and expose full descriptions through tooltips/accessibility.
-See [the shortcut matrix](../../KEYBOARD_SHORTCUTS.md) for the default layers.
+See [the shortcut matrix](../../keyboard-shortcuts.md) for the default layers.
 
 
 ### Dialogy, průběžný výběr a junctiony (11. listopadu 2026)

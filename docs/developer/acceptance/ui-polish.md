@@ -6,7 +6,7 @@ surface with Slint's software renderer, reads the live item tree and the rendere
 and fails on any finding. This record lists every check family, the red case that proves
 it can fail, every surface and state with the checks that ran on it, the exemptions with
 their reasons, and the product defects the gate found. The suite is described in
-[ACCEPTANCE.md](../ACCEPTANCE.md) ("UI review checks"); the code is in
+[acceptance.md](../acceptance.md) ("UI review checks"); the code is in
 `crates/midnight-acceptance/tests/acceptance/scenarios/ui_*.rs`,
 `tests/acceptance/review.rs` and `scenarios/options_visual.rs`.
 

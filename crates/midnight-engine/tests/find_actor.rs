@@ -285,7 +285,7 @@ async fn cancellation_under_backpressure_finishes_and_superseding_queries_reject
     }
     // A stopped generation still answers header sorts after Finished. Its order
     // event can wait in the full channel while generation 2 starts; consumers
-    // drop it by generation (docs/developer/FIND.md).
+    // drop it by generation (docs/developer/find.md).
     send.send(Command::SortFind(FindSortRequest {
         session: FindSessionId(1),
         generation: FindGeneration(1),

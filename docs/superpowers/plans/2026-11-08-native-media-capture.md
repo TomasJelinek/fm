@@ -14,8 +14,8 @@ provider and bounded reader cache retain native identities and library lifetimes
 **Tech Stack:** Existing Rust services, Tokio, native filesystem public ABI and
 restricted image/video workers; no additional third-party dependency.
 
-**Spec:** VFS-01 in `docs/IMPLEMENTATION_BACKLOG.md`,
-`docs/developer/FILESYSTEM_MIGRATION.md` and the approved completion goal.
+**Spec:** VFS-01 in `docs/implementation-backlog.md`,
+`docs/developer/filesystem-migration.md` and the approved completion goal.
 
 ## Global constraints
 

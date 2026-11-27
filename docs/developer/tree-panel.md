@@ -1,0 +1,874 @@
+# Inline branch panel integration
+
+The ordinary panel offers an unknown-folder disclosure beside directories after
+an accepted native or archive listing. The first explicit disclosure requests a
+backend tree session. Until then the panel keeps its flat behavior and
+operation scopes. Network discovery rows do not offer branches; an explicitly
+activated native share follows the native listing path.
+
+`presenter/tree.rs` retains the original entries and index, and requests Enable
+with those exact allocations and the accepted selection revision. Pending flat
+selection must settle before migration. A change notification for the folder
+waits while Enable is pending instead of re-reading the folder, which would
+discard the disclosure; it then refreshes the adopted tree, or re-reads the
+folder if the tree is refused. A publication seeded before a later
+selection is rejected and retried; it cannot erase newer marks. Initial adoption
+uses the backend root-alias map to preserve the caret. Every publication is
+adopted with its matching selection and acknowledged with its exact projection
+Arc before branch, navigation, selection, or viewport requests.
+
+Each emitted projection waits for the UI to acknowledge its exact Arc before a
+new unsolicited publication replaces it. At most one newer publication is retained
+and coalesced on the model worker. Each pane's model worker runs for the session on
+one of the engine's resident worker threads (`midnight-engine-<n>`, a fixed pool of 13
+threads that starts with the engine: `resident::Owner::start` in `engine_lifetime.rs`),
+outside Tokio's bounded blocking pool; if that pool refuses
+the worker, the pane's tree lane is closed instead. Branch listings still run as
+separate blocking jobs, so collapse and navigation proceed while an enumeration is
+blocked. A completed provider task releases its mutation permit even while
+publication delivery waits. The mailbox keeps a weak reference
+(`Weak<TreeProjection>`, `tree_controller/mailbox.rs`) to the acknowledged view: Branch and Navigate gestures may still name that view
+while a newer publication is travelling to the UI. The actor revalidates that the
+same occurrence remains visible and unchanged; removed, replaced, hidden or
+foreign occurrences are refused. Selection and filesystem-operation captures
+still require the current exact projection.
+
+Older automatic Commit/Viewport observations in the same pane, navigation and
+session are silently retired at mailbox admission and worker dispatch. New
+publications trigger fresh observations. Replaced publications and their owners
+are retired on the model worker, never by a UI callback. These rules prevent an
+unrelated probe completion from being reported as command-queue saturation.
+
+The eight-slot command mailbox (`tree_controller/mailbox.rs`) coalesces viewport observations to the latest one
+in the same pane/navigation/session. An explicit user intent may evict that
+speculative observation when the mailbox is full; it never evicts another user
+intent. Optional viewport pressure is silent, while genuinely full explicit-intent
+queues and stale-view refusals have different diagnostics. Retired observations
+are released on the awaited backend cleanup worker. Neither capacity nor the
+filesystem authorization checks are relaxed.
+
+`Rows` reads the immutable projection directly. It does not construct a second
+complete UI model. Occurrence/session/revision tokens bind disclosure callbacks;
+root and descendant entry IDs never become interchangeable. Details, Brief and
+Thumbnails use the shared disclosure widget. Loading, unknown, collapsed,
+expanded, empty and failure states remain distinct. Structural publications reset
+delegates and cancel rectangle gestures. Collapsing a focused descendant moves
+the caret to its surviving visible ancestor. Loading updates preserve the panel
+viewport.
+
+Details and Brief reserve the same disclosure gutter for every row, including
+files and known-empty directory links without an expansion button. Supported
+directory links, including Windows junctions such as `Documents and Settings`,
+can show an expander under the same disclosure rules as ordinary folders; their
+system link overlay remains visible. A compatibility junction that denies listing
+on itself (`My Music`) is probed, expanded and refreshed through its readable
+target, with rows below the link's own path
+([inline trees](inline-trees.md#listing-and-disclosure)); one whose target denies
+listing still shows the failure. Thumbnail artwork retains its centered
+layout.
+
+Tree selection uses separate backend snapshots and at most 32 small pending
+intents for immediate visible feedback (`selection_preview::PREVIEW_CAPACITY`). Ctrl/Shift input, Insert/Space toggles,
+bulk selection and rectangles submit occurrence-based requests. Context rows
+cannot be marked. Loading publications replay outstanding intents after Commit;
+a structural change retains only still-visible exact toggles, because replaying
+an old positional range could select rows the user did not see. Rejected
+selection releases its preview without reusing the request revision.
+
+Ctrl+A replaces selection with selectable top-level files (`depth == 0`);
+Ctrl+Shift+A also includes top-level folders. Both clear nested marks. Ctrl+D
+clears every mark, including folders, directory links and expanded descendants.
+**Deselect files only** (`selection.clear-files`) has no default key, and Ctrl+Shift+D
+is unassigned. The shared row policy drives both
+backend results and immediate preview, so child rows never flash selected while
+waiting for acknowledgement. Filters still exclude hidden/context-only rows;
+explicit click/range selection of descendants remains available.
+
+Enter and unmodified double-click submit typed tree navigation for directories.
+Returned native and archive targets use the ordinary navigation path after
+checking the request, pane, session, view revision and next navigation generation.
+Regular files from the original root retain their explicit host/archive-open
+behavior by resolving `original_root_entry` against the exact retained root
+index and entries. Descendant IDs, captions and display paths never authorize
+that shortcut. Bounded visible-row hints reuse the panel's viewport sampling
+and never include more than the backend's 256-row probe budget
+(`TreeViewport::MAX_ROWS`). Those hints are scheduled in batches within the
+eight-request branch queue (`QUEUE_CAPACITY` in `tree_actor.rs`).
+Showing more than eight folders is not a resource error. Completed publications
+request the visible range again, so deferred folders are checked progressively;
+an explicit expansion takes priority over queued background probes. A probe
+publishes only its result, without a separate Loading publication. It only asks
+whether the folder has a subfolder: enumeration stops at the first one, keeps no
+rows and issues no child references, so a folder with more subfolders than a
+listing may hold still shows its disclosure; that limit and a child that repeats
+an ancestor are reported when the folder is listed (expanded or refreshed). A
+probe whose row was meanwhile expanded, refreshed or listed by a recursive walk is
+dropped. A refresh that lists a folder's parent again keeps a probe's answer only
+while the folder's modification time, mode and attributes stay the same. Putting
+something into the folder or taking it out (a drop onto its row, a Move out of it)
+changes its modification time, so the folder is unknown again and the next visible
+range probes it; an unopened folder is never listed by a refresh
+(`DirectoryTree::install`). Branch work that cannot start, for example at the 64-level depth limit
+(`TreeProjection::MAX_DEPTH`), never
+ends the session: a probe is skipped silently and an explicit expansion or
+refresh reports a row diagnostic. An explicit expansion whose display projection
+would exceed the 16 MiB budget restores that branch with an error and keeps the
+published rows.
+
+## Prefix search and tree options
+
+Persistent filter and sort commands run on the pane's tree worker.
+`presenter/tree_options.rs` correlates each request with its original projection,
+selection and request identity. The presenter commits sort/filter preferences only
+after accepting the matching publication, and preserves the last valid result and
+retryable filter draft on rejection. Clear disables the filter without discarding
+its expression. Masks, Regex and Expression retain unselectable ancestor context;
+sort order applies independently to sibling groups without reopening the root.
+
+Typing in an adopted native/archive tree uses the panel's literal prefix
+search and optional quick-search filter. Matching examines loaded visible tree
+rows on the backend; typing does not enumerate unopened branches or extract
+archive content. The shared Unicode matcher folds valid original native names
+and UTF-8 archive raw names, without normalization. Opaque names cannot match a
+replacement or alternate caption. Highlighting ends at an original grapheme
+boundary and is shown only when the displayed caption equals that original name.
+The backend supplies ordered match positions with the projection.
+
+Jump mode preserves selection. Filter mode intersects the prefix with the
+persistent filter, retains only matches and their necessary ancestor context,
+and removes hidden/context-only marks in the same publication. Context ancestors
+never count as matches or selection targets. Zero matches and pending queries
+cannot authorize keyboard activation through an old caret. Escape restores the
+persistent-filter view and its last usable focused occurrence. Insert waits for
+the cleared query's committed projection and settled selection before toggling
+its captured matching occurrence; stale navigation or occurrence state cancels
+that intent.
+
+The presenter retains one latest desired query and at most one options request
+in flight. Later typing, Escape, sibling sorting, persistent filters and the
+quick-filter preference compose through that request, including Options preview
+and Cancel. A typed transient rejection retries on a later input pump; outer
+command-channel pressure also preserves the latest desired query. Correlated
+receipts and exact projection/selection identities prevent an older query or
+branch completion from focusing its obsolete first match. Query admission is
+limited to 4,096 UTF-8 bytes (`MAX_QUERY_BYTES` in `tree_protocol.rs`); invalid requests
+preserve the accepted view.
+
+Extension sorting uses a shared borrowed filename accessor for key preparation
+and comparison. Native entries use their actual path basename; archives use their
+raw UTF-8 member basename without inventing a native path from a caption. Locale
+extension/name keys, directories-first ordering and deterministic ties apply;
+missing or undecodable archive extensions stay last in either direction.
+Evidence: [prefix-search record](../verification/2026-11-10-tree-prefix-search.md).
+
+## Subfolder presence
+
+Flat-panel subfolder hints are independent of tree adoption. At most 256 viewport
+directory IDs (`FolderPresenceRequest::MAX_VISIBLE`) are probed against the exact
+completed listing, with one coalescing worker per pane and the panel's listing capacity
+(`folder_presence.rs` in `midnight-engine`). A probe shares the I/O budget
+with running scans only when its row is proven to be on a confirmed local SSD (each
+lane classifies a listing and each other device once); other rows are probed
+exclusively. Native enumeration stops at the first immediate directory or
+directory-link child; it does not descend into that child or recursively walk link
+targets. Archive probes retain the captured member and mount identity.
+Empty/has-folder hints are held in a bounded display cache. Selection, flat action
+authority and navigation stay unchanged until the user's ordinary disclosure
+click requests exact tree adoption. Navigation, refresh and viewport replacement
+cancel obsolete probes. Failed probes preserve provider details for the row's
+warning tooltip and modal listing-error notice, and never become an empty-folder
+result.
+
+Presence is an existential display hint, not a validated child listing. Native
+probes use the injected directory service, validate each immediate child path and
+stop at the first folder without retaining file rows, issuing node tokens or
+enriching file metadata. Repeated file records cannot change the answer; actual
+expansion retains the full provider identity and duplicate-node validation.
+File-only directories have no arbitrary record-count cutoff. Cancellation and
+the worker/I/O limits bound concurrent work; archive probes keep their
+captured-mount validation and resource policy.
+
+For a native root, probe admission accepts `DirectoryLink` rows alongside ordinary
+directories, so one directory link cannot discard the viewport batch. Archive batches
+still reject links and files; empty or unavailable native links keep individual hints
+without losing ordinary siblings' results. Presence probes do not recurse.
+
+## Retry diagnostics and recursive expansion
+
+A denied row, including `C:\Windows\CSC`, retains its warning throughout an
+explicit elevation retry until the matching current listing actually succeeds.
+Authorization/helper admission is not listing success. Normal navigation failure
+restores the original committed cursor and scroll position; cancellation or
+another denied result preserves the original row's diagnostic. Retention is
+display-only and bound to the exact committed navigation, entries/index and raw
+row identity. Replacement rows cannot inherit it. Request generations remain
+monotonic and action/session gates stay intact; late presence/tree events cannot
+clear or mark another occurrence. Evidence:
+[authorization record](../verification/2026-11-11-directory-authorization.md#12-november-csc-warning-retention-regression).
+
+**Ctrl+click on a folder expander** sends `TreeBranchAction::ExpandRecursive`
+(`presenter/tree.rs`), also for directory symlink and junction expanders, within the
+projection's limits. Each pane runs at most one asynchronous walk, a depth-first
+continuation of the pane's tree actor (`tree_recursive.rs`). The UI captures the
+modifier and submits the typed intent; the traversal runs on backend workers. Ctrl+click
+elsewhere on a row keeps its selection meaning. Evidence:
+[recursive tree record](../verification/2026-11-12-recursive-tree.md).
+
+The recursive worker batches at most 128 returned results or 50 ms
+(`MAX_BATCH_RESULTS`, `MAX_BATCH_TIME`), with elapsed
+time checked only after an actual provider callback returns. These are scheduling
+limits, not a callback timeout or measured latency guarantee. Each batch creates
+one checkpoint/projection and waits for its exact Commit before further recursive
+I/O. Explicit input first rolls back unpublished
+model/continuation state; allocated branch/work IDs and row/alias high-water values
+remain consumed and monotonic.
+
+Collapse or navigation cancels obsolete traversal without releasing an in-flight
+provider permit early. Ancestor child-sequence checks precede dispatch of an
+already-stacked child: a Refresh that reorders, inserts or removes children pauses
+the walk instead of resuming a stale DFS cursor. Re-listing an unchanged branch,
+such as a maintenance pass after a watch event or a finished transfer, keeps the
+walk running. Viewport probes queued for rows that the walk lists are answered by
+the walk itself. Backend compares physical target
+identities along the ancestor chain for browse-only cycle detection. Logical paths
+and captured-occurrence checks remain in force for operations; a cycle-probe
+identity grants no operation authority. Cycles, denied children and other errors
+remain local to the affected branch. Known-empty directory links have no synthetic
+`+` expander.
+
+The walk is bound by the same allocation, work/publication and stale-occurrence
+guards as a single expansion. A budget stop keeps what the walk listed within the budgets, publishes it with
+the failure on the folder it stopped at, and reports the incomplete expansion
+without a retry spin; a projection overflow still restores the last published
+tree. The panel shows rows down to tree depth 64 (the shown folder's own
+entries are depth 0): a depth-64 folder with folders of its own fails on its row
+("Subfolders here are more than 64 levels deep and are not shown.") while the
+walk expands the other folders. When the walk ends early, an **Expansion
+incomplete** notice says why and shows the folder where it stopped (for the
+depth limit, the first folder it left out and how many others); like a
+navigation failure, it replaces the pane's error line for that occurrence. The other
+stop reasons are an exhausted tree resource budget, a loaded branch that changed
+("Restart expansion to continue") and a branch that could not be admitted
+(`tree_recursive.rs`). Known limit: the walk does not page beyond the projection's
+bounds (10,000 rows, 16 MiB).
+
+## Directory sizes
+
+Ctrl+Shift+S uses the exact acknowledged tree selection: selected directories
+and native directory links, or every selectable folder in the current projection
+when there are no marks, including descendants in expanded branches. This means
+all projected rows, not just those inside the scroll viewport. One request takes
+every such folder: its capture follows the projection's own bounds (10,000 rows and
+16 MiB), so no separate target limit refuses it. Hidden/collapsed
+descendants and context-only filter ancestors are excluded. A
+files-only selection does not fall back to all folders. Space captures the focused
+directory before its selection toggle, then advances the visible caret while the
+backend measures that original occurrence. Insert never starts measurement.
+
+The backend retains typed native/archive targets and their provider registrations.
+Native traversal reuses the panel's storage-aware batch scanner and shared I/O
+budget. Archive traversal reads metadata with each captured directory's exact
+ancestry; overlapping selected ancestors and descendants keep independent totals.
+It does not extract archive content or fabricate native paths.
+
+Size values and running flags arrive in bounded immutable snapshots keyed by
+`TreeRowId`, separately from the row projection. Selection, sorting, filtering
+and collapse preserve accepted work; progress never automatically resorts rows.
+Explicit Size sorting freezes the available size lookup for that projection; it
+orders folders by finished totals only (`FolderSize::sort_bytes`, partial totals of
+a calculation that skipped unreadable entries included), and running or cancelled
+totals sort with the unknown ones, after the sized folders, by name.
+Refreshing an occurrence invalidates old measurements and frozen sort values;
+navigation retires the whole scope. Native totals remain live path-based estimates,
+not a transactional filesystem snapshot.
+
+Highlighting follows each occurrence's active calculation flag, independently of
+warning severity. Only actively unfinished values remain highlighted estimates.
+A completed scan with inaccessible entries shows its observed partial total with
+`≈` in normal metadata color and weight, even while another root is calculating.
+Its yellow warning glyph and clickable details remain beside the size. An inactive
+unfinished or cancelled total also retains its partial marker; neither condition
+alone is a filesystem error. The [size presenter](../../crates/midnight-ui/src/size_presentation.rs)
+and [row rendering](../../crates/midnight-ui/ui/file-entry.slint) implement this. A
+completed scan with warnings is not a complete count of inaccessible contents.
+
+Native size scans never follow links met inside the measured folder: file
+links, directory links and junctions appear as skipped counts in the size
+tooltip, without an access-error marker, and their targets are not resolved.
+Only a selected row that is itself a directory link is measured through its
+native final-path target. Stable directory identities and the active ancestry
+set still stop non-link cycles such as bind mounts. Failed resolution of a
+selected link keeps the detailed warning report. Providers without
+the identity service retain ordinary-directory sizing and report an
+unsupported selected link.
+The cycle-detection state grows with active traversal depth and is released as
+each branch unwinds. It has no arbitrary directory/depth cutoff; the pending-path
+memory budget and bounded worker/I/O capacity apply.
+
+Each pane admits one executing job and at most eight waiting captured requests
+(`MAX_PENDING` in `presenter/tree_sizes.rs`). Cancellation retains capacity and
+provider ownership until the actual calls return. Map publications are coalesced at
+most four times per second (`INTERVAL`, 250 ms, in `tree_sizes.rs`) and require
+acknowledgement. A dedicated acknowledgement mailbox slot avoids losing the final
+result when ordinary commands saturate the queue. Selected-folder totals are
+computed on the backend and accepted only for the exact current selection/view.
+
+The bridge tests are in `crates/midnight-ui/tests/tree_folder_sizes.rs`.
+
+Native, archive and tree scans attach immutable report handles to partial totals.
+Yellow warning tooltips show a real issue and counts; clicking opens all retained
+paths and reasons in the basic viewer. Red listing diagnostics have a separate
+detail action from Retry/Collapse. Full-error Copy uses the captured backend
+source. See the [diagnostic contract](panel-diagnostics.md) and the
+[warning-details record](../verification/2026-11-10-panel-warning-details.md).
+
+## Viewers from expanded panels
+
+F3 and Alt+F3 can use the regular files already present in the root listing while
+folders are expanded. `ViewerLaunch.tree` retains the exact immutable projection
+and focused occurrence. The UI only clones shared handles; the viewer worker maps
+visible root aliases through `original_root_entry` and builds the captured file
+order. It does not reinterpret occurrence IDs or display captions as native paths.
+Space therefore visits only files visible in that captured projection, in its
+sort order. Subsequent panel navigation cannot change this viewer's source list.
+
+Native files keep the installed provider's content capture. Archive files retain
+their mount, source version and member/parent IDs, including the relative-resource
+scope used by the HTML viewer. Viewer routing, Basic mode, preferences and
+disabled-plugin choices apply as in a flat panel. Parent rows, folder descendants,
+unreadable archive members and pending projections cannot open a file viewer.
+
+Expanded branches contain directories only. This integration does not
+grant content or mutation authority to arbitrary descendant display paths; future
+files inside attached containers need a typed provider capture before admission.
+
+## External editor from expanded panels
+
+F4 captures the focused ordinary native root file while folders are expanded.
+Selection does not replace the caret target. Expanded branches remain folder-only;
+this action does not add descendant file rows or permit editing a directory, link,
+archive member, parent row or filter-only context ancestor.
+
+`TreeEditorRequest` carries the exact acknowledged projection and occurrence.
+The model worker resolves that occurrence through its retained provider context;
+UI captions, display paths and original root IDs never become native paths. A
+bounded captured source retains the registration, request/navigation cancellation
+and one permit from the four-slot tree action pool (`CAPTURE_CAPACITY` in
+`tree_controller.rs`). The presenter checks
+the original pane, projection, request and returned occurrence before sending the
+captured launch. Switching the active pane cannot retarget it; source navigation,
+projection replacement or application close cancels pending work. Queue pressure
+retains one pending editor intent with its original settings.
+
+Background changes do not cancel started work silently. When a newer publication
+of the same session (watch refresh, branch loading) or a selection change voids a
+pending capture for Delete, Rename, attributes, checksums, Custom Commands, F4 or
+the clipboard/menu actions, the panel reports that the tree changed and asks for
+a retry. Leaving the tree after an F4 launch or a clipboard copy was already
+handed to the desktop worker reports that it may not have completed. Navigation,
+shutdown and explicit Escape/dismissal stay silent.
+
+Resolution, native regular-file validation, spawning and final provider disposal
+run on backend workers, including shutdown before an async delivery task starts.
+The ordinary process/launch limits and literal executable/argv handling apply. Raw
+absolute provider paths retain valid internal `..` components; parent navigation
+itself is rejected. An external editor receives a live path, so later filesystem
+replacement and the editor's own modifications are outside a file-manager
+transaction. Evidence: [editor record](../verification/2026-11-11-tree-external-editor.md).
+
+## Checksums from expanded panels
+
+Ctrl+F8 captures the acknowledged occurrence selection, including selected native
+directories inside expanded branches and ordinary root files. Without marks only
+the focused regular native file is used: a folder must be marked. A flat panel
+also takes a focused folder or, on the parent row, the shown folder
+([checksums.md](checksums.md#calculation-contract)).
+The exact originating pane, projection, selection revision and request are checked
+before the independent checksum window opens. Pending selection settles
+before capture; outer queue refusal retains the original intent. Navigation,
+reprojection or shutdown cancels pending work and late/duplicate receipts cannot
+open another window. Parent/context/link/archive/unsupported rows are excluded.
+
+`TreeChecksumRequest` resolves through retained provider contexts on the model
+worker; `StartCapturedChecksums` carries opaque ownership into the ordinary checksum
+actor. Recalculation retains those roots across later panel changes. Native reads,
+provider revalidation and final disposal run on workers, with ownership retained
+through in-flight calls even after cancellation. A selected directory contributes
+its own files; the window's Include subfolders (the algorithm dropdown's last row,
+off in every new window) adds the levels below on the next Calculate, whose
+folders are otherwise left out without rows.
+Focused sidecars still prefill the Verify page without starting it. The algorithm
+choices, result formatting, native manifest pickers and verified export contract are
+in [checksums.md](checksums.md).
+
+## Copy from expanded panels
+
+F5 captures the exact acknowledged tree selection on a backend worker before
+opening the ordinary Copy dialog. With no marks it uses the focused occurrence;
+the parent row and filter-only ancestor context cannot become copy targets.
+Selected nested native or archive directories retain their basename and contents.
+The capture owns provider registrations, so navigation after the draft opens
+cannot substitute another source. It is not an immutable filesystem snapshot:
+native identity is pinned by ordinary copy preparation and retained across Retry;
+archive member/version checks remain authoritative.
+
+If the backend refuses the capture because a newer publication of the same session
+(a watch refresh, for example) replaced its view in flight, the panel sends the same
+capture again on that publication: the same selection revision and, with no marks,
+the occurrence F5 named, not the one the caret reached meanwhile. The panel reports
+that the tree changed only when the selection changed or, with no marks, that
+occurrence is gone. F6 shares this protocol. The refusal says whether it is
+retryable, so it does not matter whether it reaches the panel before or after that
+publication. When the tree command queue is full, the panel also sends the same
+capture again. If the panel navigated or its tree session was replaced meanwhile,
+the panel drops the capture silently. It reports other refusals, a busy capture
+pool included, as Copy (or Move) unavailable.
+
+Four live captured batches share an engine-wide permit pool. Opening the draft
+does not reserve a job; confirmation uses the 32-job FIFO copy admission (`MAX_JOBS` in
+`copy_operations.rs`).
+Preparation validates duplicate roots, source ancestry and native destination
+ancestry before writes. The ordinary staged copy independently reads back the
+destination under the job's frozen verification policy: Full SHA-256 by default,
+or explicit quick verification of exact size plus first/middle/last 64 KiB.
+Quick mode compares every byte for files up to 192 KiB and can miss corruption
+between samples in larger files. Source identity/revision, synchronization,
+publication, conflict consent, cancellation and error guards remain mandatory;
+see the [transfer contract](transfers.md).
+Supported distinct native regular files retain the optional exact modified-time
+policy; unsupported directory/provider metadata cannot silently downgrade it.
+
+Successful root completion carries its original tree session and occurrence.
+The presenter sends bounded, idempotent Remove edits through ordered selection
+handling, waiting for earlier user edits and retrying after a changed projection.
+Skipped, failed or canceled roots retain their marks. A completion cannot alter
+another navigation/session or move the caret. Final provider ownership from
+discarded drafts, rejected requests and shutdown is released on backend workers.
+
+See the [design](../superpowers/specs/2026-11-10-tree-copy-design.md). The engine/Slint
+bridge tests (`crates/midnight-ui/tests/tree_copy.rs`) use actual F5/Return input and
+verify native and archive nested-directory contents plus independent destination reads.
+Clipboard and destructive operations have separate authority requirements.
+
+## Move and transfer reconciliation
+
+F6 shares F5's capture/draft protocol with an immutable Move intent. Native root
+files and selected native directory occurrences use the ordinary Move worker;
+archive and mixed-provider scopes are refused before preparation. Same-volume
+native Move uses the retained rename capability without reading or hashing file
+contents. Cross-volume Move and copied children in explicit directory merges
+independently verify each copied file under the frozen Full SHA-256 or explicit
+quick size plus first/middle/last 64 KiB policy before removing that file's source.
+The quick-mode limits above apply. Source/parent identity, revisions, conflict
+consent and finalization guards remain authoritative on both routes; verification
+policy does not authorize replacing a changed object. Empty source directories
+are removed postorder; skipped or failed roots keep their marks. A later failure
+never implies rollback of earlier completed files.
+Provider ownership covers prepared authorities, descendants, finalizers and
+cleanup tickets, including a draft abandoned after failed preparation.
+
+Every terminal Copy/Move result marks both adopted native tree sessions dirty,
+including failed or canceled transfers. The backend reconciles the hidden root
+and previously loaded native branches, including collapsed cached branches,
+parent-first through one provider lane. Maintenance also covers already-loaded
+provider-resolved native directory links and their loaded descendants. It does not discover unopened branches or enumerate foreign/archive
+mounts. Surviving occurrence IDs, expansion, marks, filters and sort options remain;
+deleted occurrences disappear.
+Failed parent listings retain known contents, report a diagnostic and suppress
+descendant work for that pass. Cycle/retarget validation and logical action paths
+remain intact; read-only maintenance grants no mutation, ACL or elevation authority.
+
+Maintenance waits for preceding selection acknowledgements and holds the mutation
+gate through each list/apply step, releasing it before publication backpressure.
+Queue refusal remains pending; a transfer completed during a pass causes another
+pass. Correlated terminal transfer results settle only their own epoch, while navigation
+retires the old scope. The original `TreeProjection.root` is admission authority;
+`root_actions` is the current backend-owned root listing for F3/Enter and viewer
+normalization. Newly copied root files therefore work without reopening the panel
+or treating row IDs as original file IDs.
+
+See the [Move design](../superpowers/specs/2026-11-10-tree-move-design.md) and
+[reconciliation design](../superpowers/specs/2026-11-10-tree-transfer-reconciliation.md).
+Native manual refresh and filesystem notifications use this same in-session
+maintenance. They retain expanded branches, surviving marks and caret instead of
+replacing the tree with a flat panel. Archive refresh keeps its separate semantics.
+
+## Native clipboard from expanded panels
+
+Ctrl+C and Ctrl+X use `TreeClipboardRequest` with the exact acknowledged
+projection, selection allocation/revision and optional focused occurrence.
+Pending selection feedback settles before capture. A nonempty selection wins
+over the caret; `..` and filter-only context rows cannot become clipboard targets.
+`Session::capture_clipboard` reuses the common occurrence capture and accepts
+only all-native batches. Archive and mixed-provider batches return Unsupported
+without replacing the native clipboard.
+
+`TreeEvent::Clipboard` returns an opaque `Arc<dyn CapturedClipboardFiles>`;
+`Command::CopyCapturedFiles` hands it to the clipboard worker. The UI
+calls only its cached intent accessor. The worker opens the OS clipboard,
+resolves the retained native targets, rechecks every provider context and request
+cancellation, validates the whole payload, then publishes its original Copy/Move
+intent. It retains provider ownership until the native write returns. No display
+path, member caption or extraction filename is interpreted as a native target.
+
+Four capture permits (`CAPTURE_CAPACITY`) are shared with F5/F6, followed by the
+16-request clipboard queue (`clipboard.rs`). The common capture admits as many targets as
+the projection holds (10,000 rows) and 16 MiB of newly owned capture data
+(`tree_action_capture.rs`); each consumer keeps its own bound: Copy and Move take every
+captured item (a transfer takes up to 1,000,000 native items, archive members not
+counted), Delete 4,096 pinned roots, Custom Commands 4,096 items, metadata edits 256, and
+the clipboard 256 MiB of names; checksums take every captured row. Rejected,
+canceled and stale captures are retired on backend workers, including queue
+refusal and pending engine-command destruction during shutdown. The presenter
+keeps one pending clipboard capture and retries outer command-channel pressure
+with the same source. Navigation cancels pending work, and a copy that was
+already handed to the clipboard worker reports that it may not have completed; it
+does not erase an already published OS clipboard entry.
+
+Ctrl+V retains the native panel root as its destination even when a nested row
+has focus. Copy uses the ordinary verified queue; Move intent opens the Move
+confirmation. Native source authority and overlap checks remain in that
+worker. Copied files use independent destination readback under the frozen
+Full/quick policy above, with per-file source removal for Move only after its
+proof and identity guards succeed. Same-volume native Move renames without
+content verification. Conflict consent and tree reconciliation work as for any
+transfer.
+Cut alone does not modify files. Clipboard paths are live names, not immutable
+file identities, and external clipboard changes retain ordinary Paste behavior.
+
+Evidence: [tree clipboard record](../verification/2026-11-10-tree-clipboard.md). Known
+limit: archive members cannot go on the clipboard (that needs a virtual data-transfer
+protocol), so there is no archive Cut or Paste from an expanded panel.
+
+## Native watches and reconciliation
+
+An exactly acknowledged publication supplies the backend's watch scope: the root
+and loaded, expanded native branches visible in the projection, including
+provider-resolved native directory links and their eligible loaded descendants.
+An expanded empty branch retains observation so a new child appears. Collapsed,
+filtered-out and foreign-mount/provider branches stay outside native watch scope.
+Targets come from retained provider registrations, never from displayed paths.
+
+Each pane retains a bounded nonrecursive native batch for its root and up to 31
+branch slots. Known physical browse identities deduplicate notification slots;
+logical aliases remain separate display rows, polling targets and action
+occurrences. A serial fair poll covers all eligible logical branches, including
+aliases and those beyond the native slots. Accepted browse-identity changes rebind
+subscriptions. A changed slot set registers its new batch before releasing the old
+one, so directories in both stay covered (for a moment both batches exist, up to 64
+directory watches per pane); a directory that joins the batch is probed at once
+instead of requesting maintenance. A target's first probe is compared with its
+accepted listing: the root's complete listing is its own full observation, so
+opening a tree on an unchanged directory requests no maintenance. Each expansion
+keeps the provider's full observation of its directory, files included, so an
+unchanged expanded branch requests none either; a branch listed before its tree
+was watched, re-listed by a refresh before its first probe, or listed without an
+observation (the native adapter stops observing after 4,096 metadata reads for
+skipped files whose enumeration lacks them) still does. Polling checks identity
+before and after observation; a
+mismatch requests maintenance rather than accepting the observation as unchanged.
+Two blocking backend workers own subscriptions, metadata probes and cleanup
+(`watch.rs`). Events use a 150 ms quiet interval and a 500 ms batching ceiling
+(`PRODUCTION_TIMING`); slow probes or output backpressure can add delay. Polling/failure
+retries use 15 seconds.
+A hint the UI ignored, or whose sweep failed, is repeated at that cadence; a newer
+change always waits for its quiet interval, and a sent hint covers the changes
+counted until then, so its debounce cannot repeat it.
+A batch whose native registration fails leaves its targets polled and reports a
+polling-only [watch status](panel-diagnostics.md#watch-status) for the session. A
+later scope update (a refresh's Commit, an expansion or a collapse) registers the
+batch again, at most once per poll interval, and its directories are then probed at
+once; a successful batch clears the status.
+
+The accepted listing signature and full immediate-directory observation remain
+separate, so files hidden by the folder-only branch view still invalidate sizes
+without causing a perpetual refresh. Unchanged publication commits reuse cached
+targets/signatures only while accepted browse identities still match, including
+paced admission failures. A successful sweep and its exact acknowledged
+publication settle only the captured dirty epoch; a newer event remains pending.
+Failed listings retain known rows and report a diagnostic.
+
+Navigation or terminal session failure invalidates that generation immediately;
+the backend releases native/provider resources after any outstanding call returns.
+Late callbacks, sweep completions and fatal errors cannot cancel a newer navigation.
+After a terminal session failure the UI receives `Unavailable`; Commit and
+viewport observations of the session's last publication are then ignored rather
+than answered with a retryable rejection. Watch diagnostics do not turn into
+Commit retries.
+
+Each maintenance list/apply step holds every transfer-namespace share, so no
+transfer runs during it and maintenance waits for running transfers. While it
+waits, the model worker retries that admission every 25 ms (`NAMESPACE_POLL` in
+`tree_refresh.rs`) instead of queueing
+on the fair gate, so a waiting tree never reserves shares that a new transfer
+needs. Explicit, recursive and probe listings take no namespace share; they show
+the live namespace and proceed while maintenance waits for a transfer.
+
+A refresh request is never refused because branch work is running: a pass
+accepted while a listing is in flight starts after that listing is installed,
+so it reconciles that branch too. Each loaded branch is listed separately. A
+listing that changes no child, entry, disclosure or error publishes nothing and
+needs no projection rebuild. A refresh also discards measured folder sizes, so a
+projection built while sizes were known is rebuilt once. Each changed branch
+still costs one full projection build and one publication that the UI adopts
+and acknowledges; a pass lists at most one branch ahead of those
+acknowledgements, so changing many loaded branches costs that many round trips.
+When a pass ends without a newer publication, its watch fence settles against
+the already acknowledged projection.
+
+See the [watch design](../superpowers/specs/2026-11-10-tree-watch-design.md) and the
+[watch record](../verification/2026-11-10-tree-watch.md). Known limit: archive panels
+and other providers have no watches.
+
+When the adopted session of the displayed root fails (`Unavailable`), the
+presenter stops sending that session's Commit, viewport, branch and size requests,
+reports the failure and leaves tree mode. A native panel reads its folder again
+flat; like other automatic re-reads, this waits while a drag from that panel is in
+progress. A directory comparison that waits for or runs against the failed tree is
+cancelled, so it cannot hold the re-read back. An archive panel lists its current
+archive folder again. Either request retires the tree and starts a fresh selection
+context; when the command queue is full, the request is kept and retried.
+
+## Delete from expanded native panels
+
+F8/Delete and Shift+F8/Shift+Delete capture the exact acknowledged selection, or
+one focused real occurrence if the selection is empty. Parent/context-only rows
+are never mutation targets. `TreeDeleteRequest` retains its projection, selection
+revision, request ID and Trash/permanent mode. UI queue pressure waits for a safe
+capture opportunity; navigation, reprojection, replacement and shutdown retire it.
+
+`CapturedDeleteSources` keeps provider registrations and backend native authority.
+The entire original selection must be native before overlap suppression. Selecting
+an ordinary directory and its descendants deletes the covering directory once,
+based on captured occurrence ancestry rather than displayed path prefixes or inode
+identity. Separate hard-link names remain separate entries. Overlapping selected
+ancestors and descendants whose captured ancestry crosses a junction or symbolic
+link are rejected before preparation; they must be deleted separately. This Delete
+overlap guard applies independently of browse-only directory-link expansion. A
+covering directory that has changed into a file or link is rejected before
+confirmation.
+
+This is a mutable-subtree operation, not a snapshot of every displayed descendant.
+Native preparation pins the selected topmost roots. Descendants moved away before
+execution are not chased, and destructive traversal never follows a child that
+has become a junction/link. Captured ancestry only removes duplicate selection
+roots; it is not a retained proof of every intermediate filesystem identity.
+
+Preparation pins every remaining target through the platform mutation
+service; returned paths, count and immutable capture scope are checked. Display
+`source_directory` is only presentation/refresh context and is never authorization.
+Flat mutation snapshot and immediate-parent checks apply. Junctions and
+links use the ordinary link-removal semantics; destructive traversal does not follow
+their targets. Unsupported archive/mixed selections never fall back to extracted
+files or permanent deletion.
+
+The ordinary Preview/Confirm pipeline admits work only after explicit confirmation,
+then uses the same `JobProgressWindow` as Copy/Move. Cancelled confirmation creates
+no visible job. Rejected, stale and duplicate captures retain a backend reclamation
+owner. Terminal mutations queue loaded native-tree reconciliation, preserving the
+expanded view instead of replacing it with a flat listing. Capture and operation
+budgets are the bounded backend limits above; archives stay read-only.
+
+## Rename from expanded native panels
+
+F2 captures the focused real occurrence independently of marked selection. The exact
+acknowledged projection, request and row are checked by the tree worker; a displayed
+path, caption or original root EntryId cannot authorize a mutation. Native root files
+and expanded native directories use the Rename dialog. Parent and context-only
+rows are rejected; archive occurrences never acquire native write authority. Expanded
+branches remain folder-only: this does not introduce arbitrary descendant file rows.
+
+`CapturedRenameTarget` retains the provider-resolved native path and registration; capture
+is not a filesystem snapshot. Native identity is pinned during mutation preparation.
+The shared four-slot
+capture admission pool also bounds its cleanup ownership. Each capture reserves one
+slot from the runtime-independent retirement domain before provider capture;
+its native target and registration are destroyed before its capture permit is returned.
+The final source may safely leave a queued reply or UI pending request on any thread.
+The operation worker retains native prepared pins ahead of that source in destruction
+order. No extra cleanup thread or unbounded owner queue is used.
+
+Preparation uses the platform mutation service and checks the returned native
+path and immutable capture scope. The normal confirmation, name validation, cancellation,
+versioned overwrite consent and recovery behavior applies. No rename runs before
+confirmation, and later navigation cannot retarget admitted work. Before admission,
+navigation, reprojection and shutdown cancel pending captures; queue pressure retries
+the same focused occurrence. Completion reconciles loaded native branches through the
+tree maintenance route, rather than replacing the panel with a flat listing.
+
+F7 retains pane-location authority: it creates under the current pane directory, not the
+focused expanded descendant. Flat immediate-parent checks apply. Evidence and limits:
+[Rename record](../verification/2026-11-12-native-tree-rename.md).
+
+## Metadata from expanded native panels
+
+Attributes, timestamps and filename case use the metadata editor after an
+exact acknowledged tree capture. Marked real occurrences win over focus; with no
+marks, the focused selectable occurrence is captured. Parent/context-only rows,
+archives and mixed native/virtual selections never receive native mutation
+authority. No displayed path or extracted temporary file becomes a target.
+
+`CapturedMetadataSources` retains native provider registrations through the same
+four-slot capture pool and runtime-independent retirement domain as Rename. The
+ordinary operation controller reserves the complete batch from its shared
+256-target metadata pin budget (`MAX_METADATA_TARGETS`) before opening native targets, then checks the
+captured scope and returned target count again. Native pins close before retained
+provider ownership. Preparation, traversal, mutation and final resource cleanup
+remain on backend workers.
+
+All selected roots remain in the preview. Nonrecursive edits process selected
+descendants before selected ancestors and close each completed root's native
+pins before the next root. This prevents a parent case conversion from
+invalidating pending child names or being blocked by completed child handles. Recursive edits suppress independently
+executing selected descendants already covered by another selected ordinary
+directory; that ancestor's ordinary metadata traversal reaches them once.
+Coverage comes from exact occurrence ancestry, never path-prefix or inode equality.
+An overlap crossing a link/non-directory is rejected, and covering directory
+kinds are checked again during preparation. Separate hard-link names remain
+separate selected entries. This is live subtree traversal, not a snapshot or a
+promise to chase descendants moved elsewhere after capture.
+
+The explicit patch preview, exact revision confirmation, conflict tokens,
+cancellation and partial-result behavior apply. Outer command refusal and transient
+tree-capture admission refusal retain the original intent for a later input pump,
+with one-pump deferral to prevent receipt loops. Provider/target resource limits
+require explicit review or a smaller selection. Navigation,
+reprojection, replacement or shutdown cancels pending captures. After admission,
+navigation cannot retarget the pinned job. Terminal metadata jobs reconcile loaded
+native branches through tree maintenance and preserve the expanded panel.
+
+Evidence and limits: [metadata record](../verification/2026-11-12-native-tree-metadata.md).
+
+## Native Custom Commands
+
+Expanded native trees use the same configured Program/Terminal commands and
+preview workflow as flat panels. Activation captures the exact acknowledged view,
+marks and focused occurrence independently. Once binds file scalars to the captured
+focus; Per selected item and grouped arguments retain marked display order, with
+focused fallback only when no items are marked. A literal Once command can run at
+the parent row without turning `..` into an argument.
+
+The worker resolves only retained native provider targets and preserves each source
+kind. Context-only rows never supply file arguments. Mixed archive/provider
+arguments and revoked captures are refused; display paths and temporary exports never supply argument authority. The
+captured native root must match the original active-directory context. The flat
+panel's native entry/directory pins, command preflight and process admission are reused.
+Whole-capture validation precedes preparation; each process then revalidates only
+its immutable source IDs and native pin scope. Provider owners and pins stay alive
+through the actual native launch call and retire on the backend retirement domain.
+
+Pending marks settle before capture. Queue pressure retains the original command,
+focus and locations for retry; navigation, reprojection, settings-preview edits or
+shutdown cancel pending captures. Accepted launches survive later panel navigation.
+Marks and expanded branches stay as they are. Evidence:
+[Custom Commands record](../verification/2026-11-12-tree-custom-commands.md).
+
+## Directory comparison with expanded branches
+
+Ctrl+F10 remains available after native tree adoption. Comparison uses selectable
+root-level rows from the exact captured display projection; expanded descendant
+folders are not an implicit recursive comparison. Names, size, modified time,
+unmatched-folder handling and time tolerance use the same backend comparison as
+flat panels. Both roots must be native; any virtual/provider entry is rejected,
+including virtual descendants of a native root. Display paths cannot authorize
+native access. No files are modified; files are read only with Compare contents.
+With Compare subfolders the root folders are walked natively (see
+[compare-directories.md](compare-directories.md)); only the root rows are selected (a
+differing folder in both panels, as in Salamander), and every displayed row, the
+descendants of expanded folders included, shows a match badge (=, ≠, +, ?) from the
+comparison's marks until either panel is listed again.
+
+The result is correlated with both original panel paths, navigation IDs, displayed
+projections and settled selection revisions before either preview changes. A flat
+panel keeps its immutable selection snapshot. A tree panel queues a
+`TreeSelectionReplacement` through its normal selection worker and displays the
+bounded preview immediately. The replacement contains only numeric occurrence
+identities and selection bits, at most 512 KiB (`TreeSelectionReplacement::MAX_BYTES`);
+it retains no projection, provider,
+path or report owners. The model worker validates every occurrence, allowing
+metadata-only updates but rejecting changed row identity, hierarchy or selection
+eligibility. UI lookup and mailbox admission do not walk the whole tree.
+
+The dialog waits for selection acknowledgements and reports rejection instead of
+claiming that selection succeeded. A failed intent can be retried immediately.
+The two workers are independent: this is not a transactional filesystem operation
+or an atomic commit across both backend actors.
+
+## File comparison while branches are expanded
+
+Ctrl+Shift+C can compare native root-level files while directory branches remain
+expanded. Inline descendant rows are folders only. Focused files and up to two
+marked files resolve through their exact original root aliases, not labels or the
+old flat selection. The backend selection snapshot caches at most two occurrence
+IDs, so choosing a pair does not enumerate the panel on the UI thread.
+
+When the opposite panel has no marks, same-name lookup runs on the comparator
+worker against its captured native root listing and a bounded cached visibility
+set. Hidden, errored and virtual rows do not supply automatic counterparts.
+Marked folders, more than two marks, pending selection changes or otherwise
+unresolved inputs open the ordinary File A / File B choice. File comparison keeps
+its native validation and does not export archive members implicitly.
+
+## Properties and native menus in expanded branches
+
+Alt+Enter and item context menus capture exact native occurrences through the
+backend tree controller. Right-clicking a marked item captures the marked set;
+right-clicking an unmarked item captures that item without changing the marks.
+The synthetic parent and context-only ancestors are not action targets.
+Properties, file opening and system menus resolve native paths on admitted backend
+workers and retain the source through the native call. UI labels are never paths
+with authority. Captured desktop work uses the bounded process and cleanup
+ownership of flat panels. On Windows several captured items open one Shell Properties
+sheet, as in flat panels (`desktop_properties.rs`, on the Shell menu's
+process-lifetime STA): items of one folder through that folder's own Properties
+command, items of several folders (expanded branches, search results) through
+`SHMultiFileProperties`, which the Shell titles "Various Folders"; one item keeps
+`SHObjectProperties`, and paths the Shell cannot parse keep the application's summary.
+Linux shows the application's summary.
+
+Managed Copy/Cut/Delete/Rename verbs re-enter the typed action flows above.
+Paste into one captured folder resolves that destination on the backend; ordinary
+panel paste keeps its panel-location authority. Rename and Delete retain their
+confirmation/overwrite/progress behavior. Providers without native authority are
+not converted into temporary native paths for these actions.
+
+A managed menu choice requires the original projection and settled selection.
+Navigation, changed marks or a new projection require reopening the menu; this
+includes conservative refusal after metadata or disclosure publications. The
+command cannot silently act on a different row. Unsupported system menus use the
+fallback menu. Known limit: there is no virtual clipboard export.
+
+## Remaining integration
+
+Expanded panels support the typed capture consumers above: viewers, the external
+editor, checksums, Custom Commands, Copy/Move, the native clipboard and drag, Delete,
+Rename, metadata editing, Properties and context menus, and directory and file
+comparison. Mutations are native only; other providers get no write support. TREE-01 in
+the [backlog](../implementation-backlog.md) tracks what is left.
+Original flat panels remain available; opening a folder returns to the ordinary
+operation path. Pane-directory actions such as terminal, bookmarks, creation and
+paste destinations keep their pane-location authority. Native immediate-parent
+checks and the flat `SelectedFiles` contract apply.
+
+Known limit: branches do not expand archive files, native or inside archives. Enter on an archive file in the panel's own
+folder opens it through the flat panel, including an
+[archive inside an archive](../archive-formats.md#archives-inside-archives); archive
+members in expanded branches below it do not open. Navigation retires the tree and establishes a new flat selection
+scope; it does not restore stale pre-tree marks. Native refresh retains the adopted
+session through the maintenance path described above.
+
+The integration tests in `crates/midnight-ui/tests/tree_panel.rs` exercise the
+installed Rust/Slint bridge. Presenter tests in
+`crates/midnight-ui/src/presenter/tests/tree.rs` cover admission, selection,
+navigation, focus and operation fences. The disclosure tests
+(`crates/midnight-ui/tests/tree_disclosure.rs`) cover mouse, touch, all three layouts,
+both panes, stale presses and compact geometry.
+
+## Filter and sort evidence
+
+The filter, sort and quick-search tests are in `crates/midnight-ui/tests/tree_filters.rs`,
+`tree_prefix_search.rs` and `presenter/tree_options_tests.rs`. Dated records:
+[panel admission](../verification/2026-11-09-tree-panel-admission.md),
+[controller checks](../verification/2026-11-09-tree-controller-integration.md),
+[probe scheduling](../verification/2026-11-09-tree-budget.md) and
+[top-level Ctrl+A](../verification/2026-11-09-tree-select-all.md).

@@ -4,7 +4,7 @@ Ctrl+C/Ctrl+X source routing now captures exact acknowledged native tree
 occurrences, preserving Copy/Move intent through native publication. Ctrl+V uses
 the native panel root and the existing verified queue/Move confirmation. Archive
 and mixed-provider exports remain Unsupported; no display or extraction paths
-are exported. See the [contract](../developer/TREE_PANEL.md#native-clipboard-from-expanded-panels).
+are exported. See the [contract](../developer/tree-panel.md#native-clipboard-from-expanded-panels).
 
 ## Windows evidence collected so far
 

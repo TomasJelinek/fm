@@ -2,8 +2,8 @@
 
 Accepted requests, 7 November 2026. This extension supersedes conflicting earlier
 designs. It records requirements, not a claim that the current release implements
-them. [Feature status](../../FEATURE_STATUS.md) and the
-[implementation backlog](../../IMPLEMENTATION_BACKLOG.md) distinguish existing
+them. [Feature status](../../feature-status.md) and the
+[implementation backlog](../../implementation-backlog.md) distinguish existing
 behavior, working changes and outstanding native/release qualification.
 
 ## Archive Hot Paths
@@ -88,7 +88,7 @@ documented displaced-destination policy for an explicit Copy overwrite.
 
 The old source-recovery implementation is being replaced; historical recovery
 test reports describe that earlier implementation only. Current platform limits
-and the replacement proof belong in [Transfers](../../developer/TRANSFERS.md).
+and the replacement proof belong in [Transfers](../../developer/transfers.md).
 
 ## Viewers
 
@@ -112,7 +112,7 @@ and the replacement proof belong in [Transfers](../../developer/TRANSFERS.md).
 
 ## Dialogs and settings
 
-[Dialog ergonomics](../../developer/DIALOG_ERGONOMICS.md) governs the current
+[Dialog ergonomics](../../developer/dialog-ergonomics.md) governs the current
 redesign. Every dialog has an accessible top-right X equivalent to Cancel and a
 real resizable window that can move outside the main window and between monitors.
 Embedded popup movement alone is insufficient. Closing must preserve each
@@ -206,5 +206,5 @@ change archive recognition, associations, provider availability or file actions.
   acknowledge that request. File/mode/viewport changes cancel old gestures and
   retries. Measure native pointer-to-render latency separately from final content
   readiness; a fast thumb alone does not establish fast document scrolling.
-  See the [scrolling contract](../../developer/VIEWER_SCROLLING.md) for message
+  See the [scrolling contract](../../developer/viewer-scrolling.md) for message
   ordering, cancellation, bounded pending input and measurement details.

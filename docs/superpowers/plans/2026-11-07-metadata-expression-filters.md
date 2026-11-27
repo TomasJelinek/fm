@@ -15,7 +15,7 @@ persists the new mode while preserving earlier command/checksum/native-path data
 No new dependencies or features. Windows/Linux implementations remain separate;
 expression evaluation itself is portable and performs no filesystem queries.
 
-**Requirements:** FILTER-01 in [the backlog](../../IMPLEMENTATION_BACKLOG.md),
+**Requirements:** FILTER-01 in [the backlog](../../implementation-backlog.md),
 main design panel filters/color extension, and the approved detailed plan in
 `_build/goal/filters/implementation-plan.md`. Inline-tree ancestor context waits for
 TREE-01; flat panel filtering is delivered in this increment.

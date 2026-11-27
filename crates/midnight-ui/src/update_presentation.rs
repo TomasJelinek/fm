@@ -1,4 +1,4 @@
-//! The update check's presentation (docs/developer/UPDATES.md): the backend's state
+//! The update check's presentation (docs/developer/updates.md): the backend's state
 //! mirrored into `UpdateState`, the dialog's opening and closing, and the Options draft.
 //! Network and disk work stay in the application's update service; the application
 //! replaces the action callbacks (`check-now`, `download`, `restart`, `skip`) and the

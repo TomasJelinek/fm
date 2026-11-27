@@ -457,7 +457,7 @@ fn the_message_names_the_libraries_and_the_command_of_the_distribution() {
             message(&chromium, Family::Other, checkout),
             format!(
                 "{start} Install the packages of your distribution that provide them \
-                 (see SYSTEM_REQUIREMENTS.md)."
+                 (see system-requirements.md)."
             )
         );
     }

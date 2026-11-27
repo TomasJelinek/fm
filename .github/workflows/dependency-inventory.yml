@@ -2,7 +2,7 @@ name: dependency-inventory
 
 # Captures the Cargo metadata and trees of every dependency inventory workspace, each
 # target on its own host, and regenerates docs/dependencies from them
-# (docs/THIRD_PARTY.md, "Regenerating the inventory"). It runs when a dependency input or
+# (docs/third-party.md, "Regenerating the inventory"). It runs when a dependency input or
 # the inventory changes, and on demand. Tables that differ from the captures fail the
 # run; its dependency-inventory artifact holds the regenerated tables and the captures.
 on:
@@ -135,7 +135,7 @@ jobs:
           python3 -B scripts/dependency-inventory.py --metadata-dir _build/dependency-captures --output-dir "$tables"
           cp -R _build/dependency-captures _build/dependency-inventory/captures
           changes=_build/dependency-inventory/tables.diff
-          for file in CARGO_LIBRARIES.md DIRECT_DEPENDENCIES.md cargo-licenses.csv; do
+          for file in cargo-libraries.md direct-dependencies.md cargo-licenses.csv; do
             diff -u "docs/dependencies/$file" "$tables/$file" || true
           done > "$changes"
           if [ ! -s "$changes" ]; then
@@ -146,7 +146,7 @@ jobs:
           {
             echo '### docs/dependencies differs from the captures of this commit'
             echo
-            echo 'Copy the `tables` files of the dependency-inventory artifact into `docs/dependencies`, then update `LOCKFILE_ONLY.md` there (docs/THIRD_PARTY.md). The first 300 lines of `tables.diff`:'
+            echo 'Copy the `tables` files of the dependency-inventory artifact into `docs/dependencies`, then update `lockfile-only.md` there (docs/third-party.md). The first 300 lines of `tables.diff`:'
             echo
             echo '```diff'
             head -n 300 "$changes"

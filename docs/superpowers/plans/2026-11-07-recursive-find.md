@@ -79,7 +79,7 @@ Files: new engine `find.rs`, `find_tests.rs`; Find-only engine `lib.rs` hooks.
   timestamp. Constructor-only per-OS formatting fixes it; raw snapshots/chunks stay
   formatting-free. Windows native5 and Linux full18 + strict Clippy pass.
 - Native modeless UI, Alt+F7, lazy rows and panel reveal are integrated separately:
-  `docs/developer/FIND.md` and `2026-11-07-find-window.md`. Root fixed the review's
+  `docs/developer/find.md` and `2026-11-07-find-window.md`. Root fixed the review's
   stale row-index callback and host-close recreation issues with regressions.
 - Root delegated tooltip host registration polish to `tooltip.rs` and focused tests;
   placement must be shared while Main-only footer/pointer/drag observers stay Main-only.

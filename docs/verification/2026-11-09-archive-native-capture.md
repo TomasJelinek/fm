@@ -112,7 +112,7 @@ The native adapter checks the original immutable lease metadata and uses the
 SDK's already validated ReadAt, avoiding duplicate ValidateRead calls. The cache
 forwards the original expectations across reopen. EOF and explicit revalidation
 still invoke the live validator. No plugin ABI, dependency or binary changed.
-See [the content contract](../developer/CONTENT_READS.md).
+See [the content contract](../developer/content-reads.md).
 
 Host RED tests first demonstrated the ignored hook and redundant EOF validations.
 Native RED tests demonstrated six duplicate validations for three reads after

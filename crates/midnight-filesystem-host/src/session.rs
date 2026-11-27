@@ -1215,7 +1215,7 @@ fn access(
 /// Whether a terminal reply keeps the wire rules of its own request. The wire
 /// reference (filesystem-api/PROTOCOL.md) requires member IDs from 2 in increasing
 /// order, past the request's cursor, and content no longer than requested. The host
-/// listing contract (docs/developer/FILESYSTEM_API.md) adds that each member belongs
+/// listing contract (docs/developer/filesystem-api.md) adds that each member belongs
 /// to the listed directory and is not that directory, and that only a final page may
 /// be empty. Staged protocols receive content through a lease that the host bounds
 /// instead.

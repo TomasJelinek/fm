@@ -4,7 +4,7 @@ Scope: the open findings 2–6 and 8 of the
 [acceptance findings](2026-11-19-acceptance-findings.md), a visual review of every
 `ui_review` screenshot in all themes, and the follow-ups requested during the pass
 (one action-glyph style, tooltip sharpness, the comparator's compact Close, test
-gaps). Finding 7 (`docs/developer/CHECKSUMS.md`) moved to the checksum review, with
+gaps). Finding 7 (`docs/developer/checksums.md`) moved to the checksum review, with
 the Checksums window and its controls; this pass did not edit them.
 
 Every result below names the command that produced it. Cargo ran in the project's
@@ -35,7 +35,7 @@ test binary takes scenario filters as plain arguments; `--only` belongs to
 | 4, Find | `find-window.slint` (footer only), `dialog-footer.slint`: the query footer shows Copy details only when all six query actions fit beside Close, measured from their captions at the current font (about 642 px wide at Desktop density, 748 px at Touch, with DejaVu). The details view keeps its Copy. |
 | 5, function-key layer | `main.slint`: opening or closing an embedded dialog returns the footer to the base layer when no native modifier state is available; `shortcut_bridge::window_deactivated` (called on `WindowActiveChanged(false)`) does the same when the main window loses activation. Native (Winit) modifier state keeps owning the footer. |
 | 6, right-to-left names | Names drawn in panel rows (Detailed, Brief, Thumbnails, tree, search highlight), breadcrumb components, tab captions and the details bar's Name field, and the single-name first line of the Copy/Move and Attributes dialogs, are wrapped in U+2066…U+2069 (`NameText.ltr` in `path-text.slint`, `isolated_name` in `lib.rs`). Only drawn text: models, accessible labels, paths and edit fields keep the raw text. The search highlight offsets move by the three bytes of the opening mark. |
-| 8, docs | `DIALOG_ERGONOMICS.md`: About and Compare directories are embedded popups; Help is the native modeless help window. The breadcrumb paragraph describes the new collapse. |
+| 8, docs | `dialog-ergonomics.md`: About and Compare directories are embedded popups; Help is the native modeless help window. The breadcrumb paragraph describes the new collapse. |
 
 Follow-ups requested during the pass:
 
@@ -50,7 +50,7 @@ Follow-ups requested during the pass:
   Details, Resolve, Jobs, Pause/Resume/Play, Decide later, Replace…, Merge…), the
   operation dialogs' confirm button uses the operation's glyph, and Jobs' Clear
   buttons use the close glyph. A new original `icons/pause.svg` is recorded in
-  `ASSET_PROVENANCE.md`.
+  `asset-provenance.md`.
 - Comparator: the compact image-mode Close is sized by its glyph and caption instead
   of a fixed 45 px. Comparator tooltips now take the window scale for device-pixel
   snapping (`compare-ui/src/tooltip.rs`).
@@ -236,7 +236,7 @@ Commands (each with `--locked --config <per-session config>`), in the Docker ima
 - The Windows launcher change (OPT-CMDERR) was not built: its program check and the
   Custom Command wording were compiled and run only as a standard-library extract
   on Linux.
-- The About keys in `KEYBOARD_SHORTCUTS.md` follow the About review's description;
+- The About keys in `keyboard-shortcuts.md` follow the About review's description;
   its sources are not part of this change.
 - Native Winit, Windows and real fractional scales: the tooltip `snap-up` and `1phx`
   border were checked by unit tests and at scale 1 in the software renderer only.

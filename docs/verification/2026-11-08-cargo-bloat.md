@@ -156,4 +156,4 @@ the per-function and per-crate attributed totals agree. The source snapshot
 contains the existing work in progress; this is not a claim of release qualification.
 
 The optional tool and pinned dependencies are listed in
-[the diagnostic license inventory](../dependencies/CARGO_BLOAT.md).
+[the diagnostic license inventory](../dependencies/cargo-bloat.md).

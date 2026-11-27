@@ -5,7 +5,7 @@
 The later request requires every dialog to be resizable, have a top-right X with
 Cancel semantics, and move outside the main window onto another monitor. The
 embedded implementation described below cannot satisfy that requirement.
-[Current dialog ergonomics](../../developer/DIALOG_ERGONOMICS.md) and the
+[Current dialog ergonomics](../../developer/dialog-ergonomics.md) and the
 [latest extension](2026-11-07-panel-viewer-followups.md#dialogs-and-settings)
 supersede the bounded-popup decision. Native window hosting is still being
 integrated; shared frame/X and resize component tests do not prove that migration.

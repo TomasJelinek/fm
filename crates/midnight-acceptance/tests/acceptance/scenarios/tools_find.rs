@@ -458,7 +458,7 @@ pub fn find_criteria(context: &mut Context) -> Result<(), String> {
     resize_columns(&mut app, context, &window, true)?;
 
     // Attributes are the provider's native flags. Linux listings report none
-    // (docs/developer/METADATA_FILTERS.md): a dot-name is not `hidden` and mode
+    // (docs/developer/metadata-filters.md): a dot-name is not `hidden` and mode
     // 0444 is not `readonly`, so the predicates match nothing and
     // missing(attributes) matches every entry.
     #[cfg(target_os = "linux")]

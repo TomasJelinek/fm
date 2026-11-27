@@ -31,7 +31,7 @@ remaining OS dependencies resolved. Launcher SHA-256 is
 `4f96a8ebc1193c567e60cc16eb5b0f9c47d9f3be51314c95820da1aa7e007ff1`.
 All 503 indexed package files were rehashed; native LICENSE/CREDITS, 125 resolved
 third-party Rust notice directories, target dependency metadata and exact native
-source/build archives are preserved. [Inventory](../THIRD_PARTY.md) and
+source/build archives are preserved. [Inventory](../third-party.md) and
 [plugin instructions](../../plugins/midnight-viewer-html/README.md) retain the
 selected free license branches and redistribution duties.
 

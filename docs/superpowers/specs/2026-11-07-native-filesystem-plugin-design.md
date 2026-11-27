@@ -196,7 +196,7 @@ contain Resolved/Opened/Page. An unpublishable page invalidates its cursor;
 serialization remains busy through publication. Cleanup ignores cancellation and
 failure/panic closes further instance admission. This SDK-only owner type does
 not alter the wire or C ABI. The concrete contract is also documented in
-[the public protocol](../../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md).
+[the public protocol](../../../filesystem-api/native-plugin-protocol.md).
 
 ## Operations (exact v1 operation numbers)
 

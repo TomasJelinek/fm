@@ -257,7 +257,7 @@ playback helper.
     `Timer::start` uses outside tests and examples) hold weak handles or no component,
     so they cannot drop a component there.
 - **Image spare:** unchanged. One source-free helper while fewer than four helpers are
-  live, retired after 60 s unused (see the [image viewer API](../developer/IMAGE_VIEWER_API.md)).
+  live, retired after 60 s unused (see the [image viewer API](../developer/image-viewer-api.md)).
 - **No other prewarming was added.**
 
 ## Remaining costs

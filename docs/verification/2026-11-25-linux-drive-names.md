@@ -2,7 +2,7 @@
 
 On Linux the drive bar and the drive dropdown showed each drive by its whole mount
 path, for example `/media/<user>/<label>`. They now show a short name, and the tooltip
-gives the whole path ([drive names](../DRIVE_INFORMATION.md#drive-names)). Windows keeps
+gives the whole path ([drive names](../drive-information.md#drive-names)). Windows keeps
 its drive letters.
 
 ## Change
@@ -75,7 +75,7 @@ with the drive fixture too.
 
 | Run | Drives | Result |
 | --- | --- | --- |
-| `20261125-213455`, Docker image with the drive fixture ([ACCEPTANCE.md](../developer/ACCEPTANCE.md#drive-names)) | `/`, `a-very-l…er-name`, `alice/USB`, `backup/data`, `mnt/USB`, `srv/data` | PASS, 3 screenshots |
+| `20261125-213455`, Docker image with the drive fixture ([acceptance.md](../developer/acceptance.md#drive-names)) | `/`, `a-very-l…er-name`, `alice/USB`, `backup/data`, `mnt/USB`, `srv/data` | PASS, 3 screenshots |
 | `20261125-213516`, Docker image without it | `/` | PASS, 3 screenshots; "no drive fixture mounted" |
 | `20261125-213518`, the workstation (Ubuntu 26.04, a GNOME session) | `/`; the application's own adapter leaves the GVfs bridge out | PASS, 3 screenshots |
 

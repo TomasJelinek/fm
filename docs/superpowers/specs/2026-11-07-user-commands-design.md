@@ -2,7 +2,7 @@
 
 The Windows/Linux backend, settings, toolbar and shortcut integration are
 implemented, including drag ordering. See [the settings verification](../../verification/2026-11-07-custom-command-settings.md)
-and [the delivery ledger](../../IMPLEMENTATION_BACKLOG.md) for evidence and remaining capabilities.
+and [the delivery ledger](../../implementation-backlog.md) for evidence and remaining capabilities.
 
 ## Purpose and interaction
 
@@ -96,7 +96,7 @@ shell-specific reference snippets inserted by the picker. Required captured
 values displays all six scalar references through the same formatter as script
 insertion: quoted `"$env:ME_*"` for PowerShell, quoted `"$ME_*"` for POSIX and
 complete `!ME_*_ARG!` arguments for CMD. The
-[settings contract](../../developer/USER_COMMAND_SETTINGS.md) lists the six exact
+[settings contract](../../developer/user-command-settings.md) lists the six exact
 keys and references. Inserting a value declares it as required; checking a
 required value alone does not insert script text. Never interpolate
 untrusted file names directly into script syntax. Environment values are data,
@@ -116,7 +116,7 @@ or its POSIX terminal profile. Cmd keeps one literal command line and exact raw
 `ME_*` values, and provides backend-quoted `ME_*_ARG` companions for direct native
 argv references such as `!ME_FILE_PATH_ARG!`. Builtins and reparsing commands have
 different semantics; the precise limits and native evidence are in the
-[backend contract](../../developer/USER_COMMANDS.md). Ordinary command-bar Cmd is
+[backend contract](../../developer/user-commands.md). Ordinary command-bar Cmd is
 unchanged. Shell variables remain explicit declarations from the fixed `ME_*` set;
 undeclared inherited raw and companion values are removed in the child.
 

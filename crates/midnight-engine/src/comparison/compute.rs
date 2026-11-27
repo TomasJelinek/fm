@@ -1,5 +1,5 @@
 //! The displayed rows of both panels, compared by Open Salamander's Compare
-//! Directories rules (docs/developer/COMPARE_DIRECTORIES.md): files and folders are
+//! Directories rules (docs/developer/compare-directories.md): files and folders are
 //! matched separately by name; a file on one side only, the larger or newer file, or
 //! both files for different attributes or contents are selected; folders are
 //! compared only with Include subfolders (or selected when on one side only), and a

@@ -75,7 +75,7 @@ Files: `midnight-engine/src/lib.rs`, `tests/locale_sorting.rs`, explorer `src/ma
   and strict Clippy on Windows and Linux.
 - [x] Run Windows critical copy/mutation tests with `--release`.
 - [x] Run Linux critical copy/mutation tests with `--release`, as required by
-  `docs/RELEASE_BUILD.md` for native integrity and queue/cancellation behavior.
+  `docs/release-build.md` for native integrity and queue/cancellation behavior.
 - [x] Review native adapters and engine changes; hand off source freeze for final UI
   verification, optimized application build and native screenshot.
 

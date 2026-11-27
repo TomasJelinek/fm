@@ -1,6 +1,6 @@
 """Independent plugins pin every registry dependency exactly, and their lockfiles agree.
 
-The dependency policy asks for exact pins (docs/DEPENDENCY_POLICY.md): a plugin's own
+The dependency policy asks for exact pins (docs/dependency-policy.md): a plugin's own
 lockfile is what its CI and packages build, so a looser requirement in a manifest would let
 a later lock refresh pick another version, with other licenses or notices, unnoticed.
 """

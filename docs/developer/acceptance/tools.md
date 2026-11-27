@@ -5,7 +5,7 @@ information, About, the Jobs window's list and notice dialogs, with the acceptan
 scenario and check that covers each item and its last verified status. Options pages,
 appearance, the keyboard editor and the shortcut catalog are in
 [options-tools.md](options-tools.md). The suite is described in
-[ACCEPTANCE.md](../ACCEPTANCE.md); scenarios live in
+[acceptance.md](../acceptance.md); scenarios live in
 `crates/midnight-acceptance/tests/acceptance/scenarios/`.
 
 Status: **PASS** (the check passed in the run named at the end), **FAIL** (a product

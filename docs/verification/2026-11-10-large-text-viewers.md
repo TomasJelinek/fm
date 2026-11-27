@@ -57,8 +57,8 @@ completion behavior uses the existing ABI; no schema, SDK, dependency or lockfil
 changes were made. The installed source manifest also includes the separately
 requested display-name improvement; its identity and extensions are unchanged.
 
-See [source-coordinate semantics](../../api/SOURCE_POSITION.md) and
-[presentation behavior](../developer/VIEWER_PRESENTATION.md).
+See [source-coordinate semantics](../../api/source-position.md) and
+[presentation behavior](../developer/viewer-presentation.md).
 
 ## Evidence
 

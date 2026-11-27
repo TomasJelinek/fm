@@ -84,7 +84,7 @@ separate semantic colors and existing markers/borders.
 
 The three modern palettes are adapted from established editor themes rather than
 chosen from a claimed global ranking. [Pinned palette references and retained
-licenses](../../THEME_PROVENANCE.md) document the Apache-2.0/MIT terms and changes.
+licenses](../../theme-provenance.md) document the Apache-2.0/MIT terms and changes.
 The retro themes use original color-token mappings with no copied code or artwork.
 No new dependency, royalty or subscription is introduced.
 
@@ -134,7 +134,7 @@ violet variants keep the same neutral base and change the accent family. All
 three use dark native widgets and the existing semantic roles for controls,
 folders, search, errors, focus and selection. Geometry, fonts and native file
 artwork are unchanged. No external palette or screenshot pixels are copied, and
-no dependency is added. Record the original choices in [palette provenance](../../THEME_PROVENANCE.md#slate-variants-11-november-2026).
+no dependency is added. Record the original choices in [palette provenance](../../theme-provenance.md#slate-variants-11-november-2026).
 
 Keep filename categories in their existing semantic hues. Reuse the shared
 actual-row foreground adjustment for ordinary/alternate rows and all selected,

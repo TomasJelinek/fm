@@ -72,4 +72,4 @@ uniformly smooth rendering across all viewer modes has not been established.
 Compact panel error rows still need a close control, and repeated identical host
 errors need complete occurrence qualification. Archive Hot Paths still need the
 real plugin/menu/restart workflow. Independent native dialog migration and release
-deployment are tracked in the [implementation backlog](../IMPLEMENTATION_BACKLOG.md).
+deployment are tracked in the [implementation backlog](../implementation-backlog.md).

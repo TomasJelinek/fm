@@ -29,7 +29,7 @@ and the [test speed pass](2026-11-18-test-speed-pass.md) of 18 November.
    private temporary directory below the checkout's `_build`, and
    `MIDNIGHT_UI_RENDER_DIR` unset. Before its timed rounds each executable lists its
    tests twice and its ignored tests once, which pays a new file's first start (see
-   [test execution](../developer/TEST_EXECUTION.md)) outside the timed runs; every wall
+   [test execution](../developer/test-execution.md)) outside the timed runs; every wall
    time below is therefore of an executable that started moments before. A test's time
    is libtest's `exec_time`, measured while the other tests of its executable run beside
    it, so it grows with contention.
@@ -185,7 +185,7 @@ check (`::text`, `::text_wrapped`, `::source`, `::source_wrapped`), and the fill
 overlap checks are a test per mode (`::text`, `::source`); libtest runs them in parallel.
 Each view keeps its source, window, seeks, gestures, assertions and tolerances; a failure
 now names its view, and a filter by a former test name, as in
-[viewer presentation](../developer/VIEWER_PRESENTATION.md), still selects all of its
+[viewer presentation](../developer/viewer-presentation.md), still selects all of its
 views. The per-test sum grows (32.1 → 47.7 s) because more of them compete for the CPUs at
 once. Run alone, the 2400-byte travel views took 0.45 s wrapped and 2.1 to 2.2 s
 unwrapped, where 54 layouts of 120 KiB pages and 97 painted frames took 1.1 s and 0.7 s
@@ -271,7 +271,7 @@ Looked for, nothing removed:
   `every_test_file_is_a_module` guards (each reads its own crate's `tests/`) and two
   Windows/Linux pairs that test each platform's own implementation. The 162 library unit
   tests that `midnight-engine`'s integration executable runs again through `#[path]`
-  includes are documented in [test execution](../developer/TEST_EXECUTION.md) and stay.
+  includes are documented in [test execution](../developer/test-execution.md) and stay.
 - Dead test helpers: with every `allow(dead_code)` of `midnight-ui`'s integration test
   files removed, the compiler reported 133 dead-code findings; apart from the two above,
   each item is used by another module that includes its support file, or is a field kept
@@ -350,7 +350,7 @@ CI. The path bar test keeps one desktop and one touch look on Linux as on Window
 - Red runs as described under [Changes](#changes): each changed test that guards a fix
   fails with that fix undone and passes with it.
 
-[Test execution](../developer/TEST_EXECUTION.md) needs no change: it states no test's
+[Test execution](../developer/test-execution.md) needs no change: it states no test's
 duration, and its first-start figures still hold (the warm-up's first `--list` of the
 newly linked 114 MB `me` test executable took 16.7 s, of the 105 MB `midnight-ui`
 integration executable 17.7 and 18.0 s, of executables below 5 MB 0.9 to 2.0 s).

@@ -684,7 +684,7 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
         destination = stage / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(project_docs / relative, destination)
-    shutil.copyfile(project_docs / "THEME_PROVENANCE.md", stage / "THEME_PROVENANCE.md")
+    shutil.copyfile(project_docs / "theme-provenance.md", stage / "theme-provenance.md")
     (stage / "THIRD-PARTY.json").write_text(
         json.dumps(inventory, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (stage / "THIRD-PARTY.txt").write_text(
@@ -692,7 +692,7 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
         "Original license and copyright notices are retained under licenses/.\n"
         "The inventory conservatively includes build dependencies, not just linked code.\n"
         "Rust standard-library notices are in licenses/rust/.\n"
-        "Adapted palette sources are in THEME_PROVENANCE.md; licenses are in licenses/themes/.\n"
+        "Adapted palette sources are in theme-provenance.md; licenses are in licenses/themes/.\n"
         "Midnight Explorer uses Slint under Slint's GPL-3.0-only option.\n"
         "The About dialog and the release download page display Slint's attribution.\n"
         "Midnight Explorer and its plugins are licensed under GPL-3.0-or-later; see the LICENSE file.\n"
@@ -702,8 +702,8 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
 
 # The program's license is the repository's LICENSE (GNU GPL version 3). Windows
 # packages name it LICENSE.txt, so it opens on a double-click.
-PROJECT_DOCUMENTS = ("SECURITY.md", "docs/SYSTEM_REQUIREMENTS.md", "docs/KEYBOARD_SHORTCUTS.md",
-                     "docs/FEATURE_STATUS.md", "docs/ASSET_PROVENANCE.md")
+PROJECT_DOCUMENTS = ("SECURITY.md", "docs/system-requirements.md", "docs/keyboard-shortcuts.md",
+                     "docs/feature-status.md", "docs/asset-provenance.md")
 SOURCE_REPOSITORY = "https://github.com/TomasJelinek/fm"
 
 
@@ -901,7 +901,7 @@ def check_authorization_helper_digest(binary, helper):
         recorded = recorded_helper_digest(stream.read())
     if recorded is None:
         raise ValueError("The application executable records no authorization helper digest; "
-                         "build it with MIDNIGHT_ELEVATED_LISTING naming the helper (RELEASE_BUILD.md)")
+                         "build it with MIDNIGHT_ELEVATED_LISTING naming the helper (release-build.md)")
     actual = sha256_file(helper)
     if recorded != actual:
         raise ValueError(f"The application executable records authorization helper {recorded}, "

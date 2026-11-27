@@ -4,7 +4,7 @@ Opt-in acceptance scenarios (`viewers_files`, `viewers_controls`, `viewers_compa
 `viewers_thumbnails`, `viewers_archives`) that drive the installed viewer, comparator,
 thumbnailer and archive plugins through keyboard and pointer input only, on the
 generated fixture. How they run (staged child processes, composition, latency
-definition) is in [ACCEPTANCE.md](../developer/ACCEPTANCE.md#viewers-comparators-thumbnails-and-archives).
+definition) is in [acceptance.md](../developer/acceptance.md#viewers-comparators-thumbnails-and-archives).
 
 Environment: the project's Docker build image (Slint software renderer, DejaVu fonts
 only), debug test profile, plugin packages as installed in `_build/debug` (viewers,

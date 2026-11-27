@@ -48,7 +48,7 @@ the About lists; every request already runs in its own sandboxed one-shot worker
   10 s and 256 MiB of reads per request.
 - The manifest lists `pdf`, and its version names Hayro, so cached image
   thumbnails are regenerated once.
-- The dependency records (`docs/dependencies/*`, [THIRD_PARTY.md](../THIRD_PARTY.md)),
+- The dependency records (`docs/dependencies/*`, [third-party.md](../third-party.md)),
   the plugin's notices and the About list name the image thumbnails beside the PDF
   viewer.
 
@@ -69,7 +69,7 @@ Compatibility needs no negotiation:
 
 The wait matters: Rust's line-buffered stdout splits the SDK's write at the tag
 byte 0x0A, so stopping the worker right after `Failure` could lose the reason. The
-details are in the [image viewer API](../developer/IMAGE_VIEWER_API.md#failure-reasons).
+details are in the [image viewer API](../developer/image-viewer-api.md#failure-reasons).
 
 Workers and plugins:
 

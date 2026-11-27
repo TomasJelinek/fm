@@ -5,7 +5,7 @@ pink/orange/green/teal/amber/red/brown palette. Plain text and documents share
 slate; folders retain their theme appearance. The shared contrast adjustment
 targets at least 4.5:1 against the actual rendered row background, including
 selection/focus and alternating rows. See the
-[category and migration contract](../developer/FILENAME_COLOR_OPTIONS.md).
+[category and migration contract](../developer/filename-color-options.md).
 
 Only an exact match for the previous five-rule default list is migrated. User
 changes, disabled rules, reordering, background choices and an intentionally

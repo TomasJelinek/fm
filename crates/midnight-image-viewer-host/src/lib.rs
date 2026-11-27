@@ -20,7 +20,7 @@ fn require_private_fixture_root(root: &std::path::Path) {
         panic!(
             "plugin fixture root {} is not private ({error}); set HOST_TEST_INSTALL_ROOT to a \
              directory that only your account, SYSTEM and Administrators (Linux: only your \
-             account or root) can change, with private ancestors; see docs/developer/TEST_EXECUTION.md",
+             account or root) can change, with private ancestors; see docs/developer/test-execution.md",
             root.display()
         );
     }

@@ -112,7 +112,7 @@ retaining source pixel Arcs. Slint images remain UI-owned; engine/plugin contrac
 decoded-page limits and source-read behavior are unchanged. Frame admission still
 uses existing stale-context checks, accepted buffers retain their lease through
 replacement, and close/cancellation retires pending ownership off the event loop.
-The detailed contract is in [Viewer scrolling](../../developer/VIEWER_SCROLLING.md#retained-text-pixels-and-delivery).
+The detailed contract is in [Viewer scrolling](../../developer/viewer-scrolling.md#retained-text-pixels-and-delivery).
 
 The first bounded page now uses the captured parent DPI. Guard sizing preserves
 256 logical pixels of lookahead per side at that effective scale, subject to the

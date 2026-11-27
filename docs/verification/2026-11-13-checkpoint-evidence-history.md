@@ -1,7 +1,7 @@
 # Recorded checkpoint evidence — 13 November 2026
 
 This note retains exact older run identities, failures, overlapping counts and
-limits moved from the [current work ledger](../ACTIVE_WORK.md#current-checkpoint).
+limits moved from the [current work ledger](../active-work.md#current-checkpoint).
 It was extracted from ledger SHA256
 `68124f3a1739cb271cd32af4fb812f67c1289ce10b30eb908989897814e9e280`. Statements below describe their named source/environment
 snapshots; they do not qualify current `174c5fd`, a fresh debug build, deployment
@@ -222,7 +222,7 @@ both source increments.
 
 
 The later cap128 measurements and their synthetic-only limits remain in the
-cap128 section of that date's ACTIVE_WORK.md (in its Git history).
+cap128 section of that date's active-work.md (in its Git history).
 
 ## Selected local gates and Linux/probe provenance
 
@@ -415,7 +415,7 @@ only actively unfinished totals are highlighted. `size_errors` 2/0,
 groups, are preserved in
 `_build/verification/docs-20261112/ui-followup-terminal-20261112T174659Z.json`.
 The latest modal gate does not rerun that entire scope. See the
-[tree size contract](../developer/TREE_PANEL.md#directory-sizes). Full-control
+[tree size contract](../developer/tree-panel.md#directory-sizes). Full-control
 clipping/native-layout qualification remains open.
 
 The [12 November panel qualification](2026-11-12-panel-interaction-polish.md)
@@ -614,8 +614,8 @@ After Architect agreement, Root accepted Task 4B's finite finish seam with an
 owned prepare-failure carrier. Its **11 C core/host paths** (2 core + 9 host) are
 committed as `cf64a6c`; the earlier
 reservation baseline (`_build/verification/backend-native-host-task4b-20261113/baseline.json`)
-records those paths. The [core/host contract](../developer/NATIVE_FILESYSTEM_API.md#prepared-rename-corehost-lifecycle)
-and [disposal boundary](../developer/ENGINE_LIFETIME.md#prepared-rename-disposal-boundary)
+records those paths. The [core/host contract](../developer/native-filesystem-api.md#prepared-rename-corehost-lifecycle)
+and [disposal boundary](../developer/engine-lifetime.md#prepared-rename-disposal-boundary)
 describe the implementation; engine/UI integration remains unimplemented.
 
 The preceding Windows/Linux core/host harness snapshots each passed **79/0/0**

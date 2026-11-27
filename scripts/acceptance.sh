@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Opt-in end-to-end acceptance suite (docs/developer/ACCEPTANCE.md).
+# Opt-in end-to-end acceptance suite (docs/developer/acceptance.md).
 #
 # Builds and runs the `acceptance` test target of crates/midnight-acceptance, which
 # needs the `acceptance` feature: normal `cargo test`, CI and --validate never run it.
@@ -95,10 +95,10 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 cd -- "$root"
 # A target folder shared with checkouts of other commits can link their code: Cargo names
 # a path package's artifacts relative to the workspace root and judges freshness by mtime
-# (docs/developer/TEST_EXECUTION.md, "Targeted test execution").
+# (docs/developer/test-execution.md, "Targeted test execution").
 case "${CARGO_TARGET_DIR:-}" in
     ''|"$root"/*|[!/]*) ;;
-    *) printf 'acceptance.sh: warning: CARGO_TARGET_DIR %s is outside this checkout; a target shared with checkouts of other commits can link their code (docs/developer/TEST_EXECUTION.md)\n' "$CARGO_TARGET_DIR" >&2 ;;
+    *) printf 'acceptance.sh: warning: CARGO_TARGET_DIR %s is outside this checkout; a target shared with checkouts of other commits can link their code (docs/developer/test-execution.md)\n' "$CARGO_TARGET_DIR" >&2 ;;
 esac
 # `--workspace` resolves features exactly as the application and workspace tests do, so
 # the shared crates are reused instead of rebuilt; `--test acceptance` builds only this

@@ -40,7 +40,7 @@ is WTFPL; it does not replace native FFmpeg's terms. The baseline native build
 should use LGPL-2.1-or-later components and avoid optional GPL/nonfree components;
 FFmpeg's [license description](https://raw.githubusercontent.com/FFmpeg/FFmpeg/master/LICENSE.md)
 explains how build options change distribution terms. Codec selection must also
-satisfy the [free-of-charge dependency policy](../../DEPENDENCY_POLICY.md).
+satisfy the [free-of-charge dependency policy](../../dependency-policy.md).
 Do not promise every proprietary/patent-encumbered format is royalty-free merely
 because a decoder is open source. Keep the concrete wrapper/native versions,
 enabled formats and corresponding source pinned together.

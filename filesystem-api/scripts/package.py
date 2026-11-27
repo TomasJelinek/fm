@@ -1,7 +1,7 @@
 """Create an offline public API directory source from Cargo's package artifact.
 
 Development tool only: distribution uses the canonical worker SDK bundle, whose
-archive checksums differ (see docs/developer/FILESYSTEM_API.md).
+archive checksums differ (see docs/developer/filesystem-api.md).
 """
 import hashlib
 import json

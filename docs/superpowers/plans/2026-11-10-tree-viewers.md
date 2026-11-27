@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Rust, Tokio, Slint and viewer host crates; no dependencies or plugin ABI changes.
 
-**Spec:** `docs/developer/TREE_PANEL.md`, `docs/developer/INLINE_TREES.md`, and the main dual-pane design's F3/Alt+F3 and next-file requirements.
+**Spec:** `docs/developer/tree-panel.md`, `docs/developer/inline-trees.md`, and the main dual-pane design's F3/Alt+F3 and next-file requirements.
 
 ## Global constraints
 

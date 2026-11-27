@@ -4,7 +4,7 @@ The archive worker is the independent plugin in
 [`plugins/midnight-fs-archive`](../plugins/midnight-fs-archive/README.md). It reads ZIP,
 7z, TAR, GZIP, XZ, Bzip2, Zstandard and compressed TAR archives for the host, read-only,
 in a restricted worker process. What users see is described in
-[archive formats](ARCHIVE_FORMATS.md); the plugin README describes the decoding,
+[archive formats](archive-formats.md); the plugin README describes the decoding,
 streaming, memory and integrity rules in detail.
 
 ## Package and contracts
@@ -28,12 +28,12 @@ streaming, memory and integrity rules in detail.
 - The host owns everything else: the extension associations
   ([`archive_format.rs`](../crates/midnight-core/src/archive_format.rs)), sessions,
   staging and the member cache (`crates/midnight-filesystem-host`), copy-out and saved
-  locations. The [filesystem API reference](developer/FILESYSTEM_API.md) lists the
+  locations. The [filesystem API reference](developer/filesystem-api.md) lists the
   limits.
 - The host starts the worker only from an installation that passes the plugin trust
   checks (no links or other redirections, nothing owned by another account); one that
   other accounts can change through permissions is accepted and reported once. See
-  [runtime discovery](developer/RUNTIME_DISCOVERY.md) and
+  [runtime discovery](developer/runtime-discovery.md) and
   [dynamic viewers and filesystem plugins](../SECURITY.md#dynamic-viewers-and-filesystem-plugins).
   Tests use a private installation root; never weaken the trust checks to make a test
   pass.
@@ -46,7 +46,7 @@ registry, never on host sources, and on pinned codec crates: `zip` (Deflate and 
 `flate2`, `tar`, `sevenz-rust2` (AES), `lzma-rust2`, `bzip2` and `ruzstd`. It has no RAR
 codec. Dependency decisions are in
 [`THIRD-PARTY.md`](../plugins/midnight-fs-archive/THIRD-PARTY.md) and the
-[third-party inventory](THIRD_PARTY.md); `scripts/notices.py` generates the package's
+[third-party inventory](third-party.md); `scripts/notices.py` generates the package's
 `licenses/` folder.
 
 ## Building
@@ -78,7 +78,7 @@ on Linux.
 To produce a worker SDK bundle directly, run
 `cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages --locked --offline -- <repository> <output folder>/releases`.
 It prints the bundle folder; the builds take its `.cargo/registry.toml`. See the
-[worker SDK guide](developer/WORKER_SDK.md).
+[worker SDK guide](developer/worker-sdk.md).
 
 ## Tests
 
@@ -94,11 +94,11 @@ It prints the bundle folder; the builds take its `.cargo/registry.toml`. See the
 - The host's ignored real-worker tests in `midnight-filesystem-host` (`test:worker`,
   `test:nested_worker`, `test:streaming_worker`, `test:discovery_kinds` and the
   library's `captured_source_tests::`) run the installed package; see
-  [installed archive worker tests](developer/TEST_EXECUTION.md#installed-archive-worker-qualification).
+  [installed archive worker tests](developer/test-execution.md#installed-archive-worker-qualification).
 - CI's `archive-filesystem` job checks formatting and Clippy, runs the plugin's tests
   and packages the worker on Windows and Linux from a checkout that contains only the
   plugin; its `check` job runs the host tests against that package.
-  [Full validation](USER_GUIDE.md#full-validation) runs the same steps.
+  [Full validation](user-guide.md#full-validation) runs the same steps.
 
 ## Saved locations
 
@@ -111,6 +111,6 @@ read-only tab that says it is unavailable, with its address kept.
 ## Not implemented
 
 Writing to archives, moving members, RAR and opening members in other applications
-are not implemented (ARCH-03 in the [implementation backlog](IMPLEMENTATION_BACKLOG.md);
+are not implemented (ARCH-03 in the [implementation backlog](implementation-backlog.md);
 the other ARCH rows there list the remaining limits). Dated evidence starts with the
 [archive copy-out record](verification/2026-11-07-archive-copy.md).

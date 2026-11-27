@@ -526,7 +526,7 @@ const NOTICE_LIMIT: Duration = Duration::from_secs(10);
 /// Why this machine cannot show the HTML viewer's AppArmor Install… offer (O20), if it
 /// cannot: the offer exists where AppArmor restricts unprivileged user namespaces
 /// (Ubuntu 23.10 and later, not WSL) while the kernel itself allows them, and it asks for
-/// the authorization through polkit's pkexec (docs/SYSTEM_REQUIREMENTS.md). Whether a
+/// the authorization through polkit's pkexec (docs/system-requirements.md). Whether a
 /// stage outside the profiles can be made here is `viewers_stage`'s to say.
 fn offer_unavailable() -> Option<String> {
     if !cfg!(target_os = "linux") {

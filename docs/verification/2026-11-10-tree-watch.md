@@ -2,7 +2,7 @@
 
 Native manual refresh, legacy root notifications and the new batched branch hints
 now reconcile the adopted tree instead of navigating back to a flat listing.
-The [contract](../developer/TREE_PANEL.md#native-watches-and-reconciliation)
+The [contract](../developer/tree-panel.md#native-watches-and-reconciliation)
 describes exact Commit admission, provider ownership, native slot bounds, fair
 polling, debounce and dirty-epoch acknowledgment.
 

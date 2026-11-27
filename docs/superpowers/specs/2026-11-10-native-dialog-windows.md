@@ -30,7 +30,7 @@ Their logical owner still controls application lifetime; native taskbar policy i
 separate from modality. Help/About remain ordinary dialogs despite being modeless.
 
 This implements the existing user request and
-[dialog ergonomics contract](../../developer/DIALOG_ERGONOMICS.md). It supersedes
+[dialog ergonomics contract](../../developer/dialog-ergonomics.md). It supersedes
 the embedded-host portion of the
 [earlier movable-dialog design](2026-11-07-movable-dialogs-design.md). No additional
 user permission is needed to implement the already requested native windows.

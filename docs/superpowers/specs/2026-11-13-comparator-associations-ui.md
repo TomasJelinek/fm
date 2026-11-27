@@ -171,7 +171,7 @@ insertion choices/helper text, preserving existing consumers. Keep topic IDs
 0,1,3–9 stable (2 is retired); propose new comparator ID 10 inserted visually
 after Editors using explicit index↔ID mapping. Settings picker context follows
 that ID. Backend owns preferences/schema, matching, validation/template meaning,
-capabilities and process launch; Docs owns updates to FILE_COMPARISON.md. No
+capabilities and process launch; Docs owns updates to file-comparison.md. No
 comparator-window or directory-comparison implementation is assigned here.
 
 **Direct acceptance cases for later implementation**
@@ -214,4 +214,4 @@ acceptance does not compile regex; settings encoding does, so comparator validat
 must report field/rule errors before the final save. Decoder routing evidence:
 midnight-compare-engine/src/worker.rs:136–183 and
 midnight-image-viewer-host/src/providers.rs:15–43; see
-docs/developer/FILE_COMPARISON.md for the existing captured A/B choice boundary.
+docs/developer/file-comparison.md for the existing captured A/B choice boundary.

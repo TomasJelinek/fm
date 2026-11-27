@@ -14,10 +14,10 @@ features and one internal migration boundary:
   native plugins; their original safeguards remain in place.
 
 Details and limits:
-[expressions](../developer/METADATA_FILTERS.md),
-[transfer options](../developer/TRANSFER_OPTIONS.md),
-[transfer contract](../developer/TRANSFERS.md),
-[provider registry](../developer/PROVIDER_REGISTRY.md).
+[expressions](../developer/metadata-filters.md),
+[transfer options](../developer/transfer-options.md),
+[transfer contract](../developer/transfers.md),
+[provider registry](../developer/provider-registry.md).
 
 Windows affected UI tests passed **479**: library 466, commander dialogs 3,
 Copy dialogs 5 and draggable dialogs 5. Linux passed the same scopes **476**:

@@ -61,7 +61,7 @@ Fix: `crates/midnight-ui-bindings/build/source.rs` writes the token stream itsel
 ends the line at every brace, as slint-build's own writer does. A block that spans
 lines is not examined by the lint. The output is no longer pretty-printed; run
 rustfmt on a copy to read it. `syn` and `prettyplease` are no longer build
-dependencies of the crate ([dependency note](../THIRD_PARTY.md)).
+dependencies of the crate ([dependency note](../third-party.md)).
 
 The allocator setting is not adopted: it only hides the copying, costs memory, and
 applies only where `rustc` uses jemalloc.

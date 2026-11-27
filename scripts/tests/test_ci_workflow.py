@@ -413,7 +413,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(plain_scalar_faults(path.read_text(encoding="utf-8")), [])
 
     def test_the_dependency_inventory_is_captured_on_each_host_and_regenerated(self):
-        # Build dependencies and procedural macros follow the host (docs/THIRD_PARTY.md):
+        # Build dependencies and procedural macros follow the host (docs/third-party.md):
         # a Windows capture taken on Linux once listed Linux-only build dependencies.
         text = INVENTORY_WORKFLOW.read_text(encoding="utf-8")
         inventory = jobs(text)

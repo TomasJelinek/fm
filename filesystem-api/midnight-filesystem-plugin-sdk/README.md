@@ -27,7 +27,7 @@ as `Unknown`, which such a host understands.
 For an independent network provider, advertising `CAP_SIGN_IN` raises its minimum
 host minor to 5. The package manifest must declare that minimum and `sign-in`.
 The SDK rejects credential calls to a descriptor without the capability before
-decoding the request. See the [sign-in protocol](../NATIVE_PLUGIN_PROTOCOL.md#optional-network-sign-in-abi-minor-5)
+decoding the request. See the [sign-in protocol](../native-plugin-protocol.md#optional-network-sign-in-abi-minor-5)
 for credential lifetimes.
 
 Prepared Rename is optional. Advertise `api::abi::CAP_PREPARED_RENAME` (1024)
@@ -106,6 +106,6 @@ Release every successful buffer exactly once through its original instance and
 descriptor. A failed C call returns a zero buffer; destroy refuses active calls
 or retained buffers, then disposes remaining resources outside registry locks.
 
-See the [prepared Rename contract](../NATIVE_PLUGIN_PROTOCOL.md#optional-prepared-rename-abi-minor-3)
-and [protocol and limits](../NATIVE_PLUGIN_PROTOCOL.md). This is trusted
+See the [prepared Rename contract](../native-plugin-protocol.md#optional-prepared-rename-abi-minor-3)
+and [protocol and limits](../native-plugin-protocol.md). This is trusted
 in-process code, with no sandbox or immutable-content guarantee.

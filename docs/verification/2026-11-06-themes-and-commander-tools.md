@@ -75,7 +75,7 @@ Fresh evidence is under `_build/qa/clean-rebuild/` and `_build/qa/panel-shell/`.
   on the right; no large-directory or sustained-copy workload. This is not a
   constrained-RAM minimum, GPU-memory measurement or cross-platform benchmark.
 
-[System requirements](../SYSTEM_REQUIREMENTS.md) distinguish compatibility targets,
+[System requirements](../system-requirements.md) distinguish compatibility targets,
 actually checked environments, provisional runtime headroom and build requirements.
 Windows host: Windows 11 Enterprise 25H2, build 26200.9711. Linux host: Ubuntu
 24.04.4 WSL2, kernel 6.6.87.2, glibc 2.39. Mint, Windows 10 and macOS have not been
@@ -193,4 +193,4 @@ Logs and screenshots: `_build/qa/clean-rebuild/linux-final-debug-build.log`,
 The earlier `linux-native-unicode-full*` screenshots retain the software-fallback
 diagnosis. Fedora, openSUSE Leap/Tumbleweed and SUSE Linux
 Enterprise were not executed in this environment. Their support status remains
-as specified in [system requirements](../SYSTEM_REQUIREMENTS.md).
+as specified in [system requirements](../system-requirements.md).

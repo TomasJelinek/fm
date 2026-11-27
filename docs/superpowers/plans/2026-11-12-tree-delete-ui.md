@@ -10,7 +10,7 @@ DeleteCaptured scope, mode and root count. PrepareCapturedDelete carries opaque 
 no displayed path enters flat mutation admission. Reuse common operation registration/confirmation.
 
 **Tech Stack:** Existing Rust presenter, Slint operation windows, bounded backend commands.
-**Spec:** docs/developer/TREE_PANEL.md; docs/developer/OPERATION_PROGRESS.md.
+**Spec:** docs/developer/tree-panel.md; docs/developer/operation-progress.md.
 
 ## Constraints and review focus
 

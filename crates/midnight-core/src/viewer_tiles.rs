@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn document_tile_budgets_hold_the_view_and_its_guard_rows_at_exact_resolution() {
         let tiles = |view| crate::viewer_document_tile_cache_bytes(view) / crate::VIEWER_TILE_BYTES;
-        // The examples in docs/developer/VIEWER_SCROLLING.md.
+        // The examples in docs/developer/viewer-scrolling.md.
         assert_eq!(tiles([400, 300]), 128, "at least the image tile budget");
         assert_eq!(tiles([1920, 1080]), 135);
         assert_eq!(tiles([3000, 1950]), 294);

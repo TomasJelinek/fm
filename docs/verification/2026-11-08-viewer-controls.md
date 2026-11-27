@@ -21,9 +21,9 @@ No external dependencies or settings schema changes were needed.
   Preference patches reach the existing listener immediately. No query, content
   or reading position is persisted.
 
-Contracts: [presentation](../developer/VIEWER_PRESENTATION.md),
-[preferences](../developer/VIEWER_PREFERENCES.md),
-[optional position API](../../api/SOURCE_POSITION.md).
+Contracts: [presentation](../developer/viewer-presentation.md),
+[preferences](../developer/viewer-preferences.md),
+[optional position API](../../api/source-position.md).
 
 ## Automated evidence
 

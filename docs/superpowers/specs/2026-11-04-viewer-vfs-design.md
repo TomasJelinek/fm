@@ -6,7 +6,7 @@ Aktualizace 7. listopadu: F3 a samostatné textové, zdrojové, Markdown, obrazo
 a PDF pluginy již fungují; stejně tak čtení archivů a ověřené vykopírování.
 Obecná VFS migrace, nativní filesystem pluginy, strom a network discovery ještě
 nejsou dokončené. Tento dokument určuje zamýšlené obsahové kontrakty; skutečný
-stav jednotlivých částí je v [implementačním přehledu](../../IMPLEMENTATION_BACKLOG.md)
+stav jednotlivých částí je v [implementačním přehledu](../../implementation-backlog.md)
 a [vývojářské dokumentaci](../../developer/README.md).
 
 Aktualizace 5. listopadu: [dynamické viewer/filesystem pluginy](2026-11-05-dynamic-viewer-filesystem-plugins-design.md)

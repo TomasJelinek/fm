@@ -153,7 +153,7 @@ and cancellation after a single content read. A 70-member group proves atomic
 publication and retained results after cancellation. These source/backend checks
 do not imply installed desktop or Linux-runtime qualification of new controls.
 
-The [Find service/UI guide](../../developer/FIND.md) and
+The [Find service/UI guide](../../developer/find.md) and
 [Find window plan](../plans/2026-11-07-find-window.md) describe the implemented native
 modeless window, configurable Alt+F7 action, lazy result models and guarded read-only
 panel reveal. Final tooltip/compact/native qualification is tracked there. Actual

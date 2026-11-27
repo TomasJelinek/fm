@@ -3,7 +3,7 @@
 Keyboard and context-menu Paste in the top panel path editor now use one backend
 text-read operation. Only the pasted payload gains a native trailing separator;
 ordinary typing, existing suffixes, spaces, quotes and Unicode stay literal.
-Enter remains the only path submission action. See [behavior and integration](../developer/PATH_PASTE.md).
+Enter remains the only path submission action. See [behavior and integration](../developer/path-paste.md).
 
 The implementation has causal regressions for separator/refusal policy, delayed
 menu-focus notifications incorrectly invalidating an unchanged editor, eager

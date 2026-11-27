@@ -21,7 +21,7 @@ positions. Same-direction impulses accumulate only undelivered pixels; reversal
 discards the previous direction's residual. The existing 2,400 px pending bound
 prevents an unbounded backlog. Pixel and phased touchpad input follows the finger;
 Linux momentum after the fingers lift is synthesised separately (see
-[kinetic scrolling](../developer/SCROLLING.md#touchpad-momentum-kinetic-scrolling)).
+[kinetic scrolling](../developer/scrolling.md#touchpad-momentum-kinetic-scrolling)).
 Row snapping waits until the motion finishes and the list becomes idle.
 
 Each discrete vertical notch travels at least one layout band. Detailed and
@@ -915,7 +915,7 @@ collects the small comparison table. The baseline4 artifacts remain intact.
 
 The panels now draw the rows cut by their edges and settle Details and Brief on the
 nearest row only after the wheel glide, the touchpad's fingers and momentum and any
-held button have ended ([file panels](../developer/SCROLLING.md#file-panels)). The
+held button have ended ([file panels](../developer/scrolling.md#file-panels)). The
 probe's `--check` again expects each isolated notch to rest on a row, and a notch
 now moves the whole rows nearest to the viewers' notch distance.
 

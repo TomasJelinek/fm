@@ -86,5 +86,5 @@ deferred decisions and compact/movable keyboard-accessible dialogs.
 
 The later explicit user instruction supersedes this plan's whole-batch Move
 barrier: complete each independently verified file and remove its source before
-copying the next. See the current [native transfer contract](../../developer/TRANSFERS.md)
+copying the next. See the current [native transfer contract](../../developer/transfers.md)
 for platform qualification, remaining recovery and unsupported Linux finalization.

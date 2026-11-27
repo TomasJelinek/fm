@@ -16,7 +16,7 @@ mod find;
 mod inline;
 
 /// Larger files, and pairs that are not text, are compared as bytes. Measurements are in
-/// docs/developer/FILE_COMPARISON.md.
+/// docs/developer/file-comparison.md.
 pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// The alignment's cost follows the lines, not the bytes: this bound, unchanged when the
 /// byte limit doubled from 32 MiB, keeps the worst case of the earlier measurements. A

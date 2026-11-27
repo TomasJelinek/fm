@@ -7,10 +7,10 @@ This weaker mode can miss corruption between samples; it never disables identity
 source-change, I/O-error, sync, overwrite or publication checks. Jobs freeze the
 selected policy at admission and report which guarantee was checked. Native
 same-volume Move renames without reading contents. See
-[verification and ownership](docs/developer/TRANSFERS.md#verification-and-ownership).
+[verification and ownership](docs/developer/transfers.md#verification-and-ownership).
 UI code handles input and presentation only. Filesystem
 access, large sorts/indexes, checksum work, large-object reclamation and diagnostic
-file encoding/writes execute in backend [workers](docs/GLOSSARY.md#worker).
+file encoding/writes execute in backend [workers](docs/glossary.md#worker).
 
 Copy stages are owned temporary objects on the destination filesystem: Windows uses
 an exclusive, directory-handle-relative `.me-` plus sixteen random hex characters;
@@ -20,7 +20,7 @@ characters folder of its own (owner-only DACL). Each stage is created there thro
 folder's handle with the security descriptor that a file created directly in the
 destination folder would get, computed from that folder's current descriptor for every
 stage. An empty staging folder is removed through its handle, and one holding another
-entry is kept and reported, never listed or emptied ([Windows stages](docs/developer/TRANSFERS.md)).
+entry is kept and reported, never listed or emptied ([Windows stages](docs/developer/transfers.md)).
 Names are not operation authority. Cancellation
 waits for in-flight native I/O, then explicitly removes unpublished partial data
 before terminal progress. Cleanup failures must remain visible with their residual
@@ -31,7 +31,7 @@ preserved; a filesystem refusal cannot be reported as successful cleanup.
 <a id="html-viewer-sandbox"></a>
 
 The Chromium HTML viewer has a separate browser-process profile. The renderer sandbox of
-[CEF](docs/GLOSSARY.md#cef) (the Chromium Embedded Framework)
+[CEF](docs/glossary.md#cef) (the Chromium Embedded Framework)
 remains enabled, without any unsandboxed fallback; the decoder's single-process policy is
 not weakened. HTML starts offline with its JavaScript running (a deliberate change of
 0.5.1; the JavaScript box turns it off for the page and the following pages of its
@@ -221,8 +221,8 @@ and provider registrations before the dialog. Display paths and row numbers are 
 authority. Four shared capture permits bound live drafts/in-flight ownership;
 confirmation separately enters the ordinary 32-job copy queue. Native identity
 is pinned (held through an open native handle or descriptor; see
-[Windows namespace pins](docs/developer/TRANSFERS.md#windows-namespace-pins) and
-[Linux namespace pins](docs/developer/TRANSFERS.md#linux-namespace-pins)) during
+[Windows namespace pins](docs/developer/transfers.md#windows-namespace-pins) and
+[Linux namespace pins](docs/developer/transfers.md#linux-namespace-pins)) during
 normal preparation and retained across Retry, not frozen at dialog creation. Archive revisions are checked through retained provider sources.
 Duplicate/overlapping roots and native destination ancestry are rejected before
 writes. The frozen verification policy and ordinary publication guarantees apply
@@ -233,7 +233,7 @@ release final provider ownership on backend workers. F6 accepts only native
 captures and uses native rename when qualified on the same volume. Cross-volume
 or merged children use verified per-file Move and postorder empty-directory cleanup. Mixed/virtual
 Move roots fail before source preparation or destination mutation. Native pins
-are dropped before their retained provider [lease](docs/GLOSSARY.md#lease), including
+are dropped before their retained provider [lease](docs/glossary.md#lease), including
 failed preparation;
 stage-cleanup tickets retain the provider without retaining source handles.
 
@@ -244,7 +244,7 @@ remain immutable; current root file actions use a separate backend-built snapsho
 validated identities. Failed listings retain known rows and show an error.
 Reconciliation grants no authority to display paths. Tree Delete, Rename, attribute
 edits and Custom Commands act only on exact captured native occurrences, through their
-own captures ([inline trees](docs/developer/INLINE_TREES.md)). Native tree clipboard
+own captures ([inline trees](docs/developer/inline-trees.md)). Native tree clipboard
 publication uses the separate captured-source contract of
 [Verified clipboard copying and the copy contract](#verified-clipboard-copying-and-the-copy-contract);
 virtual exports remain unsupported.
@@ -294,7 +294,7 @@ Discovery does not scan subnets or ports. Cache entries, leases, worker
 slots and result pages have shared resource limits. Canceled or timed-out native
 calls retain their worker permit until they really return; cancellation does not
 spawn replacement workers or terminate OS threads. See the
-[network contract](docs/developer/NETWORK_FILESYSTEM.md) for platform and current
+[network contract](docs/developer/network-filesystem.md) for platform and current
 authentication limitations.
 
 <a id="current-browsing-and-explicit-operation-milestone"></a>
@@ -433,12 +433,12 @@ FUSE mounts with `allow_other` but without `default_permissions`, and CIFS mount
 with `noperm`, exclude other local users only as far as their server does. A staging
 directory refused after creation is removed again; one that cannot be removed is
 reported with its path.
-See [Windows guarantees](crates/midnight-platform-windows/MUTATION_SAFETY.md)
+See [Windows guarantees](crates/midnight-platform-windows/mutation-safety.md)
 and the Linux mutation module's safety comments. No claim of universal race freedom
 is made. Tests mutate fresh, owned fixtures only; they never empty a user's Trash. The
 acceptance suite's Trash checks run in a child process whose `XDG_DATA_HOME` is a
 private folder, so they neither use nor read the account's Trash, and a run deletes only
-inside the run folder it created itself (docs/developer/ACCEPTANCE.md). On Windows the
+inside the run folder it created itself (docs/developer/acceptance.md). On Windows the
 suite never uses or reads the Recycle Bin (its Trash scenario is skipped there);
 staged children get a private profile inside a private installation that
 `scripts\acceptance.ps1` creates under the user profile for owner, SYSTEM and
@@ -451,7 +451,7 @@ directory cannot be removed afterwards (for example because another program crea
 entry in it, or a network or FUSE filesystem keeps a pending name there), a Rename or
 Delete job reports the target as completed with one issue that names the leftover
 directory; a Properties rename still applies the item's other changes but counts the
-item as failed (see [operation progress](docs/developer/OPERATION_PROGRESS.md)). The
+item as failed (see [operation progress](docs/developer/operation-progress.md)). The
 directory is said to remain there only while it still has the identity it was created
 with, and its contents are never removed. A change that did not complete and leaves its
 staging directory behind names it in an error that is never treated as a name conflict
@@ -589,10 +589,10 @@ inspected as possibly holding the item; neither is described as unneeded.
   the result unknown; network preview opt-in is unchanged.
 - Preferences use bounded strict versioned decoding and opened-file validation.
   Supported schemas through version 45
-  ([settings file format](docs/SETTINGS_FILES.md#file-format)) include window
+  ([settings file format](docs/settings-files.md#file-format)) include window
   geometry, monitor identity and a
   validated integer panel split ratio, typed Network tabs, panel modes, native and
-  archive [Hot Paths](docs/GLOSSARY.md#hot-paths), fonts, command history, shortcuts,
+  archive [Hot Paths](docs/glossary.md#hot-paths), fonts, command history, shortcuts,
   filters, editor, viewer,
   archive, preview size, archive-preview and filename-color choices, file comparator
   rules (version 33), the text rendering choice (version 34), the hidden-files and
@@ -653,7 +653,7 @@ inspected as possibly holding the item; neither is described as unneeded.
   search, comparisons, copy actions for paths, details and errors, and the name and
   destination fields keep the raw name, while text selected and copied from a shown
   field, such as the path editor, keeps its escapes (see
-  [dialog ergonomics](docs/developer/DIALOG_ERGONOMICS.md)).
+  [dialog ergonomics](docs/developer/dialog-ergonomics.md)).
 - Volume labels and tooltip content are plain Unicode text, never Markdown,
   links, shell commands or navigation identities. Label/capacity lookup runs on
   separately bounded backend workers; hover reads cached data. Slow/offline
@@ -686,7 +686,7 @@ inspected as possibly holding the item; neither is described as unneeded.
   not handed to a picker and that are more than seven days old; only regular files
   with a snapshot name are removed, never links, reparse points, folders, their
   targets or other entries
-  ([managed icon snapshots](docs/developer/USER_COMMAND_SETTINGS.md#managed-icon-snapshots)).
+  ([managed icon snapshots](docs/developer/user-command-settings.md#managed-icon-snapshots)).
 - Windows icons of every size come from the Shell's system image lists by entry:
   synthetic type names with `SHGFI_USEFILEATTRIBUTES`, stock ids, known-folder PIDLs
   and validated discovered fixed drive roots, so a type lookup opens no file, probes
@@ -699,7 +699,7 @@ inspected as possibly holding the item; neither is described as unneeded.
   resource: no code runs and no import is resolved. Icon groups and frames are
   parsed with bounds (64 frames, 4 MiB per frame, 1,024 px per side) and decoded
   by the system. Rows keep the type icon; Linux reads no listed file for artwork
-  ([native icons](docs/developer/NATIVE_ICONS.md)).
+  ([native icons](docs/developer/native-icons.md)).
 - The command directory is complete plain text without elision. A scrollable
   presentation viewport bounds extreme layout height without limiting or
   modifying the native path. Viewing or scrolling it never submits a command.
@@ -751,7 +751,7 @@ fit in RAM. Precise latency and memory targets require measured workloads.
 ## Directory authorization helper
 
 **Retry with authorization** runs `midnight-elevated-listing`, the
-[elevated listing helper](docs/GLOSSARY.md#elevated-listing-helper), as a different,
+[elevated listing helper](docs/glossary.md#elevated-listing-helper), as a different,
 more privileged identity: Administrator through UAC (`ShellExecuteExW` with the
 `runas` verb, on its own COM single-threaded apartment) or root through
 `/usr/bin/pkexec --disable-internal-agent` and the desktop polkit agent. The host
@@ -762,7 +762,7 @@ digest:
 
 - **With the digest** (the SHA-256 of `midnight-elevated-listing` that `build.rs` records
   in `midnight-explorer` when `MIDNIGHT_ELEVATED_LISTING` names the helper of the same
-  build, see [Release build](docs/RELEASE_BUILD.md#authorization-helper-digest)), the
+  build, see [Release build](docs/release-build.md#authorization-helper-digest)), the
   helper is trusted by content: the current user, SYSTEM, Administrators and
   TrustedInstaller (on Linux, the current user and root) may own and change the helper
   and its folders, and the helper's content must have exactly that digest. Per-user
@@ -1044,7 +1044,7 @@ inherited from its parent), and a folder that a copy merges into keeps its own m
 (file lists, checksum manifests, an empty file over an existing one) keep the
 replaced file's mode, ACL and extended attributes (on Windows its owner, group, DACL,
 integrity label and attributes, compression and encryption: see
-[Make File List](docs/developer/MAKE_FILE_LIST.md#output-lifetime-and-safety)). Where a filesystem cannot store modes, a new
+[Make File List](docs/developer/make-file-list.md#output-lifetime-and-safety)). Where a filesystem cannot store modes, a new
 directory keeps the mount-provided permissions only while no other user can write to
 it (group write only for the user's private group, without an access ACL); otherwise
 it is removed again and Copy fails. Creation requires a protected parent:
@@ -1118,7 +1118,7 @@ handles until it flushes the folders of its pending renames together (before it
 removes a folder, after 64 renames, and when the job ends); the handles grant nothing
 more than the Move's pins. A folder that cannot be opened so
 leaves the Move's durability unconfirmed and never refuses or undoes the rename
-([Move durability on Windows](docs/developer/TRANSFERS.md#move-durability-on-windows)). Linux
+([Move durability on Windows](docs/developer/transfers.md#move-durability-on-windows)). Linux
 requires protected source parents (the Copy parent rule of
 [Linux Copy staging](#linux-copy-staging)) and effective
 mutation permissions.
@@ -1159,7 +1159,7 @@ paths. A capture that cannot remove the empty owner-only `.midnight-move-*`
 directory it created (for example because another program created an entry in it)
 keeps it; a repeated capture reuses it, and otherwise the job's cleanup removes it
 or reports its path (see
-[bounded ordinary Move](docs/developer/TRANSFERS.md#bounded-ordinary-move)).
+[bounded ordinary Move](docs/developer/transfers.md#bounded-ordinary-move)).
 Cleanup never recursively deletes unexpected entries. Structured outcomes
 distinguish removal from residuals and durability uncertainty. Linux uses no-replace
 temporary staging and live-validated directory-relative unlink for owned,
@@ -1542,7 +1542,7 @@ classifications.
   installation), that is owned by an account other than the user, SYSTEM,
   Administrators or TrustedInstaller (Linux: the user or root), or whose Windows ACL holds
   an entry the check does not interpret (a conditional or object entry). Package
-  descriptors, pins, the workers' [AppContainer](docs/GLOSSARY.md#appcontainer)/sandbox
+  descriptors, pins, the workers' [AppContainer](docs/glossary.md#appcontainer)/sandbox
   and their process and job limits
   apply as before. This does not turn trusted native code into a sandbox or authenticate
   a publisher's identity.
@@ -1606,7 +1606,7 @@ classifications.
 - Plugin projects share one Git repository but depend only on the public API/SDK, except
   the in-repository path dependencies that the [developer
   guide](docs/developer/README.md) lists (PLUGIN-01 in the
-  [implementation backlog](docs/IMPLEMENTATION_BACKLOG.md)). Their independent Cargo workspaces contain
+  [implementation backlog](docs/implementation-backlog.md)). Their independent Cargo workspaces contain
   their tests and have no write access to the host application's sources. CI checks the
   basic, source, Markdown, image and PDF viewers, the image thumbnailer, the viewer
   conformance fixture and the Windows/Linux native, network and archive filesystems from
@@ -1634,7 +1634,7 @@ classifications.
   registration: without one, a shared installation runs from its own folder (see
   [Shared installations](#shared-installations)), and an installation refused for
   another reason explains
-  itself without developer instructions. See [runtime discovery](docs/developer/RUNTIME_DISCOVERY.md).
+  itself without developer instructions. See [runtime discovery](docs/developer/runtime-discovery.md).
 - Host-owned leases scope content services; no Rust allocator, future, Tokio
   runtime or Slint object crosses the ABI. Buffers have explicit ownership and
   release functions. Loaded code outlives every worker, callback, session and
@@ -1660,7 +1660,7 @@ classifications.
   still refused. Find revalidates its captured files the same way (identity, size,
   LastWriteTime, CreationTime and attributes on Windows; identity, size, mtime and mode
   on Linux; the change time alone may move), with the same limit while it searches and
-  until a result is acted on ([Find](docs/developer/FIND.md)). Reads are bounded to 256 KiB and use u64 offsets. Each open document
+  until a result is acted on ([Find](docs/developer/find.md)). Reads are bounded to 256 KiB and use u64 offsets. Each open document
   has its own session with its own host limits (no count limits sessions: the user decides
   how many viewer windows are open); decoded pages, wire items, retained service replies
   and raster surfaces have separate explicit budgets. Selection/copy is limited to the loaded page.
@@ -1671,7 +1671,7 @@ classifications.
   are packaged code, never executable configuration from the opened folder.
 - Archive browsing is read-only. Names, links and declared sizes are untrusted.
   Decompressed content has no artificial size ceiling: it is bounded by the free space
-  of the host's private [spool](docs/GLOSSARY.md#spool) volume, and disk-full or short
+  of the host's private [spool](docs/glossary.md#spool) volume, and disk-full or short
   writes discard the staging
   and fail the request. Staging also stops with a disk-full error before that volume's
   free space falls below max(1 GiB, 2% of capacity), so a decompression bomb cannot fill
@@ -1713,7 +1713,7 @@ classifications.
   playback executables only, never a folder or user content. The build and deployment
   scripts add these grants; they compute its SID from the name instead of asking Windows
   inside PowerShell, which in a packaged PowerShell names a different AppContainer (see
-  the [worker SDK](docs/developer/WORKER_SDK.md)). A release ZIP carries no NTFS
+  the [worker SDK](docs/developer/worker-sdk.md)). A release ZIP carries no NTFS
   permissions, so extracted files inherit only their folder's, which grant AppContainers
   nothing in a user's profile (0.5.1 ZIP installations had no video thumbnails or
   playback for this reason). The application therefore adds the same grant itself, see
@@ -1818,7 +1818,7 @@ classifications.
   MiB central directory, 4 GiB per part, 256 MiB of reads and unpacked data per page,
   and XML tokens of 64 KiB nested at most 128 deep. Markup the preview does not read is
   skipped and never shown as document text ([package
-  rules](docs/developer/VIEWER_PREFERENCES.md#office-packages-what-opens-and-what-is-refused)).
+  rules](docs/developer/viewer-preferences.md#office-packages-what-opens-and-what-is-refused)).
 - SVG images and thumbnails use the shared image decoder inside the restricted image
   workers. Scripts and event attributes never run; `foreignObject` is skipped (a
   `switch` draws its SVG fallback); links to files or URLs (images, `use`, paint,
@@ -1848,7 +1848,7 @@ classifications.
 ## Archive passwords
 
 Password-protected archive members (ZipCrypto, WinZip AES, 7-Zip AES; see
-[archive formats](docs/ARCHIVE_FORMATS.md#password-protected-archives)) are decrypted
+[archive formats](docs/archive-formats.md#password-protected-archives)) are decrypted
 only inside the sandboxed archive worker, through the same verified staging as plain
 members: no host, engine or UI code parses or decrypts archive bytes, and nothing is
 published before its CRC-32 or WinZip AES authentication code has been checked.
@@ -1885,7 +1885,7 @@ password opens nothing, and the status line says that the archive was left.
 
 ## Update check
 
-The update check ([update design](docs/developer/UPDATES.md)) is the application's only
+The update check ([update design](docs/developer/updates.md)) is the application's only
 network code; it lives in `crates/midnight-update` and runs on its own thread.
 
 - **When it connects:** only while "Check for updates at startup" is on (shortly after
@@ -1954,5 +1954,5 @@ database revision and warnings. A clean advisory scan means no matching known
 vulnerabilities in that database; it does not prove the absence of unknown bugs.
 Do not adopt source or dependencies merely because they look similar to reference
 code. Open Salamander, the file manager whose separately supplied sources are a
-behavioral reference only ([Design and scope](docs/USER_GUIDE.md#design-and-scope)),
+behavioral reference only ([Design and scope](docs/user-guide.md#design-and-scope)),
 has none of its code or assets copied into this implementation.

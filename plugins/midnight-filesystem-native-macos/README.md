@@ -80,4 +80,4 @@ Primary API references consulted for this implementation:
 The public declarations come from pinned libc, not copied Apple implementation
 code. Apple system libraries are platform prerequisites; the MIT Rust binding
 license does not relicense macOS. Verification results and open items are in
-[VERIFICATION.md](VERIFICATION.md).
+[verification.md](verification.md).

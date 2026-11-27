@@ -3,7 +3,7 @@
 //! checksums, resumable downloads, staging and the installation swap with rollback.
 //! This crate holds the application's only network code; it runs on its own thread
 //! and only when the user asks or enabled the startup check. See
-//! `docs/developer/UPDATES.md`.
+//! `docs/developer/updates.md`.
 
 pub mod apply;
 pub mod archive;

@@ -612,7 +612,7 @@ fn expect_refusal(app: &mut App, problems: &mut Vec<String>, how: &str, label: &
     }
 }
 
-/// What the list still refuses (FIND.md): the actions that need one folder to act in.
+/// What the list still refuses (find.md): the actions that need one folder to act in.
 /// Each names itself in a notice and changes nothing.
 fn refusals(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), String> {
     ensure_fed(app)?;
@@ -740,7 +740,7 @@ fn close_action(app: &mut App) {
     }
 }
 
-/// The actions FIND.md lists for a fed list act on its rows: the focused result
+/// The actions find.md lists for a fed list act on its rows: the focused result
 /// (`src/sub/g.txt`, which the folder under the list does not show) or its marks. Each
 /// is reached by its key, some also by the toolbar and the main menu, and is cancelled.
 fn actions(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), String> {

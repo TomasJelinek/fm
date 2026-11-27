@@ -119,7 +119,7 @@ currently excluded from thumbnail targets pending a typed source adapter.
 Pinned Rust decoder dependencies include image 0.25.10 (PNG/JPEG/GIF/WebP/BMP/
 ICO/TIFF; default features disabled), moxcms 0.8.1, ffmpeg-next 9.0.0,
 ffmpeg-sys-next 9.0.1 and BLAKE3 1.8.7. Full native-target graphs and license
-inventory are in `docs/THIRD_PARTY.md`. Generated image/video notices retain
+inventory are in `docs/third-party.md`. Generated image/video notices retain
 35/28 third-party dependency records plus Rust notices. ffmpeg-sys-next's exact
 published commit declares WTFPL but has no standalone license file; its override
 retains that declaration, the canonical official license text and provenance.
@@ -127,5 +127,5 @@ All generated notices stay under `_build/` and must be supplied to staging via
 NoticesRoot. Corresponding FFmpeg source and configuration accompany its shared
 libraries so recipients can exercise the applicable LGPL rights.
 
-See [worker SDK contract](../developer/WORKER_SDK.md) and the
+See [worker SDK contract](../developer/worker-sdk.md) and the
 [thumbnail design](../superpowers/specs/2026-11-05-panel-views-thumbnails-design.md).

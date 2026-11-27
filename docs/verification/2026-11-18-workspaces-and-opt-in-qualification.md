@@ -133,7 +133,7 @@ passed 30 of 30 runs with `--exact`. Linux was not stressed.
 
 `copy_operations::preparation::planning_tests::` passes 10 of 10 with `TEMP` on D:
 and fails 8 of 10 with `TEMP` on C:. The fixture message now names the NTFS 8.3
-requirement and `docs/developer/TEST_EXECUTION.md`, but at first only the five tests
+requirement and `docs/developer/test-execution.md`, but at first only the five tests
 that check their sources through the fixture's `known()` showed it. The other three
 failed without a hint: `endpoint_planning_opens_only_read_only_destination_and_uses_exact_children`
 (`qualified native target required`),

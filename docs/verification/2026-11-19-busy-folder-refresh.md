@@ -192,7 +192,7 @@ An independent review of this change and of the post-operation refresh found:
 
 The panel input hold after a file job changed too (per panel, keys kept and
 replayed, only for jobs the user waited for); see
-[Operation progress](../developer/OPERATION_PROGRESS.md). The tree worker now sends
+[Operation progress](../developer/operation-progress.md). The tree worker now sends
 a refresh pass's reply only after every view of the pass, so a tree's hold cannot
 end before the view that shows a renamed entry.
 
@@ -273,7 +273,7 @@ Clippy (`--all-targets -- -D warnings`) is clean for `midnight-platform-linux`,
 in the same image passed 333 tests and failed 37 transfer-namespace fixtures that
 stop with "fixture requires qualified local byte lookup"; they do not use the
 watch code, and the image is not qualified for them
-([test execution](../developer/TEST_EXECUTION.md)).
+([test execution](../developer/test-execution.md)).
 
 ## Remaining risks and follow-ups
 

@@ -4,7 +4,7 @@ This is the backend dependency step of TREE-01. The production panel remains
 flat: actor routing, projection/selection scopes, disclosure widgets and native
 interaction qualification are still required. See the
 [implementation plan](../superpowers/plans/2026-11-08-inline-provider-tree.md) and
-[API/lifetime contract](../developer/INLINE_TREES.md).
+[API/lifetime contract](../developer/inline-trees.md).
 
 ## Implemented scope
 

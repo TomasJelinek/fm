@@ -5,7 +5,7 @@ filesystem plugins. Crate version 0.2.0 exposes ABI **1.5**; the FSBR payload fo
 remains version 1, with unchanged entry symbol and C descriptor layout. It covers
 Browse/Read, optional volume and activation services, network sign-in and prepared Rename.
 
-See [the protocol](../NATIVE_PLUGIN_PROTOCOL.md), [C header](../include/midnight_filesystem.h),
+See [the protocol](../native-plugin-protocol.md), [C header](../include/midnight_filesystem.h),
 [ABI definitions](src/abi.rs), [request/response model](src/model.rs) and
 [Rename types](src/rename.rs). The encoder/decoder define field order; Rust
 layouts, strings and allocations never cross the C boundary.
@@ -27,7 +27,7 @@ manifest, because an older host rejects the value.
 activation of an issued node. A provider must require host minor 5. Owned
 credentials are wiped on drop with pinned `zeroize` 1.9.1 (`alloc` only,
 Apache-2.0 or MIT). The host must wipe the encoded credential frame after the
-call. See the [sign-in protocol](../NATIVE_PLUGIN_PROTOCOL.md#optional-network-sign-in-abi-minor-5).
+call. See the [sign-in protocol](../native-plugin-protocol.md#optional-network-sign-in-abi-minor-5).
 
 ## Optional prepared Rename
 
@@ -60,7 +60,7 @@ The API validates structural fields and bounds: 64 KiB names, 256-byte identitie
 locator bytes. Native binding checks, attempt/replay state, publication ownership
 and cancellation behavior require an implementation; the codec does not supply
 them. The [SDK](../midnight-filesystem-plugin-sdk/README.md) provides a bounded
-native-author helper. See the [complete prepared Rename contract](../NATIVE_PLUGIN_PROTOCOL.md#optional-prepared-rename-abi-minor-3)
+native-author helper. See the [complete prepared Rename contract](../native-plugin-protocol.md#optional-prepared-rename-abi-minor-3)
 for receipt states, limits and lifecycle rules.
 
 The independent native Windows and Linux packages implement prepared Rename and

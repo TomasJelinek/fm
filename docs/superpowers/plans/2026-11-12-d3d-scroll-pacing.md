@@ -11,7 +11,7 @@ after a reproducible hotspot and a direct regression or causal A/B identify the 
 
 **Tech Stack:** Rust, Slint 1.18.1, pinned FemtoVG/WGPU, Windows native diagnostics.
 
-**Spec:** SCROLL-02 in docs/IMPLEMENTATION_BACKLOG.md and the corrected native results in
+**Spec:** SCROLL-02 in docs/implementation-backlog.md and the corrected native results in
 docs/verification/2026-11-12-scroll-thumb-continuity.md.
 
 ## Constraints and ownership

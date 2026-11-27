@@ -16,7 +16,7 @@ Rust/Slint presentation bridge. No dependency, new thread, waiter or archive wri
 cleanup slots, derived from the existing shared tree capture bound, guard new Rename captures
 independently of caller/runtime.
 
-**Spec:** Existing TREE_PANEL.md typed-consumer contract plus the approved native Rename scope.
+**Spec:** Existing tree-panel.md typed-consumer contract plus the approved native Rename scope.
 
 ## Design and alternatives
 
@@ -77,4 +77,4 @@ is copied. Midnight Explorer retains its own confirmation and safe replacement b
 - [ ] Verify real F2 routing/confirmation and F7 pane-root creation, parent/archive guards and queue
   pressure with targeted UI tests. No Cargo without explicit target lease.
 - [ ] Run scoped Windows/Linux qualification and strict lint, independent review and style/diff checks;
-  update TREE_PANEL.md and a dedicated verification note. No commit/push by this owner.
+  update tree-panel.md and a dedicated verification note. No commit/push by this owner.

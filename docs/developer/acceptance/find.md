@@ -5,7 +5,7 @@ archives and Feed to panel), with the acceptance scenario and check that covers 
 and its last verified status. It follows the Find window's code
 (`crates/midnight-ui/ui/find*.slint`, `crates/midnight-ui/src/find_windows.rs`,
 `find_feed.rs`, `presenter/find*.rs`), the engine (`crates/midnight-engine/src/find*.rs`)
-and [FIND.md](../FIND.md). The suite is described in [ACCEPTANCE.md](../ACCEPTANCE.md);
+and [find.md](../find.md). The suite is described in [acceptance.md](../acceptance.md);
 scenarios live in `crates/midnight-acceptance/tests/acceptance/scenarios/`, and the Find
 scenarios share `find_support.rs` there.
 
@@ -15,7 +15,7 @@ cannot run it; the reason is given).
 
 Run them with `bash scripts/acceptance.sh --only find`. `find_archives` and
 `find_viewers` stage the installed plugin packages (`MIDNIGHT_ACCEPTANCE_PLUGINS`, see
-ACCEPTANCE.md); without them they fail at staging, not skip.
+acceptance.md); without them they fail at staging, not skip.
 
 Last runs: the Linux run `20261122-182452` and the Windows runs `20261122-165028` and `20261122-191856` (smoke scale, debug test builds of origin/main 66a02637 with the Find and tools changes of this record; Linux: WSL 2, Ubuntu 24.04 on ext4, the plugin packages built from b1b89343, the shared Cargo target cleaned of every path package before the build; Windows: Windows 11, the release plugin packages built from d7ff8860). Every Find scenario passed in both; on Windows `find_feed_panel` first failed on a stale expectation (F-F19: the Copy dialog's summary line changed in 142aa74b) and passed with the updated check in `20261122-191856`. Statuses are from these runs unless another is named, and the Seconds column is the Linux run's. After d75e82b1 (no default visited-entries limit, 100,000 results, actions on a fed list) `tools_find_results`, `find_feed_panel`, `find_budgets` and `find_archives` were updated and rerun on 24 November: Linux `20261124-181835` and Windows `20261124-183236`, all PASS; their rows' Seconds are from the Linux run. The new checks were each made to expect a wrong value once and failed with their own message (Linux red runs `20261122-093311`, `20261122-094218`, `20261122-095108` and, for the updated F-F19, `20261122-181712`). Earlier: the runs `20261122-100257` (Linux) and `20261122-112449` (Windows) of 26c18895 with these checks, all PASS; the Linux run `20261121-144246` of commit 3f6fff8a (every scenario of the suite) and 2026-11-20 on Linux, smoke scale, with the plugin packages built from the tree of that day.
 

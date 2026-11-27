@@ -11,7 +11,7 @@ package working directories and caller-supplied provider environment.
 The runner preserves successful/failed artifacts, has bounded process deadlines,
 stops admitting processes after failure, and drains or terminates only owned child
 handles. It does not replace the CI workspace executor or parallelize interactive
-native input and renderer measurements. See the [usage contract](../developer/TEST_EXECUTION.md).
+native input and renderer measurements. See the [usage contract](../developer/test-execution.md).
 
 ## Evidence
 

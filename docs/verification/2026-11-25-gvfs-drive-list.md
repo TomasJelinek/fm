@@ -4,7 +4,7 @@ The Linux drive list no longer offers the GVfs FUSE bridge,
 `/run/user/<numeric user ID>/gvfs`, as one empty read-only drive. The native
 filesystem package lists each location mounted through GVfs, one folder of the
 bridge, as a drive of its own, named after the location
-([drive list](../DRIVE_INFORMATION.md#locations-opened-through-gvfs)). The
+([drive list](../drive-information.md#locations-opened-through-gvfs)). The
 application's Linux platform adapter, whose list feeds the desktop context and is
 shown only until the package's list arrives, leaves the bridge out without reading
 it.

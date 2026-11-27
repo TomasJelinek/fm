@@ -64,7 +64,7 @@ if errorlevel 1 goto temporary_failure
 set "TEMP=%CD%\_build\tmp"
 set "TMP=%TEMP%"
 rem The explorer records the SHA-256 of the authorization helper that it ships with
-rem (docs/RELEASE_BUILD.md): the helper is built first, then both packages with the
+rem (docs/release-build.md): the helper is built first, then both packages with the
 rem variable naming it. The same package selection keeps the helper's features, so the
 rem second build reuses it and links only the explorer.
 set "MIDNIGHT_TARGET_DIR=%CD%\_build"

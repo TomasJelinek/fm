@@ -10,7 +10,7 @@ software rendering.
 | --- | --- | --- |
 | 1. Raster frontier travel loss | Fixed before this pass (`6cd20942`): a frame restyled by lookahead counts as uncovered | `raster_frontier_tests`, `worker_frontier_tests`; acceptance R5 and R7 pass |
 | 2a. Rows of 8000 bytes | Fixed (`dfd80cb7`): such a page grows at rest until its rows fill the window, Source scrollbar positions after a PageDown no longer fail, and the thumb stays where a position left it | `worker_long_row_tests` (`rows_of_8000_bytes_fill_the_window_at_rest`, `rows_of_8000_bytes_take_scrollbar_positions_after_page_down`); 661 engine library tests; the installed Source position tests on staged plugins |
-| 2b. Chained replies | Partial: up to 16 replies join a page; a fast spin over rows wider than the window still stalls a few frames under load | [Backlog](../IMPLEMENTATION_BACKLOG.md) SCROLL-02 |
+| 2b. Chained replies | Partial: up to 16 replies join a page; a fast spin over rows wider than the window still stalls a few frames under load | [Backlog](../implementation-backlog.md) SCROLL-02 |
 | 2c. Plugin page size | Decided, not implemented: run anchors in plugin API/SDK 0.3.0, so text plugins can reply with up to 64 KiB | [Design](../superpowers/specs/2026-11-25-viewer-paging-browser-open-design.md) |
 | 3. PDF drags, image Home/End, HTML Find | Pass on Linux | [Viewer records](../developer/acceptance/viewers.md) (C8, O6, R8 and others) |
 | 4. Syntax selection contrast | Not a defect: the readings were a measuring error (`a56d0a4b`); selected text has per-palette colours (`aac18026`) | Those commits |
@@ -22,7 +22,7 @@ software rendering.
 | 7a. HTML paint trace on Windows | Done before this pass | — |
 | 7b. Short HTML wheel glides | Fixed (`b079a2a6`): a glide pauses through a page stall and ends only after 600 ms without a frame. A page slow to paint its first scroll gets the rest at once | 253 viewer UI library tests; `viewers_scroll` run `20261125-184840` passed with no review flags |
 | 7c. Kept-ready HTML browser | Decided, not implemented (VIEW-08) | Design |
-| 7d. HTML key distances | Decided: Chromium's own arrow and Page Down distances stay | [Web viewer API](../developer/WEB_VIEWER_API.md), [Scrolling](../developer/SCROLLING.md) |
+| 7d. HTML key distances | Decided: Chromium's own arrow and Page Down distances stay | [Web viewer API](../developer/WEB_VIEWER_API.md), [Scrolling](../developer/scrolling.md) |
 | 7e | Done before this pass | — |
 | 8. Text viewer opening under 200 ms | Met on Linux without a window pool; see [Text viewer opening](#text-viewer-opening). Windows took 1.1 s ([record](2026-11-25-windows-viewer-opening.md)), so the planned pool remains for Windows | `open_latency` |
 | 9a. Steps deferred under a seam request | Fixed (`d6465f32`): they wait for the page past the edge instead of being dropped | `worker_seam_tests` |

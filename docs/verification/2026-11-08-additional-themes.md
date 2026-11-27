@@ -62,7 +62,7 @@ verified numerically rather than by a rendered error-dialog fixture in this run.
 
 ## Attribution and distribution
 
-[Exact palette references and retained licenses](../THEME_PROVENANCE.md) document
+[Exact palette references and retained licenses](../theme-provenance.md) document
 the Apache-2.0/MIT adaptations and the original retro color mappings. Release
 packaging copies the provenance record and all three exact license files to
 `licenses/themes/`; the regression checks their bytes against the retained files.

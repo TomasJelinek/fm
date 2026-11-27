@@ -7,12 +7,12 @@ it through the real windows, and the status of that check in the latest recorded
 The inventory follows the code (`crates/midnight-viewer-ui`, `midnight-viewer-engine`,
 `midnight-compare-ui`, `midnight-compare-engine`, `midnight-thumbnail-host`,
 `midnight-web-viewer-host`, `plugins/midnight-viewer-*`, `plugins/midnight-fs-archive`)
-and the documentation ([KEYBOARD_SHORTCUTS](../../KEYBOARD_SHORTCUTS.md),
-[VIEWER_PRESENTATION](../VIEWER_PRESENTATION.md), [VIEWER_PREFERENCES](../VIEWER_PREFERENCES.md),
-[VIEWER_SCROLLING](../VIEWER_SCROLLING.md), [SCROLLING](../SCROLLING.md),
-[FILE_COMPARISON](../FILE_COMPARISON.md), [COMPARE_DIRECTORIES](../COMPARE_DIRECTORIES.md),
-[ARCHIVE_FORMATS](../../ARCHIVE_FORMATS.md)). The suite itself is described in
-[ACCEPTANCE.md](../ACCEPTANCE.md).
+and the documentation ([keyboard-shortcuts](../../keyboard-shortcuts.md),
+[viewer-presentation](../viewer-presentation.md), [viewer-preferences](../viewer-preferences.md),
+[viewer-scrolling](../viewer-scrolling.md), [scrolling](../scrolling.md),
+[file-comparison](../file-comparison.md), [compare-directories](../compare-directories.md),
+[archive-formats](../../archive-formats.md)). The suite itself is described in
+[acceptance.md](../acceptance.md).
 
 Statuses:
 
@@ -23,7 +23,7 @@ Statuses:
 
 Run these scenarios with `bash scripts/acceptance.sh --only viewers,tools_compare_dirs`.
 Every `viewers_*` scenario runs in a staged child process with the installed plugin
-packages (`MIDNIGHT_ACCEPTANCE_PLUGINS`, see ACCEPTANCE.md). Their helpers are
+packages (`MIDNIGHT_ACCEPTANCE_PLUGINS`, see acceptance.md). Their helpers are
 `tests/acceptance/viewers_support.rs` (composition, opening and closing windows,
 `Failures` with pending and skipped checks), `viewers_probe.rs` (scrollbar drags and the
 frames shown during a drag, Slint pixel deltas, settling, the byte range of a text page,
@@ -75,7 +75,7 @@ that commit by `./build.sh`; every scenario of the suite; report in
 of that machine, not product results:
 
 - **No HTML viewer.** The distribution lacks the HTML viewer's system libraries
-  (`libnss3`, `libnspr4`, `libasound2t64`; [SYSTEM_REQUIREMENTS](../../SYSTEM_REQUIREMENTS.md)
+  (`libnss3`, `libnspr4`, `libasound2t64`; [system-requirements](../../system-requirements.md)
   names them), so `midnight-viewer-html` exits at load (status 127) and every HTML case
   reports "Chromium transport stopped: failed to fill whole buffer" (`viewers_files`
   4 cases, `viewers_scroll`, `viewers_presentation`). `scripts/setup-linux.sh --install`
@@ -402,7 +402,7 @@ and the window test `storage_reasons_and_preview_failures_are_status_rows_that_l
 ## Archive passwords
 
 The archives are written by `encode::zip_entries` (ZipCrypto and WinZip AES, checked
-against independent readers, see ACCEPTANCE.md); the password is non-ASCII.
+against independent readers, see acceptance.md); the password is non-ASCII.
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
@@ -469,7 +469,7 @@ delegated systemd user scope.
 | X7 | Viewers on archive members (and inner archives' members) | `viewers_archives` | PASS |
 | X8 | Every theme's selection colours | `viewers_selection` | See S4–S8 |
 | X9 | Make File List (Ctrl+M) to the Internal viewer: the basic text viewer shows exactly the list | `panels_root_keys` › Ctrl+M with the Internal viewer output (staged with the viewers) | PASS: L-08 in the [panels record](panels.md) (Windows `20261122-153059`, Linux `20261122-152841`) |
-| X10 | A viewer for archive members reached from a Find feed | `find_archives` › View, Edit and Open disabled for a member result, F3 refused with "An archive member opens from its archive", Feed to panel leaving members out and refusing only-member results (F-A10, F-A11 in the [Find record](find.md)) | Not applicable by design (FIND-01): a feed leaves archive members out, and View and F3 of a member result are refused; members are viewed from the archive panel ([Find](../FIND.md#search-inside-archives)) |
+| X10 | A viewer for archive members reached from a Find feed | `find_archives` › View, Edit and Open disabled for a member result, F3 refused with "An archive member opens from its archive", Feed to panel leaving members out and refusing only-member results (F-A10, F-A11 in the [Find record](find.md)) | Not applicable by design (FIND-01): a feed leaves archive members out, and View and F3 of a member result are refused; members are viewed from the archive panel ([Find](../find.md#search-inside-archives)) |
 
 ## Not yet written
 

@@ -435,7 +435,7 @@ pub fn help_and_drive_info(context: &mut Context) -> Result<(), String> {
     ));
     app.shutdown()?;
     if outdated {
-        return Err("finding ACC-TOOLS-03: the keyboard help says \"Native size scans follow directory links and junctions\", but links inside a measured folder are skipped (folder_sizes, tools_folder_sizes; docs/developer/TREE_PANEL.md)".into());
+        return Err("finding ACC-TOOLS-03: the keyboard help says \"Native size scans follow directory links and junctions\", but links inside a measured folder are skipped (folder_sizes, tools_folder_sizes; docs/developer/tree-panel.md)".into());
     }
     Ok(())
 }

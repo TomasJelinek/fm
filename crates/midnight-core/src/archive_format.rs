@@ -86,7 +86,7 @@ pub struct ArchiveAssociation {
 
 /// Recognize a documented container suffix without allocating or decoding native filenames.
 /// This performs no I/O and does not check user preferences or installed providers.
-/// The worker validates actual content when opening. See `docs/ARCHIVE_FORMATS.md`.
+/// The worker validates actual content when opening. See `docs/archive-formats.md`.
 pub fn archive_association(path: &Path) -> Option<&'static ArchiveAssociation> {
     let name = path.file_name()?.as_encoded_bytes();
     // Compound containers take precedence over their compression-stream suffix.

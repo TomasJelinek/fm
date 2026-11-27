@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing safe Rust, `Arc`, startup `WorkerOwned` service guard, integration tests and current Windows/Linux build gates.
 
-**Spec:** LIFE-01 in `docs/IMPLEMENTATION_BACKLOG.md`, the builder limitation in `docs/verification/2026-11-12-engine-lifetime-review.md`, and `docs/developer/ENGINE_LIFETIME.md`.
+**Spec:** LIFE-01 in `docs/implementation-backlog.md`, the builder limitation in `docs/verification/2026-11-12-engine-lifetime-review.md`, and `docs/developer/engine-lifetime.md`.
 
 ## Constraints and review focus
 

@@ -1,5 +1,5 @@
 //! Saving the folders a committed native Move changed, so that the Move can report its
-//! durability as confirmed (TRANSFERS.md, "Move durability on Windows").
+//! durability as confirmed (transfers.md, "Move durability on Windows").
 //!
 //! `FlushFileBuffers` on a folder writes what the filesystem holds for it. Windows accepts
 //! it only through a handle that may add files or subfolders to the folder (`FILE_ADD_FILE`

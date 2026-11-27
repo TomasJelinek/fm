@@ -117,7 +117,7 @@
 - Produces scoped execution receipts and current guarantees; planned tests and this documentation are not passing evidence.
 
 **Owner:** Build executes; Perf reviews unnecessary discovery/CPU/I/O and retained owners; Documentation updates current guarantees; Root integrates. **Depends on:** frozen reviewed Tasks 1–5.
-**Docs:** `docs/developer/FILE_COMPARISON.md` (feature and settings behavior) and `SECURITY.md`'s focused preferences/external-comparison paragraphs. No new competing Options guide.
+**Docs:** `docs/developer/file-comparison.md` (feature and settings behavior) and `SECURITY.md`'s focused preferences/external-comparison paragraphs. No new competing Options guide.
 - [ ] Build targeted groups: core `--test file_comparators`; platform-common `--test file_comparators`; engine `--lib desktop_external_compare`; compare-engine `--lib comparator_routing` plus existing capture/file-choice/worker suites; UI `--test comparator_options --test options_transaction`; compare-ui `--test external_compare --test file_choice` and existing keyboard/difference/font boundaries; explorer native-content boundary.
 - [ ] Reuse the existing native Program-argument harness on Windows/Linux: verify exact two paths and argv items, Unicode/metacharacters/empty literals, long paths, absent executable and permissions. ASCII quote filenames are Unix-only; Windows quote tests use literal argv values/valid filenames.
 - [ ] Qualify one installed no-fee GUI comparator on each intended platform only under Root/Build native leases; verify explicit launch, process cleanup and original-file edit semantics. No paid-only or trial dependency is selected by this plan.

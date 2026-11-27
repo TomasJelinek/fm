@@ -287,7 +287,7 @@ that size.
 
 ### After merging main `2e6ee4ff`
 
-Main gained the merge repair ([active work](../ACTIVE_WORK.md)) while this change was
+Main gained the merge repair ([active work](../active-work.md)) while this change was
 made. Merged with it, the same commands give:
 
 | Target | Passed | Failed | Ignored |

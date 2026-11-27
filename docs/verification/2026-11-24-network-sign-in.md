@@ -33,7 +33,7 @@ descriptor reported ABI 1.5 with sign-in support.
 The dialog asked again for every share or server of a device after a sign-in. Each
 activation mounted through GVfs with `G_PASSWORD_SAVE_NEVER`, and only the one retry
 after the dialog carried credentials. The provider now remembers a successful sign-in
-for its SMB server for the rest of the session ([contract](../developer/NETWORK_FILESYSTEM.md#platform-behavior-and-tests)).
+for its SMB server for the rest of the session ([contract](../developer/network-filesystem.md#platform-behavior-and-tests)).
 
 | Check | Result |
 | --- | --- |

@@ -149,7 +149,7 @@ warnings` clean; `cargo fmt --all -- --check` clean; `scripts/check-source-size.
 ## Not covered
 
 - CI builds no bundled video helper, so the two extracted-installation tests run only
-  where a `thumbnailers` package exists; `docs/RELEASE_BUILD.md` adds them to the checks
+  where a `thumbnailers` package exists; `docs/release-build.md` adds them to the checks
   before publishing, against the unpacked ZIP.
 - An administrator's installation that grants AppContainers nothing (not `Program
   Files`) still fails, now with the guidance; an administrator adds the entries with

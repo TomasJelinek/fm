@@ -58,17 +58,22 @@ the formatting authority; strict Clippy checks run in CI.
   process its own temporary files, render output and log; preserve package
   working directories. Run desktop/input tests and performance measurements
   serially. Do not run competing Cargo builds against the same target directory.
-  See [targeted parallel execution](docs/developer/TEST_EXECUTION.md).
+  See [targeted parallel execution](docs/developer/test-execution.md).
 - **Dependencies:** all third-party libraries must permit the intended use and
   distribution without mandatory fees; prefer maintained open source. Follow the
-  [dependency policy](docs/DEPENDENCY_POLICY.md) and update the
-  [license inventory](docs/THIRD_PARTY.md) when dependencies/features change.
+  [dependency policy](docs/dependency-policy.md) and update the
+  [license inventory](docs/third-party.md) when dependencies/features change.
 - **Documentation:** describe implemented behavior in the document that owns the
   topic, in plain, concise English. Label plans and known limits and keep them in the
-  [implementation backlog](docs/IMPLEMENTATION_BACKLOG.md). Record only verified test
+  [implementation backlog](docs/implementation-backlog.md). Record only verified test
   evidence, in dated records under `docs/verification/`, and point to them instead of
   repeating run narratives. Every relative link and anchor must resolve; no local
-  paths, user names or email addresses.
+  paths, user names or email addresses. Name documents in lowercase words joined by
+  hyphens (`feature-status.md`). `README.md`, the root `AGENTS.md`, `CODE_STYLE.md` and
+  `SECURITY.md`, the plugins' packaged third-party notices and upstream license texts
+  keep their names, and so do `filesystem-api/PROTOCOL.md` and
+  `docs/developer/WEB_VIEWER_API.md` until the next filesystem API and web viewer API
+  versions: the released packages 0.5.0 and 0.4.0 carry or link them by name.
 
 Checks, as CI ([ci.yml](.github/workflows/ci.yml)) runs them for the main workspace:
 
@@ -78,7 +83,7 @@ Checks, as CI ([ci.yml](.github/workflows/ci.yml)) runs them for the main worksp
 - Clippy:
   `cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings`.
   The feature makes Clippy check the opt-in
-  [acceptance suite](docs/developer/ACCEPTANCE.md) too.
+  [acceptance suite](docs/developer/acceptance.md) too.
 - Tests: CI runs every workspace test target with
   `python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts`, in
   several Cargo invocations. Locally, run the same targets with
