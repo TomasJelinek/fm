@@ -629,3 +629,15 @@ fn metadata_snapshot_counts_encoded_name_bytes_and_keeps_no_spare_capacity() {
     assert_eq!(cancelled.kind(), io::ErrorKind::Interrupted);
     assert_eq!(cancelled.to_string(), "metadata listing cancelled");
 }
+#[test]
+fn zero_extended_file_id_is_unavailable_even_when_the_smb_query_succeeds() {
+    let mut information = FILE_ID_INFO {
+        VolumeSerialNumber: 57,
+        ..Default::default()
+    };
+    assert!(identity_from_info(information).is_err_and(|error| unsupported(&error)));
+    information.FileId.Identifier[15] = 1;
+    let identity = identity_from_info(information).unwrap();
+    assert_eq!(identity.volume, 57);
+    assert_eq!(identity.id, information.FileId.Identifier);
+}

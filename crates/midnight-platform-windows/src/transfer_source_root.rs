@@ -6,13 +6,14 @@
 //! folder (another job's publication of a copied file, a program saving by rename) while
 //! any handle on that folder denies write sharing, a rename or removal of an entry while a
 //! handle denies delete sharing, and a write while a handle denies write sharing; the
-//! source that reads an item holds such a guard (`open_ordinary`). A prepared item
+//! source that reads an item holds such a guard (`open_ordinary`). A prepared item with a native ID
 //! therefore holds no handle of its own: only its folder's attribute handle, which shares
 //! everything, and the identity, kind, metadata and revision it observed through a handle
 //! that takes no part in sharing checks. The first listing, discovery, read or
 //! modified-time pin opens the guarded source on the same name in that folder, refuses any
 //! other object and, for a file, any other revision, and keeps it for the rest of the job.
-//! A link keeps its own guarded capture from the start.
+//! A link keeps its own guarded capture from the start. A network source without file
+//! IDs also keeps its original guard because the server cannot identify a later reopen.
 use super::*;
 use std::sync::Mutex;
 
@@ -30,13 +31,29 @@ pub(in crate::transfer) fn prepare(
     let path = parent_path.join(name);
     checked(cancel, &path)?;
     validate_name(name).map_err(|e| error(&path, e))?;
-    let (entry, stamp) = observe(&parent, name, &path)?;
+    let probe = probe(&parent, name, &path)?;
+    let ids = native::identity(&probe).and_then(|object| {
+        native::identity(&parent)
+            .map(|directory| (transfer_identity(object), transfer_identity(directory)))
+    });
+    let (object, parent_identity) = match ids {
+        Ok(ids) => ids,
+        Err(failure)
+            if native::unsupported(&failure)
+                && (super::super::network_identity::is_network(&probe, &path)?
+                    || super::super::network_identity::is_network(&parent, &parent_path)?) =>
+        {
+            return network::open(&parent, &parent_path, name, Access::Copy(links), cancel)
+                .map(|source| Box::new(source) as Box<dyn TransferSource>);
+        }
+        Err(failure) => return Err(error(&path, failure)),
+    };
+    let (entry, stamp) = observed(&probe, &path, object)?;
     if !matches!(entry.item.kind, EntryKind::File | EntryKind::Directory) {
         // A link is projected, or a link or special entry refused, by the source itself.
         return Source::open_with_links(parent, parent_path, name, links, cancel)
             .map(|source| Box::new(source) as Box<dyn TransferSource>);
     }
-    let parent_identity = identity(&parent, &parent_path)?;
     let namespace_owner = super::super::namespace::owner(&[parent_identity, entry.identity]);
     Ok(Box::new(Prepared {
         entry,
@@ -54,7 +71,12 @@ pub(in crate::transfer) fn prepare(
 /// The entry and revision of `name`, read through an attribute-only handle (it takes no
 /// part in sharing checks) that is closed again before this returns.
 fn observe(parent: &File, name: &OsStr, path: &Path) -> Result<(TransferEntry, Stamp), FsError> {
-    let file = native::open_relative(
+    let file = probe(parent, name, path)?;
+    observed(&file, path, identity(&file, path)?)
+}
+
+fn probe(parent: &File, name: &OsStr, path: &Path) -> Result<File, FsError> {
+    native::open_relative(
         parent,
         name,
         FILE_READ_ATTRIBUTES | SYNCHRONIZE,
@@ -62,8 +84,15 @@ fn observe(parent: &File, name: &OsStr, path: &Path) -> Result<(TransferEntry, S
         FILE_OPEN,
         0,
     )
-    .map_err(|e| error(path, e))?;
-    let (entry, _, metadata) = classified_with_metadata(&file, path)?;
+    .map_err(|e| error(path, e))
+}
+
+fn observed(
+    file: &File,
+    path: &Path,
+    object: TransferIdentity,
+) -> Result<(TransferEntry, Stamp), FsError> {
+    let (entry, _, metadata) = classified_using(file, path, |_, _| Ok(object))?;
     let stamp = (
         metadata.file_size(),
         metadata.last_write_time(),
@@ -132,6 +161,7 @@ impl Prepared {
                 path: self.parent_path.clone(),
                 identity: Some(self.parent_identity),
                 ancestry: None,
+                network: None,
             },
             &self.name,
             None,
@@ -170,14 +200,14 @@ impl TransferSource for Prepared {
         cancel: &Cancellation,
     ) -> Result<Option<Arc<dyn midnight_core::TransferNamespacePin>>, FsError> {
         self.revalidate(cancel)?;
-        super::super::namespace::source_pin(
+        source_scope(
             &self.parent,
             &self.parent_path,
             &self.name,
             &self.entry,
+            Access::Copy(self.links),
             cancel,
         )
-        .map(Some)
     }
     fn discover(
         &self,

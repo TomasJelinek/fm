@@ -20,12 +20,17 @@ mod metadata;
 mod move_source;
 #[path = "transfer_namespace.rs"]
 mod namespace;
+#[path = "transfer_network_identity.rs"]
+mod network_identity;
 #[path = "transfer_preserve.rs"]
 mod preserve;
 #[path = "transfer_source.rs"]
 mod source;
 #[path = "transfer_source_links.rs"]
 mod source_links;
+#[cfg(feature = "test-fixtures")]
+#[path = "test_network_ids.rs"]
+pub mod test_network_ids;
 #[path = "transfer_validation.rs"]
 mod validation;
 
@@ -59,15 +64,20 @@ impl TransferService for crate::WindowsFileSystem {
         // Copy, as a Move there is refused.
         let device = if link {
             None
+        } else if crate::storage_kind::network(path) {
+            // Even within one share, auto-drop must choose Copy when Move
+            // cannot establish a rename-stable identity.
+            match native::identity(&file) {
+                Ok(id) => Some(link_destination::share_volume(&file, id.volume)),
+                Err(e) if native::unsupported(&e) => None,
+                Err(e) => return Err(error(path, e)),
+            }
         } else {
-            let volume = native::local_identity(&file)
-                .map_err(|e| error(path, e))?
-                .volume;
-            Some(if crate::storage_kind::network(path) {
-                link_destination::share_volume(&file, volume)
-            } else {
-                volume
-            })
+            Some(
+                native::local_identity(&file)
+                    .map_err(|e| error(path, e))?
+                    .volume,
+            )
         };
         checked(cancel, path)?;
         Ok(device)

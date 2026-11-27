@@ -7,13 +7,12 @@
 //! pass has read and totalled it, and gives the pass a short slice of time beyond that
 //! each time it takes an item, so the pass runs ahead without delaying the first copy.
 //! Taking an item opens it again (for a Move, prepares it for Move) and checks that it is
-//! still the item the pass read: one that changed or is gone fails alone, with Retry and
-//! Skip, and is never copied as something else. No item holds a handle, a namespace pin
-//! or a Move capture before it is taken; the job's namespace claim covers the items'
-//! folders (`preparation::streamed_endpoints`).
+//! still the item the pass read. For Copy from an ID-less share, the pass retains the
+//! exact handle and stops reading ahead until the job takes that item. The job's
+//! namespace claim covers the selected items' folders (`preparation::streamed_endpoints`).
 //!
-//! Every other check that needs all items' identities (that a replaced or merged target
-//! is not a selected item) first completes the pass's identities.
+//! A conflict requiring the remaining identities can offer Rename and Skip while an
+//! ID-less item holds the pass. This keeps the number of live native handles bounded.
 use super::*;
 use midnight_core::{DiscoveryScope, DiscoveryState, OperationDiscovery};
 use std::{
@@ -50,6 +49,8 @@ pub(super) struct StreamedRoots {
     moved: bool,
     /// One per item the pass has read: `facts.len()` items are identified.
     facts: Vec<Fact>,
+    /// An unreadable selection may still be an alias of a conflict target.
+    unreadable: usize,
     /// Items whose discovery the pass has totalled (never more than it identified).
     discovered: usize,
     /// The next item the job takes.
@@ -60,6 +61,10 @@ pub(super) struct StreamedRoots {
     directories: HashMap<TransferIdentity, u32>,
     /// The followed targets of selected links, apart from the links' own identities.
     projected: HashMap<TransferIdentity, u32>,
+    /// An ID-less file or folder cannot be closed after discovery and then reacquired
+    /// by pathname. Stop reading ahead at its pin until the job takes this exact object.
+    pinned: Option<(usize, preparation::SharedSource)>,
+    pub(super) native_roots: NativeRoots,
     /// The work the discovery has totalled so far, adopted by the job once complete.
     budget: work_budget::Budget,
     published: Instant,
@@ -121,11 +126,14 @@ impl StreamedRoots {
             links,
             moved,
             facts: Vec::new(),
+            unreadable: 0,
             discovered: 0,
             next: 0,
             identities: HashMap::new(),
             directories: HashMap::new(),
             projected: HashMap::new(),
+            pinned: None,
+            native_roots: NativeRoots::default(),
             budget: work_budget::Budget::discovery(),
             published: Instant::now(),
         }
@@ -143,6 +151,19 @@ impl StreamedRoots {
     pub(super) fn identified_all(&self) -> bool {
         self.facts.len() >= self.len()
     }
+    pub(super) fn protects_all(&self) -> bool {
+        self.identified_all() && (self.moved || self.unreadable == 0)
+    }
+    fn advance(&mut self) {
+        if self
+            .pinned
+            .as_ref()
+            .is_some_and(|(index, _)| *index == self.next)
+        {
+            self.pinned = None;
+        }
+        self.next += 1;
+    }
     /// Whether `identity` is a selected item, or what one of them leads to: a replaced
     /// or merged target must never be one.
     pub(super) fn protects(&self, identity: TransferIdentity) -> bool {
@@ -157,6 +178,12 @@ impl StreamedRoots {
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
         let path = self.path(index);
+        if let Some((pinned_index, source)) = &self.pinned
+            && *pinned_index == index
+        {
+            source.revalidate(cancel)?;
+            return Ok(Box::new(source.clone()));
+        }
         let source = self.service.prepare_transfer_source_with_policy(
             path,
             self.links,
@@ -176,38 +203,51 @@ impl StreamedRoots {
     /// be totalled (not a repeat), so that the pass reads it once.
     fn identify(&mut self, cancel: &Cancellation) -> Option<Box<dyn TransferSource>> {
         let index = self.facts.len();
-        let Ok(source) = self.open(index, cancel) else {
+        let Ok(mut source) = self.open(index, cancel) else {
             self.facts.push(Fact::Unreadable);
+            self.unreadable += 1;
             return None;
         };
+        if !self.moved && source.requires_copy_directory_guard() {
+            let retained = preparation::SharedSource::new(source);
+            self.pinned = Some((index, retained.clone()));
+            source = Box::new(retained);
+        }
         let entry = source.entry();
         let seen = Seen::of(source.as_ref());
-        let original = seen.identity;
-        let position = index as u32;
         // A Move takes a folder once: the same folder under another path (another case
         // of its name, a path through a link) would be gone after the first. Copy copies
         // each path, and a Move moves each name of a file with several links.
         if self.moved
             && entry.item.kind == EntryKind::Directory
-            && self.identities.contains_key(&original)
+            && self.identities.contains_key(&seen.identity)
         {
             self.facts.push(Fact::Repeated);
             return None;
         }
-        self.identities.entry(original).or_insert(position);
-        let projected = source.native_identity().unwrap_or(entry.identity);
-        if projected != original {
-            self.projected.entry(projected).or_insert(position);
-        }
-        if entry.item.kind == EntryKind::Directory {
-            self.directories.entry(projected).or_insert(position);
-        }
+        self.protect(index, source.as_ref(), seen);
         self.facts.push(Fact::Read(seen));
         Some(source)
     }
+    fn protect(&mut self, index: usize, source: &dyn TransferSource, seen: Seen) {
+        self.native_roots.observe(source);
+        let position = index as u32;
+        self.identities.entry(seen.identity).or_insert(position);
+        let projected = source.native_identity().unwrap_or(source.entry().identity);
+        if projected != seen.identity {
+            self.projected.entry(projected).or_insert(position);
+        }
+        if source.entry().item.kind == EntryKind::Directory {
+            self.directories.entry(projected).or_insert(position);
+        }
+    }
     /// Reads identities only, until every item is identified or `until` passes.
     pub(super) fn identify_until(&mut self, until: Instant, cancel: &Cancellation) {
-        while !self.identified_all() && !cancel.is_cancelled() && Instant::now() < until {
+        while !self.identified_all()
+            && self.pinned.is_none()
+            && !cancel.is_cancelled()
+            && Instant::now() < until
+        {
             drop(self.identify(cancel));
         }
     }
@@ -224,6 +264,10 @@ impl StreamedRoots {
     ) {
         let traversal = cancel.child_interrupted_by_pause();
         while self.discovered < self.len()
+            && self
+                .pinned
+                .as_ref()
+                .is_none_or(|(index, _)| self.discovered <= *index)
             && (self.discovered <= through || Instant::now() < until)
             && !traversal.is_cancelled()
         {
@@ -311,6 +355,13 @@ impl StreamedRoots {
     ) -> Result<(), FsError> {
         while !self.identified_all() {
             check_cancel(merged.path(), cancel)?;
+            if self.pinned.is_some() {
+                return Err(error(
+                    merged.path(),
+                    io::ErrorKind::Unsupported,
+                    "a later Copy source has no file ID to check this merge against",
+                ));
+            }
             self.identify_until(Instant::now() + SCAN_SLICE, cancel);
         }
         let next = self.next as u32;
@@ -485,7 +536,7 @@ impl Job {
         }
         let expected = match streamed.facts[index] {
             Fact::Repeated => {
-                streamed.next += 1;
+                streamed.advance();
                 // The folder is moved once, as its first occurrence, as a repeated path is
                 // left out of a prepared selection.
                 self.progress.requested_roots = self.progress.requested_roots.saturating_sub(1);
@@ -504,7 +555,7 @@ impl Job {
         match taken {
             Ok(source) => {
                 let streamed = self.streamed.as_mut().expect("streamed roots");
-                streamed.next += 1;
+                streamed.advance();
                 self.report_unstarted_now();
                 Taken::Root(source)
             }
@@ -517,12 +568,20 @@ impl Job {
         index: usize,
         expected: Option<Seen>,
     ) -> Result<Box<dyn TransferSource>, FsError> {
-        let streamed = self.streamed.as_ref().expect("streamed roots");
+        let streamed = self.streamed.as_mut().expect("streamed roots");
         let source = streamed.open(index, &self.cancel)?;
         if expected.is_some_and(|expected| expected != Seen::of(source.as_ref())) {
             return Err(changed(streamed.path(index), TransferIntent::Copy));
         }
         link_job::admit_root(source.as_ref(), self.links, &self.cancel)?;
+        if expected.is_none() {
+            // An unreadable item can become available on Retry. Protect this
+            // newly acquired selection in all the conflicts that follow it.
+            let seen = Seen::of(source.as_ref());
+            streamed.protect(index, source.as_ref(), seen);
+            streamed.facts[index] = Fact::Read(seen);
+            streamed.unreadable -= 1;
+        }
         Ok(source)
     }
 
@@ -561,7 +620,7 @@ impl Job {
         if let Some(streamed) = self.streamed.as_mut()
             && !streamed.is_done()
         {
-            streamed.next += 1;
+            streamed.advance();
         }
         self.progress.skipped += 1;
         self.report_unstarted_now();
@@ -590,7 +649,9 @@ impl Job {
             self.progress.phase = CopyOperationPhase::Planning;
             streamed.identify_until(Instant::now() + STEP_BUDGET, &self.cancel);
         }
-        streamed.identified_all() || self.cancel.is_cancelled()
+        // A held ID-less root stops read-ahead. The user can still Skip or Rename
+        // the collision; Merge and Replace require a complete list of protected roots.
+        streamed.identified_all() || streamed.pinned.is_some() || self.cancel.is_cancelled()
     }
 
     /// A folder merged into must not be inside a selected folder the job takes later.
@@ -610,7 +671,7 @@ impl Job {
     /// Reads every selected item's identity now, as a conflict would.
     pub(in crate::copy_operations) fn identify_streamed_for_test(&mut self) {
         if let Some(streamed) = self.streamed.as_mut() {
-            while !streamed.identified_all() {
+            while !streamed.identified_all() && streamed.pinned.is_none() {
                 streamed.identify_until(Instant::now() + SCAN_SLICE, &self.cancel);
             }
         }

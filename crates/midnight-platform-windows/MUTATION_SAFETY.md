@@ -130,7 +130,10 @@ A Copy to a local FAT32 or exFAT directory uses the exclusive namespace lane. It
 creates a new stage in the destination and holds the file handle through readback
 and the no-replace rename. A FAT directory index may change during that rename. A
 collision leaves the existing file intact, and cleanup operates on the held stage.
-Transfer sources and Move destinations still require the 128-bit `FileIdInfo`.
+Local transfer sources and Move destinations still require the 128-bit `FileIdInfo`.
+Windows also supports ordinary Copy sources and destinations on network shares
+that omit file IDs. See [Windows network Copy](../../docs/developer/TRANSFERS.md#windows-network-shares-without-file-ids)
+for its handle-sharing rules.
 
 On 2026-11-27 the Windows engine test
 `operations_real_windows::verified_copy_to_fat_preserves_tree_and_existing_file`

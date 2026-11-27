@@ -1,8 +1,12 @@
 //! End-to-end Windows engine operations on owned QA fixtures, kept only when a test fails.
 #![cfg(windows)]
 
+#[path = "operations_real_windows/idless_tree.rs"]
+mod idless_tree;
 #[path = "operations_real_windows/native.rs"]
 mod native;
+#[path = "operations_real_windows/network_copy.rs"]
+mod network_copy;
 #[path = "support/qa_fixture.rs"]
 mod qa_fixture;
 #[path = "operations_real_windows/support.rs"]
@@ -78,22 +82,22 @@ async fn verified_copy_to_fat_preserves_tree_and_existing_file() {
         .tempdir_in(base)
         .unwrap();
     let fixture = Fixture::new("copy-to-fat");
-    verified_copy_and_conflict(&fixture, target.path()).await;
+    verified_copy_and_conflict(&fixture.root, target.path()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn verified_copy_to_native_directory_preserves_tree_and_existing_file() {
     let fixture = Fixture::new("copy-to-native");
-    verified_copy_and_conflict(&fixture, &fixture.directory("target")).await;
+    verified_copy_and_conflict(&fixture.root, &fixture.directory("target")).await;
 }
 
-async fn verified_copy_and_conflict(fixture: &Fixture, target: &std::path::Path) {
+async fn verified_copy_and_conflict(parent: &std::path::Path, target: &std::path::Path) {
     use midnight_core::{
         CopyLinkPolicy, CopyOptionsInput, CopyOptionsRequest, CopyRequest, FileClipboard,
         FileClipboardIntent, MetadataTransferInput, MetadataTransferRequest, TransferIntent,
         TransferMetadataPolicy,
     };
-    let source = fixture.directory("source");
+    let source = parent.join("source");
     fs::create_dir_all(source.join("nested/empty")).unwrap();
     let name = "a long filename — červená.bin";
     let file = source.join("nested").join(name);

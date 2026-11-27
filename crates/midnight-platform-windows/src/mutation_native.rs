@@ -62,7 +62,8 @@ fn without_stable_identity(error: io::Error) -> io::Error {
         io::ErrorKind::Unsupported,
         format!(
             "This operation requires stable file identities, which this filesystem does not \
-             provide. FAT32 and exFAT drives can receive a copy from NTFS. ({error})"
+             provide. Copy can transfer ordinary files and folders on network shares. \
+             FAT32 and exFAT drives can receive a copy from NTFS. ({error})"
         ),
     )
 }
@@ -84,6 +85,14 @@ pub(crate) fn local_identity(file: &File) -> io::Result<Identity> {
 
 fn file_id(file: &File) -> io::Result<Identity> {
     let mut information = FILE_ID_INFO::default();
+    #[cfg(feature = "test-fixtures")]
+    if let Some(reply) = crate::test_network_ids::response(file) {
+        return match reply {
+            crate::test_network_ids::Response::Unsupported => Err(io::Error::from_raw_os_error(50)),
+            crate::test_network_ids::Response::AllZero => identity_from_info(information),
+            crate::test_network_ids::Response::AccessDenied => Err(io::Error::from_raw_os_error(5)),
+        };
+    }
     // SAFETY: file owns a live handle; information is writable for the duration of the call.
     if unsafe {
         GetFileInformationByHandleEx(
@@ -94,7 +103,22 @@ fn file_id(file: &File) -> io::Result<Identity> {
         )
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        let failure = io::Error::last_os_error();
+        // Some redirectors report ERROR_INVALID_LEVEL or ERROR_CALL_NOT_IMPLEMENTED
+        // for this information class; permission and connection failures stay errors.
+        return Err(match failure.raw_os_error() {
+            Some(124 | 120) => io::ErrorKind::Unsupported.into(),
+            _ => failure,
+        });
+    }
+    identity_from_info(information)
+}
+
+fn identity_from_info(information: FILE_ID_INFO) -> io::Result<Identity> {
+    // MS-FSCC 2.4.26: a server can return success with an all-zero ID to mean
+    // that it has no 128-bit identifiers. Distinct entries could share this value.
+    if information.FileId.Identifier == [0; 16] {
+        return Err(io::ErrorKind::Unsupported.into());
     }
     Ok(Identity {
         volume: information.VolumeSerialNumber,
@@ -111,6 +135,10 @@ pub(crate) fn unsupported(error: &io::Error) -> bool {
 /// The 64-bit file index and 32-bit volume serial number, for filesystems without
 /// `FileIdInfo` (see [`local_identity`]).
 pub(crate) fn legacy_identity(file: &File) -> io::Result<Identity> {
+    #[cfg(feature = "test-fixtures")]
+    if crate::test_network_ids::response(file).is_some() {
+        return Err(io::ErrorKind::Unsupported.into());
+    }
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: file retains the live handle and information is an exact writable native
     // structure for this synchronous metadata-only query.

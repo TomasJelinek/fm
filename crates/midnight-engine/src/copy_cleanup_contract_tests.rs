@@ -236,6 +236,7 @@ fn cleanup_receipt_survives(pending_stages: u8) {
         shown: entry.item.path.clone(),
         entry,
         native_identity: source_pin.native_identity(),
+        unidentified_source: false,
         source: None,
         copy: Some(VerifiedFileCopy::new(source_pin, staged).unwrap()),
         link: None,

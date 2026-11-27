@@ -1194,7 +1194,7 @@ On Windows, Copy can publish a new file to a local FAT32 or exFAT destination ev
 the volume does not provide a 128-bit `FileIdInfo`. The job runs in the exclusive
 namespace lane and keeps the staging file open through verification and publication.
 Publication by handle refuses an occupied name. Directory merges keep existing entries.
-Move and transfer sources still require stable IDs. [Windows mutation notes](../../crates/midnight-platform-windows/MUTATION_SAFETY.md#fat32-and-exfat)
+Move and local transfer sources still require stable IDs. [Windows mutation notes](../../crates/midnight-platform-windows/MUTATION_SAFETY.md#fat32-and-exfat)
 
 The namespace unit tests take their qualified (incremental) branches on a volume
 whose persistent 8.3-name creation is disabled and their unqualified (full-refresh)
@@ -1205,6 +1205,26 @@ concurrently running tests, so the mode cannot be per test. Every default `--lib
 also reruns `transfer::namespace::tests::` in a child process forced into the mode the
 build volume does not provide
 (`parent::tests::namespace_tests_pass_in_the_other_lookup_mode_too`).
+
+### Windows network shares without file IDs
+
+Windows Copy supports ordinary network files and directories when the server rejects
+the extended ID query or returns an all-zero ID. A share can supply IDs for some
+entries and omit them for others. An unidentified source retains its open file
+or directory and parent handles, and reads directory records without requesting an
+ID. The destination stages and verifies each new file through its handle, then
+publishes it with a no-replace rename. A network path key correlates a name between
+preparations; the retained handles guard that name. These copies use conservative
+namespace scheduling. A directory Copy guards its output against being reopened
+as a source through another share name or a local alias. Protected directory
+merges derive their authority from the live conflict handle. [Microsoft FileIdInformation specification](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/e4185a8a-ed8d-4f98-ab55-ca34dc8916e6)
+
+The Windows engine tests run both unsupported-ID and all-zero responses in a
+temporary directory. The opt-in `live_smb_verified_copy_with_native_missing_and_zero_ids`
+test repeats the same jobs on SMB and also exercises the server's normal response.
+Set `MIDNIGHT_TEST_SMB_DIRECTORY` to a writable share and run it with `--ignored`.
+For a share hosted on the test machine, set `MIDNIGHT_TEST_SMB_LOCAL_DIRECTORY`
+to its backing folder to run `live_smb_output_guard_excludes_its_local_alias` as well.
 
 ## Windows sharing while a job waits and runs
 

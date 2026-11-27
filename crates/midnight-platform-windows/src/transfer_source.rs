@@ -11,6 +11,8 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
 };
 
+#[path = "transfer_network_source.rs"]
+mod network;
 #[path = "transfer_source_root.rs"]
 pub(super) mod root;
 
@@ -27,6 +29,8 @@ pub(super) struct Source {
     stamp: (u64, u64, u64),
     listing: Listing,
     access: Access,
+    /// Physical ancestors held against rename on an SMB source without file IDs.
+    network: Option<Arc<network::Ancestors>>,
     /// How the Move capture of each Move child compares the child's pinned revision.
     move_revisions: TransferRevisionPolicy,
     link: Option<Arc<source_links::Binding>>,
@@ -51,6 +55,7 @@ struct Parent {
     path: PathBuf,
     identity: Option<TransferIdentity>,
     ancestry: Option<Arc<Ancestor>>,
+    network: Option<Arc<network::Ancestors>>,
 }
 
 struct Ancestor {
@@ -109,6 +114,16 @@ struct Listed {
 }
 
 impl Listing {
+    fn for_source(without_ids: bool) -> Self {
+        Self {
+            cursor: if without_ids {
+                Cursor::without_ids()
+            } else {
+                Cursor::default()
+            },
+            ..Default::default()
+        }
+    }
     fn fill(&mut self, directory: &File, path: &Path) -> Result<(), FsError> {
         let names = &mut self.names;
         self.cursor
@@ -147,6 +162,7 @@ impl Source {
                 path: parent_path,
                 identity: None,
                 ancestry: None,
+                network: None,
             },
             name,
             None,
@@ -167,6 +183,7 @@ impl Source {
                 path: parent_path,
                 identity: None,
                 ancestry: None,
+                network: None,
             },
             name,
             None,
@@ -210,10 +227,27 @@ impl Source {
                 )
                 .map_err(|e| error(&path, e))?;
                 let native = Native::query(&probe).map_err(|e| error(&path, e))?;
-                (native, Some(identity(&probe, &path)?))
+                let id = if parent.network.is_none() {
+                    match identity(&probe, &path) {
+                        Ok(id) => Some(id),
+                        Err(failure) if network::missing_id(&failure, access, &probe, &path)? => {
+                            return network::open(&parent.file, &parent.path, name, access, cancel);
+                        }
+                        Err(failure) => return Err(failure),
+                    }
+                } else {
+                    None
+                };
+                (native, id)
             }
         };
         let expected_kind = expected.kind();
+        if parent.network.is_some() && expected.link() {
+            return Err(unsupported(
+                &path,
+                "cannot safely resolve a link on a network share without file IDs",
+            ));
+        }
         let link_kind = matches!(expected_kind, EntryKind::DirectoryLink | EntryKind::Symlink);
         if link_kind && !matches!(access, Access::Move(_)) && access.links().recreates_links() {
             // Preserve keeps every link; FollowLinks follows what it can and keeps the rest.
@@ -249,7 +283,22 @@ impl Source {
             let file = open_ordinary(&parent.file, name, &path, expected_kind, access)?;
             (Arc::new(file), None)
         };
-        let (mut entry, native, meta) = classified_with_metadata(&file, &path)?;
+        let get_identity = if parent.network.is_some() {
+            super::network_identity::binding
+        } else {
+            identity
+        };
+        let object = match get_identity(&file, &path) {
+            Ok(id) => id,
+            Err(failure)
+                if parent.network.is_none()
+                    && network::missing_id(&failure, access, &file, &path)? =>
+            {
+                return network::open(&parent.file, &parent.path, name, access, cancel);
+            }
+            Err(failure) => return Err(failure),
+        };
+        let (mut entry, native, meta) = classified_using(&file, &path, |_, _| Ok(object))?;
         if let Some(link) = &link {
             if link.is_empty() {
                 if native.kind() != EntryKind::DirectoryLink {
@@ -283,7 +332,7 @@ impl Source {
                     FILE_SHARE_READ,
                 )
                 .map_err(|e| error(&path, e))?;
-                if identity(&content, &path)? != entry.identity {
+                if get_identity(&content, &path)? != entry.identity {
                     return Err(invalid(&path, "source changed while opening its content"));
                 }
                 Some(content)
@@ -292,7 +341,7 @@ impl Source {
             };
         let parent_identity = match parent.identity {
             Some(identity) => identity,
-            None => identity(&parent.file, &parent.path)?,
+            None => get_identity(&parent.file, &parent.path)?,
         };
         parent.identity = Some(parent_identity);
         if link.as_ref().is_some_and(|link| !link.is_empty())
@@ -304,17 +353,22 @@ impl Source {
                 "directory link forms a cycle in the Copy source",
             ));
         }
-        let directory_ancestry = (entry.item.kind == EntryKind::Directory && access.follows())
-            .then(|| {
-                Arc::new(Ancestor {
-                    _directory: file.clone(),
-                    identity: entry.identity,
-                    parent: parent.clone(),
-                    link: link.clone(),
-                    contains_link: link.is_some() || has_followed_link(parent.ancestry.as_deref()),
-                })
-            });
-        let namespace_owner = super::namespace::owner(&[parent_identity, entry.identity]);
+        let directory_ancestry = (entry.item.kind == EntryKind::Directory
+            && (parent.network.is_some() || access.follows()))
+        .then(|| {
+            Arc::new(Ancestor {
+                _directory: file.clone(),
+                identity: entry.identity,
+                parent: parent.clone(),
+                link: link.clone(),
+                contains_link: link.is_some() || has_followed_link(parent.ancestry.as_deref()),
+            })
+        });
+        let namespace_owner = if parent.network.is_some() {
+            Default::default()
+        } else {
+            super::namespace::owner(&[parent_identity, entry.identity])
+        };
         Ok(Self {
             entry,
             native,
@@ -325,8 +379,9 @@ impl Source {
             file,
             readable,
             stamp,
-            listing: Listing::default(),
+            listing: Listing::for_source(parent.network.is_some()),
             access,
+            network: parent.network,
             move_revisions: TransferRevisionPolicy::Exact,
             link,
             leaf: None,
@@ -443,6 +498,7 @@ impl Source {
             access,
             move_revisions: TransferRevisionPolicy::Exact,
             link: Some(link),
+            network: None,
             leaf: None,
             parent_ancestry: parent.ancestry,
             directory_ancestry,
@@ -502,6 +558,7 @@ impl Source {
             access,
             move_revisions: TransferRevisionPolicy::Exact,
             link: None,
+            network: None,
             leaf: Some(Leaf { proof, unfollowed }),
             parent_ancestry: parent.ancestry,
             directory_ancestry: None,
@@ -540,6 +597,7 @@ impl Source {
             path: self.entry.item.path.clone(),
             identity: Some(self.entry.identity),
             ancestry: self.directory_ancestry.clone(),
+            network: self.network.clone(),
         }
     }
 
@@ -553,18 +611,21 @@ impl TransferSource for Source {
         cancel: &Cancellation,
     ) -> Result<Option<Arc<dyn midnight_core::TransferNamespacePin>>, FsError> {
         self.revalidate(cancel)?;
-        if self.link.is_some() || has_followed_link(self.parent_ancestry.as_deref()) {
+        if self.network.is_some()
+            || self.link.is_some()
+            || has_followed_link(self.parent_ancestry.as_deref())
+        {
             // A logical name alone cannot recapture the original object and its target.
             return Ok(None);
         }
-        super::namespace::source_pin(
+        source_scope(
             &self.parent,
             &self.parent_path,
             &self.name,
             &self.entry,
+            self.access,
             cancel,
         )
-        .map(Some)
     }
     fn discover(
         &self,
@@ -576,7 +637,7 @@ impl TransferSource for Source {
             visit(&self.entry.item);
             return Ok(());
         }
-        if self.access.projects_links() {
+        if self.network.is_some() || self.access.projects_links() {
             self.discover_projection(cancel, visit)?;
             return self.revalidate(cancel);
         }
@@ -734,7 +795,12 @@ impl TransferSource for Source {
         }
         checked(cancel, &self.entry.item.path)?;
         self.ensure_readable()?;
-        super::validation::rewind(self.read_file(), &self.entry.item.path, cancel, true)
+        super::validation::rewind(
+            self.read_file(),
+            &self.entry.item.path,
+            cancel,
+            self.network.is_none(),
+        )
     }
     fn seek_for_validation(&mut self, offset: u64, cancel: &Cancellation) -> Result<u64, FsError> {
         checked(cancel, &self.entry.item.path)?;
@@ -764,6 +830,12 @@ impl TransferSource for Source {
     fn entry(&self) -> &TransferEntry {
         &self.entry
     }
+    fn native_identity(&self) -> Option<TransferIdentity> {
+        self.network.is_none().then_some(self.entry.identity)
+    }
+    fn requires_copy_directory_guard(&self) -> bool {
+        self.network.is_some()
+    }
     fn native_original_identity(&self) -> Option<TransferIdentity> {
         self.link
             .as_ref()
@@ -773,13 +845,19 @@ impl TransferSource for Source {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         let path = &self.entry.item.path;
         checked(cancel, path)?;
-        revalidate_parent(
-            &self.parent_path,
-            self.parent_identity,
-            self.parent_ancestry.as_deref(),
-            path,
-            cancel,
-        )?;
+        if self.network.is_some() {
+            // Every physical ancestor and the leaf deny delete sharing. Check that any
+            // logical path through a mapped drive or share still reaches this pinned parent.
+            network::revalidate_parent(&self.parent_path, self.parent_identity)?;
+        } else {
+            revalidate_parent(
+                &self.parent_path,
+                self.parent_identity,
+                self.parent_ancestry.as_deref(),
+                path,
+                cancel,
+            )?;
+        }
         if let Some(link) = &self.link {
             link.revalidate(cancel)?;
             // A followed file's content must also still be the captured revision.
@@ -805,7 +883,12 @@ impl TransferSource for Source {
             0,
         )
         .map_err(|e| error(path, e))?;
-        if identity(&visible, path)? != self.entry.identity {
+        let visible_id = if self.network.is_some() {
+            super::network_identity::binding(&visible, path)?
+        } else {
+            identity(&visible, path)?
+        };
+        if visible_id != self.entry.identity {
             return Err(invalid(path, "source identity changed"));
         }
         if let Some(leaf) = &self.leaf {
@@ -1171,6 +1254,24 @@ fn contains_identity(mut ancestor: Option<&Ancestor>, id: TransferIdentity) -> b
     false
 }
 
+/// A redirector may identify the held source and its folder but omit an ID higher
+/// up the path. The source can still prove its own binding and revision while the
+/// scheduler conservatively treats its namespace as unknown.
+fn source_scope(
+    parent: &File,
+    parent_path: &Path,
+    name: &OsStr,
+    entry: &TransferEntry,
+    access: Access,
+    cancel: &Cancellation,
+) -> Result<Option<Arc<dyn midnight_core::TransferNamespacePin>>, FsError> {
+    match super::namespace::source_pin(parent, parent_path, name, entry, cancel) {
+        Ok(pin) => Ok(Some(pin)),
+        Err(failure) if network::missing_id(&failure, access, parent, parent_path)? => Ok(None),
+        Err(failure) => Err(failure),
+    }
+}
+
 fn has_followed_link(ancestor: Option<&Ancestor>) -> bool {
     ancestor.is_some_and(|ancestor| ancestor.contains_link)
 }
@@ -1234,7 +1335,7 @@ impl DiscoveryFrame {
         parent.file = Arc::new(file);
         Ok(Self {
             parent,
-            listing: Listing::default(),
+            listing: Listing::for_source(source.network.is_some()),
         })
     }
 }
@@ -1277,7 +1378,11 @@ impl Source {
                 let id = frame.parent.identity.ok_or_else(|| {
                     invalid(path, "Copy discovery lacks a retained directory identity")
                 })?;
-                revalidate_parent(path, id, frame.parent.ancestry.as_deref(), path, cancel)?;
+                if frame.parent.network.is_some() {
+                    network::revalidate_parent(path, id)?;
+                } else {
+                    revalidate_parent(path, id, frame.parent.ancestry.as_deref(), path, cancel)?;
+                }
                 frame.listing.fill(&frame.parent.file, path)?;
             }
         }

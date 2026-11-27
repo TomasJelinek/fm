@@ -55,6 +55,16 @@ pub(crate) use input::check_native_roots;
 pub(crate) const TRANSFER_REVISIONS: TransferRevisionPolicy =
     TransferRevisionPolicy::AcceptChangeTimeOnly;
 
+/// A match may rule out a destination. A path binding from an ID-less source
+/// cannot authorize a replacement or prove that two folders are disjoint.
+pub(crate) fn copy_binding(source: &dyn TransferSource) -> Option<TransferIdentity> {
+    source.native_identity().or_else(|| {
+        source
+            .requires_copy_directory_guard()
+            .then_some(source.entry().identity)
+    })
+}
+
 /// `TransferService::prepare_move_source` under `TRANSFER_REVISIONS`.
 pub(crate) fn prepare_ordinary_move_source(
     service: &dyn TransferService,

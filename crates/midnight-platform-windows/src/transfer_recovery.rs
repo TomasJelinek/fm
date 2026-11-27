@@ -159,8 +159,12 @@ impl Revision {
 
 struct Target {
     directory: Directory,
+    ids: CopyIds,
     name: OsString,
     file: File,
+    // On a name-pinned destination this handle already excludes a source directory
+    // open through any alias. Keep ordinary conflict choices available if denied.
+    traversal_guard: bool,
     entry: TransferEntry,
     revision: Revision,
     policy: TransferRevisionPolicy,
@@ -170,6 +174,14 @@ struct Target {
 impl TransferTarget for Target {
     fn entry(&self) -> &TransferEntry {
         &self.entry
+    }
+    fn can_check_merge_ancestry(&self) -> bool {
+        self.ids != CopyIds::Network && self.directory.stable_ancestry
+    }
+    fn can_open_merge_directory(&self, unidentified_source: bool) -> bool {
+        self.ids.stable()
+            || self.traversal_guard
+            || (!unidentified_source && self.ids == CopyIds::Fat)
     }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         self.directory.revalidate(cancel)?;
@@ -182,21 +194,76 @@ impl TransferTarget for Target {
             0,
         )
         .map_err(|e| error(&self.entry.item.path, e))?;
-        if self
-            .directory
-            .file_identity(&visible, &self.entry.item.path)?
-            != self.entry.identity
-            || !self.revision.matches(
-                Revision::of(&self.file, &self.entry.item.path)?,
-                self.policy,
-            )
-        {
+        if !self.ids.matches_binding(
+            &self.file,
+            &visible,
+            &self.entry.item.path,
+            self.entry.identity,
+        )? || !self.revision.matches(
+            Revision::of(&self.file, &self.entry.item.path)?,
+            self.policy,
+        ) {
             return Err(invalid(
                 &self.entry.item.path,
                 "consented destination changed",
             ));
         }
         Ok(())
+    }
+    fn open_merge_directory(
+        &self,
+        parent: &dyn TransferDirectory,
+        name: &OsStr,
+        unidentified_source: bool,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        if self.ids.stable() && self.directory.stable_ancestry && !unidentified_source {
+            return parent.open_merge_directory(name, self.entry(), cancel);
+        }
+        // On an ID-less share a saved entry cannot identify a later occupant of the
+        // name. Derive the directory from the actual handle held since consent instead.
+        if self.entry.item.kind != EntryKind::Directory
+            || self.name != name
+            || self.directory.path != parent.path()
+            || self.directory.identity != parent.identity()
+        {
+            return Err(invalid(
+                &self.entry.item.path,
+                "merging requires the consented directory",
+            ));
+        }
+        self.revalidate(cancel)?;
+        let file = if self.ids.stable() {
+            // The stable-ID target initially allowed delete sharing. Acquire the
+            // traversal guard on the exact object, then validate its binding again.
+            let file = native::reopen(
+                &self.file,
+                FILE_TRAVERSE | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+            )
+            .map_err(|e| error(&self.entry.item.path, e))?;
+            self.revalidate(cancel)?;
+            file
+        } else {
+            if !self.can_open_merge_directory(unidentified_source) {
+                return Err(unsupported(
+                    &self.entry.item.path,
+                    "cannot guard the merge directory against copying into itself",
+                ));
+            }
+            self.file
+                .try_clone()
+                .map_err(|e| error(&self.entry.item.path, e))?
+        };
+        Ok(Arc::new(
+            Directory::from_directory_handle(
+                file,
+                self.entry.item.path.clone(),
+                self.entry.identity,
+                self.ids,
+            )
+            .below(&self.directory),
+        ))
     }
 }
 
@@ -220,19 +287,11 @@ pub(super) fn prepare_target_with(
     directory.revalidate(cancel)?;
     validate_name(name).map_err(|e| error(&directory.path, e))?;
     let path = directory.path.join(name);
-    // FAT directory-record indices can be reused after a rename. Keep this consent
-    // pin at its original name; FILE_READ_DATA/FILE_LIST_DIRECTORY participates in
-    // Windows share checks, while FILE_READ_ATTRIBUTES alone does not.
-    let (access, share) = if directory.fat {
-        (FILE_READ_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE)
-    } else {
-        (0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-    };
     let file = match native::open_relative(
         &directory.file,
         name,
-        access | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        share,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         FILE_OPEN,
         0,
     ) {
@@ -240,23 +299,61 @@ pub(super) fn prepare_target_with(
         Err(failure) if failure.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(failure) => return Err(error(&path, failure)),
     };
+    let (ids, observed) = directory.ids.child(&file, &path)?;
+    let (file, traversal_guard) = if ids.stable() {
+        (file, false)
+    } else {
+        // An ID-less target cannot be looked up again after its name is released.
+        // Reopen the retained object with access that participates in share checks,
+        // and keep its name pinned for the lifetime of the consent. For a directory,
+        // also try to exclude source listing handles for a possible guarded merge.
+        let ordinary_dir =
+            Native::query(&file).map_err(|e| error(&path, e))?.kind() == EntryKind::Directory;
+        let access = FILE_READ_ATTRIBUTES
+            | SYNCHRONIZE
+            | if ordinary_dir {
+                FILE_TRAVERSE
+            } else {
+                FILE_READ_DATA
+            };
+        let share = FILE_SHARE_READ | FILE_SHARE_WRITE;
+        if ordinary_dir && let Ok(guard) = native::reopen(&file, access | DELETE, share) {
+            (guard, true)
+        } else {
+            (
+                native::reopen(&file, access, share).map_err(|e| error(&path, e))?,
+                false,
+            )
+        }
+    };
     let (entry, revision) = target_snapshot(
         &file,
         &path,
         policy,
-        || directory.entry(&file, &path),
+        || {
+            classified_using(&file, &path, |file, path| {
+                if ids.stable() {
+                    Ok(observed)
+                } else {
+                    ids.identity(file, path)
+                }
+            })
+            .map(|(entry, _, _)| entry)
+        },
         || {},
     )?;
-    let namespace_owner = if directory.fat {
+    let namespace_owner = if directory.ids != CopyIds::Native {
         Default::default()
     } else {
         super::super::namespace::owner(&[entry.identity])
     };
     Ok(Some(Arc::new(Target {
+        ids,
         entry,
         revision,
         policy,
         file,
+        traversal_guard,
         name: name.to_owned(),
         directory: directory.clone(),
         _namespace_owner: namespace_owner,
@@ -300,24 +397,41 @@ pub(super) fn open_merge(
             "merging requires the consented ordinary directory",
         ));
     }
+    // An existing network folder with an ID still needs a physical traversal
+    // guard if the server omitted the ID of an ancestor.
+    let guard_access = if directory.ids.network() && !directory.stable_ancestry {
+        DELETE
+    } else {
+        0
+    };
     let file = native::open_relative(
         &directory.file,
         name,
-        FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE,
+        FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE | guard_access,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         FILE_OPEN,
         FILE_DIRECTORY_FILE,
     )
     .map_err(|e| error(&path, e))?;
-    let entry = directory.entry(&file, &path)?;
-    if entry.identity != expected.identity || entry.item.kind != EntryKind::Directory {
+    let (ids, id) = directory.ids.child(&file, &path)?;
+    if ids == CopyIds::Network {
+        return Err(unsupported(
+            &path,
+            "merging on this share requires the retained target handle",
+        ));
+    }
+    if id != expected.identity
+        || Native::query(&file).map_err(|e| error(&path, e))?.kind() != EntryKind::Directory
+    {
         return Err(invalid(&path, "merge destination identity or type changed"));
     }
-    Ok(Arc::new(directory.child_directory(file, path)?))
+    Ok(Arc::new(
+        Directory::from_directory_handle(file, path, id, ids).below(directory),
+    ))
 }
 
 pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
-    !directory.fat && supported_volume(&directory.file)
+    directory.ids == CopyIds::Native && supported_volume(&directory.file)
 }
 
 /// Whether the volume that holds `folder` keeps a replaced file recoverable, as Replace

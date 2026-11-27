@@ -62,6 +62,8 @@ mod test_fixtures;
 pub use test_fixtures::{
     SavedDacl, deny_read_data, new_junction, restore_dacl, set_file_attributes,
 };
+#[cfg(feature = "test-fixtures")]
+pub use transfer::test_network_ids;
 mod transfer;
 mod volume_details;
 mod volume_information;

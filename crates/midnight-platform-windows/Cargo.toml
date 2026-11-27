@@ -12,7 +12,8 @@ license.workspace = true
 # path (SECURITY.md), and `deny_read_data`/`restore_dacl`, which deny Everyone listing on
 # such a junction below `_build` as Windows' compatibility junctions do; and
 # `set_file_attributes`, a fixture's Windows attributes. Only
-# dev-dependencies enable it; the application builds without it.
+# dev-dependencies enable it; the application builds without it. Also exposes the
+# directory-scoped SMB file-ID response fixture for the engine's Windows tests.
 test-fixtures = []
 
 [target.'cfg(windows)'.dependencies]

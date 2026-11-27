@@ -72,8 +72,7 @@ pub(super) fn admit_root(
 }
 
 fn validate_native_source(source: &dyn TransferSource) -> Result<(), FsError> {
-    if source.native_identity() != Some(source.entry().identity)
-        || source.virtual_identity().is_some()
+    if copy_binding(source) != Some(source.entry().identity) || source.virtual_identity().is_some()
     {
         return Err(error(
             &source.entry().item.path,

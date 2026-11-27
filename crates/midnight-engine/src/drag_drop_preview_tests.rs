@@ -367,6 +367,28 @@ async fn preview_rejects_source_itself_parent_self_copy_and_recursive_descendant
     h.close().await;
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn preview_offers_copy_from_an_idless_share_and_refuses_a_recursive_drop() {
+    use midnight_platform_windows::test_network_ids::{Response, Scope};
+
+    let mut h = Harness::new(false).await;
+    let source = h.root.path().join("source 資料");
+    let _scope = Scope::new(&source, Response::AllZero).unwrap();
+    h.preview(1, h.destination(), InternalDropIntent::Copy)
+        .await;
+    assert_eq!(h.result().await, (1, Some(TransferIntent::Copy)));
+    h.controller.snapshots.lock().unwrap()[1]
+        .committed
+        .as_mut()
+        .unwrap()
+        .path = source.join("child");
+    h.preview(2, h.destination(), InternalDropIntent::Copy)
+        .await;
+    assert_eq!(h.result().await, (2, None));
+    h.close().await;
+}
+
 #[tokio::test]
 async fn blocked_preview_keeps_only_latest_waiter_and_suppresses_old_receipt() {
     let mut h = Harness::new(false).await;

@@ -8,16 +8,222 @@ fn directory(path: &Path) -> Directory {
 
 #[test]
 fn fat_copy_stages_verifies_and_publishes_without_a_persistent_file_id() {
+    copy_on_guarded_destination(CopyIds::Fat);
+}
+
+#[test]
+fn network_copy_stages_verifies_and_publishes_without_a_file_id() {
+    copy_on_guarded_destination(CopyIds::Network);
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn network_copy_handles_idless_children_below_a_directory_with_a_native_id() {
+    use crate::test_network_ids::{Response, Scope};
+    for response in [Response::AllZero, Response::Unsupported] {
+        let temp = crate::test_fixtures::build_temp("fixture-");
+        let _scope = Scope::children(temp.path(), response).unwrap();
+        let cancel = Cancellation::default();
+        let parent = native::open_parent(temp.path()).unwrap();
+        let stable = transfer_identity(native::identity(&parent).unwrap());
+        let directory = Directory::for_copy(parent, temp.path().to_owned()).unwrap();
+        assert_eq!(directory.identity(), stable);
+        let name = OsStr::new("mixed-folder");
+        assert!(
+            directory
+                .native_child_namespace_scope(name, EntryKind::Directory, &cancel)
+                .unwrap()
+                .is_none()
+        );
+        let child = directory.create_directory(name, &cancel).unwrap();
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        drop(child);
+        let pin = directory.prepare_target(name, &cancel).unwrap().unwrap();
+        assert!(!pin.can_check_merge_ancestry());
+        let child = pin
+            .open_merge_directory(&directory, name, false, &cancel)
+            .unwrap();
+        drop((child, pin));
+
+        let mut stage = directory.stage_job_file(&cancel).unwrap();
+        stage.write_all(b"mixed file IDs").unwrap();
+        stage.sync(&cancel).unwrap();
+        let guard = stage.rewind_for_validation(&cancel).unwrap();
+        let mut data = Vec::new();
+        stage.read_to_end(&mut data).unwrap();
+        guard.revalidate(&cancel).unwrap();
+        assert_eq!(data, b"mixed file IDs");
+        drop(guard);
+        let name = OsStr::new("result.txt");
+        stage.publish_no_replace(name, &cancel).unwrap();
+        assert_eq!(
+            stage.revalidate_publication(&cancel).unwrap(),
+            directory.inspect(name, &cancel).unwrap().unwrap().identity
+        );
+        drop(stage);
+        let target = directory.prepare_target(name, &cancel).unwrap().unwrap();
+        target.revalidate(&cancel).unwrap();
+        assert!(fs::rename(temp.path().join(name), temp.path().join("swapped")).is_err());
+        drop(target);
+        let mut collision = directory.stage_file(&cancel).unwrap();
+        assert!(collision.publish_no_replace(name, &cancel).is_err());
+        collision.cleanup().unwrap();
+        drop(collision);
+        assert_eq!(fs::read(temp.path().join(name)).unwrap(), b"mixed file IDs");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn network_copy_rolls_back_directory_after_a_denied_identity_query() {
+    use crate::test_network_ids::{Response, Scope};
+    let temp = crate::test_fixtures::build_temp("fixture-");
+    let _scope = Scope::children(temp.path(), Response::AccessDenied).unwrap();
+    let directory = Directory::for_copy(
+        native::open_parent(temp.path()).unwrap(),
+        temp.path().into(),
+    )
+    .unwrap();
+    let error = directory
+        .create_directory(OsStr::new("new"), &Cancellation::default())
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, io::ErrorKind::PermissionDenied);
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn network_copy_checks_an_idless_ancestor_of_an_identified_folder() {
+    use crate::test_network_ids::{Response, Scope};
+    let temp = crate::test_fixtures::build_temp("fixture-");
+    let _scope = Scope::root_only(temp.path(), Response::AllZero).unwrap();
+    let selected = temp.path().join("selected");
+    fs::create_dir(&selected).unwrap();
+    let file = native::open_parent(&selected).unwrap();
+    let stable = transfer_identity(native::identity(&file).unwrap());
+    let directory = Directory::for_copy(file, selected).unwrap();
+    let cancel = Cancellation::default();
+    assert_eq!(directory.identity(), stable);
+    let ancestor = native::open_parent(temp.path()).unwrap();
+    let ancestor = CopyIds::Network.identity(&ancestor, temp.path()).unwrap();
+    assert!(directory.reject_source_ancestor(ancestor, &cancel).is_err());
+    assert!(
+        directory
+            .ancestor_identities(&cancel)
+            .unwrap()
+            .unwrap()
+            .contains(&ancestor)
+    );
+    let name = OsStr::new("existing");
+    fs::create_dir(directory.path.join(name)).unwrap();
+    let target = directory.prepare_target(name, &cancel).unwrap().unwrap();
+    assert!(!target.can_check_merge_ancestry());
+    let merged = target
+        .open_merge_directory(&directory, name, false, &cancel)
+        .unwrap();
+    assert_eq!(merged.path(), directory.path.join(name));
+    assert!(
+        native::open_relative(
+            &directory.file,
+            name,
+            FILE_LIST_DIRECTORY | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn network_copy_revalidates_both_the_visible_and_retained_directory() {
+    let temp = crate::test_fixtures::build_temp("fixture-");
+    let original = temp.path().join("selected");
+    let moved = temp.path().join("moved");
+    fs::create_dir(&original).unwrap();
+    // This handle deliberately shares deletion so the local test filesystem
+    // can reproduce a redirector changing the path of a held directory.
+    let file = native::open_parent(&original).unwrap();
+    let binding = CopyIds::Network.identity(&file, &original).unwrap();
+    let directory = Directory::new(file, original.clone(), binding, CopyIds::Network).unwrap();
+    fs::rename(&original, &moved).unwrap();
+    fs::create_dir(&original).unwrap();
+    assert!(directory.stage_file(&Cancellation::default()).is_err());
+    assert_eq!(fs::read_dir(original).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(moved).unwrap().count(), 0);
+}
+
+#[test]
+fn network_copy_unguardable_directory_can_be_skipped_but_cannot_be_merged() {
+    let temp = crate::test_fixtures::build_temp("fixture-");
+    let cancel = Cancellation::default();
+    let directory = Directory::from_copy_probe(
+        native::open_parent(temp.path()).unwrap(),
+        temp.path().to_owned(),
+        Err(io::ErrorKind::Unsupported.into()),
+        |_, _| Ok(Some(CopyIds::Network)),
+    )
+    .unwrap();
+    let name = OsStr::new("occupied");
+    fs::create_dir(temp.path().join(name)).unwrap();
+    let reader = native::open_relative(
+        &directory.file,
+        name,
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE,
+    )
+    .unwrap();
+    let target = directory.prepare_target(name, &cancel).unwrap().unwrap();
+    target.revalidate(&cancel).unwrap();
+    assert!(!target.can_open_merge_directory(false));
+    assert!(
+        target
+            .open_merge_directory(&directory, name, false, &cancel)
+            .is_err()
+    );
+    drop((reader, target));
+    let target = directory.prepare_target(name, &cancel).unwrap().unwrap();
+    assert!(target.can_open_merge_directory(false));
+    let merged = target
+        .open_merge_directory(&directory, name, false, &cancel)
+        .unwrap();
+    assert_eq!(merged.path(), temp.path().join(name));
+    // The merged frame itself retains the guard when the conflict pin goes away.
+    drop(target);
+    assert!(
+        native::open_relative(
+            &directory.file,
+            name,
+            FILE_LIST_DIRECTORY | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE
+        )
+        .is_err()
+    );
+}
+
+fn copy_on_guarded_destination(ids: CopyIds) {
     let temp = crate::test_fixtures::build_temp("fixture-");
     let cancel = Cancellation::default();
     let directory = Directory::from_copy_probe(
         native::open_parent(temp.path()).unwrap(),
         temp.path().to_owned(),
         Err(io::Error::from_raw_os_error(87)),
-        |_| Ok(true),
+        |_, _| Ok(Some(ids)),
     )
     .unwrap();
     let name = OsStr::new("the published file has a much longer name.txt");
+    if ids == CopyIds::Network {
+        assert_eq!(
+            directory.creates_no_links(&cancel).unwrap().as_deref(),
+            Some("no links are created at a network location")
+        );
+    }
     assert!(
         directory
             .native_child_namespace_scope(name, EntryKind::File, &cancel)
@@ -27,19 +233,37 @@ fn fat_copy_stages_verifies_and_publishes_without_a_persistent_file_id() {
     let child = directory
         .create_directory(OsStr::new("copies"), &cancel)
         .unwrap();
+    let id = child.identity();
+    let moved = temp.path().join("swapped folder");
+    assert!(fs::rename(child.path(), &moved).is_err());
+    drop(child);
     let target = directory
         .prepare_target(OsStr::new("copies"), &cancel)
         .unwrap()
         .unwrap();
-    let moved = temp.path().join("swapped folder");
-    assert!(fs::rename(child.path(), &moved).is_err());
+    assert!(fs::rename(temp.path().join("copies"), &moved).is_err());
     target.revalidate(&cancel).unwrap();
-    let merged = directory
-        .open_merge_directory(OsStr::new("copies"), target.entry(), &cancel)
+    let merged = target
+        .open_merge_directory(&directory, OsStr::new("copies"), false, &cancel)
         .unwrap();
-    assert_eq!(merged.identity(), child.identity());
+    assert_eq!(merged.identity(), id);
     drop(merged);
+    let stale = target.entry().clone();
     drop(target);
+    // The incoming transfer entry alone cannot authorize a merge after its consent
+    // handle closes and the directory is replaced.
+    if ids == CopyIds::Network {
+        fs::rename(temp.path().join("copies"), &moved).unwrap();
+        fs::create_dir(temp.path().join("copies")).unwrap();
+        assert!(
+            directory
+                .open_merge_directory(OsStr::new("copies"), &stale, &cancel)
+                .is_err()
+        );
+    }
+    let child = directory
+        .create_directory(OsStr::new("files"), &cancel)
+        .unwrap();
     let mut stage = child.stage_job_file(&cancel).unwrap();
     stage.write_all(b"copy from NTFS").unwrap();
     stage.sync(&cancel).unwrap();
@@ -79,7 +303,7 @@ fn fat_copy_fallback_requires_an_unsupported_id_class_and_a_known_local_fat_volu
         native::open_parent(path).unwrap(),
         path.to_owned(),
         Err(io::ErrorKind::PermissionDenied.into()),
-        |_| panic!("permission denial is final"),
+        |_, _| panic!("permission denial is final"),
     )
     .err()
     .unwrap();
@@ -88,7 +312,7 @@ fn fat_copy_fallback_requires_an_unsupported_id_class_and_a_known_local_fat_volu
         native::open_parent(path).unwrap(),
         path.to_owned(),
         Err(io::ErrorKind::Unsupported.into()),
-        |_| Ok(false),
+        |_, _| Ok(None),
     )
     .err()
     .unwrap();
@@ -97,6 +321,15 @@ fn fat_copy_fallback_requires_an_unsupported_id_class_and_a_known_local_fat_volu
 
 #[test]
 fn fat_copy_requires_an_unknown_namespace_reservation_before_creating_a_stage() {
+    refuses_stage_without_opaque_reservation(CopyIds::Fat);
+}
+
+#[test]
+fn network_copy_requires_an_unknown_namespace_reservation_before_creating_a_stage() {
+    refuses_stage_without_opaque_reservation(CopyIds::Network);
+}
+
+fn refuses_stage_without_opaque_reservation(ids: CopyIds) {
     use midnight_core::{TransferNamespacePin, TransferNamespaceProbe};
     use midnight_platform_common::transfer_namespace::{
         TransferNamespaceChange, TransferNamespaceChanges, with_transfer_namespace_changes,
@@ -128,7 +361,7 @@ fn fat_copy_requires_an_unknown_namespace_reservation_before_creating_a_stage() 
         native::open_parent(temp.path()).unwrap(),
         temp.path().to_owned(),
         Err(io::ErrorKind::Unsupported.into()),
-        |_| Ok(true),
+        |_, _| Ok(Some(ids)),
     )
     .unwrap();
     let result = with_transfer_namespace_changes(Arc::new(Refuse), || {

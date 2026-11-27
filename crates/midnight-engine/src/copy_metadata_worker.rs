@@ -51,7 +51,7 @@ pub(super) fn pins(
     for source in roots {
         let entry = source.entry();
         if entry.item.kind != EntryKind::File
-            || source.native_identity() != Some(entry.identity)
+            || copy_binding(source.as_ref()) != Some(entry.identity)
             || pins.contains_key(&entry.identity)
         {
             return Err(error(

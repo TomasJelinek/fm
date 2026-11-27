@@ -117,6 +117,33 @@ pub struct TransferCapabilities {
 pub trait TransferTarget: Send + Sync {
     fn entry(&self) -> &TransferEntry;
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError>;
+    /// Whether this target's backing filesystem can compare native IDs with
+    /// other selected folders. A name-pinned remote target must return false.
+    fn can_check_merge_ancestry(&self) -> bool {
+        true
+    }
+    /// Whether this conflict pin can offer directory Merge with the current source.
+    /// Opening the directory still revalidates the pin and enforces the required guard.
+    fn can_open_merge_directory(&self, unidentified_source: bool) -> bool {
+        !unidentified_source
+    }
+    /// Open the exact directory retained for this conflict. A provider without a stable
+    /// file ID can derive the merged folder directly from its target handle.
+    fn open_merge_directory(
+        &self,
+        parent: &dyn TransferDirectory,
+        name: &OsStr,
+        unidentified_source: bool,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        if unidentified_source {
+            return Err(transfer_unsupported(
+                parent.path(),
+                "this destination cannot guard the merged folder against recursive copying",
+            ));
+        }
+        parent.open_merge_directory(name, self.entry(), cancel)
+    }
 }
 
 pub trait TransferService: Send + Sync {
@@ -535,6 +562,12 @@ pub trait TransferSource: Send {
     fn native_identity(&self) -> Option<TransferIdentity> {
         Some(self.entry().identity)
     }
+    /// A native Copy source with no filesystem object ID keeps its own open handle.
+    /// Each output folder must exclude it from being opened for source enumeration,
+    /// including through another spelling or share exposing the same directory.
+    fn requires_copy_directory_guard(&self) -> bool {
+        false
+    }
     /// Identity of this native occurrence before directory-link projection.
     /// A projected directory link returns its own retained no-follow identity.
     /// An ordinary descendant returns its own identity even inside a projection.
@@ -829,6 +862,23 @@ pub trait TransferDirectory: Send + Sync {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError>;
+    /// Creates a folder for a Copy. When the source lacks a filesystem object ID,
+    /// the returned handle must prevent Copy from enumerating this output folder
+    /// through an alias until the caller has finished copying the subtree.
+    fn create_copy_directory(
+        &self,
+        name: &OsStr,
+        unidentified_source: bool,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        if unidentified_source {
+            return Err(transfer_unsupported(
+                self.path(),
+                "this destination cannot guard the copied folder against recursive copying",
+            ));
+        }
+        self.create_directory(name, cancel)
+    }
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError>;
     /// `stage_file` for one file of a Copy job, whose caller calls `finish_staging` once
     /// the job stages nothing more in this folder. A provider may keep the stages of this

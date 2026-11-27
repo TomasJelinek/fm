@@ -1074,7 +1074,7 @@ pub(super) fn change<T>(
 fn as_io(error: FsError) -> io::Error {
     io::Error::new(error.kind, error)
 }
-/// All FAT writes have the same unknown geometry. Reusing this witness lets the host
+/// FAT and ID-less network writes have unknown geometry. Reusing this witness lets the host
 /// reserve it on every turn without retaining another private alias for every file.
 struct OpaqueWrite;
 impl TransferNamespacePin for OpaqueWrite {
@@ -1084,7 +1084,7 @@ impl TransferNamespacePin for OpaqueWrite {
 }
 
 impl Mutation<'_> {
-    /// A FAT Copy destination has no rename-stable pins. Reserve the unknown write in
+    /// A Copy destination without stable IDs has no rename-stable pins. Reserve the unknown write in
     /// this turn before touching any name. The job uses the host's opaque exclusion and
     /// full refresh; none of the following native operations may register exact bindings.
     pub(super) fn reserve_opaque(

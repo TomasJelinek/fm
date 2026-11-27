@@ -303,7 +303,9 @@ impl CapturedTransferSources for Sources {
                         crate::copy_operations::TRANSFER_REVISIONS,
                         cancel,
                     )?;
-                    if source.entry().item.path != *path || source.native_identity().is_none() {
+                    if source.entry().item.path != *path
+                        || crate::copy_operations::copy_binding(source.as_ref()).is_none()
+                    {
                         return Err(failure("Provider returned a different native source."));
                     }
                     Authority::Native(NativeAuthority(Some(source)))
@@ -559,6 +561,9 @@ impl TransferSource for LeasedSource {
     }
     fn native_identity(&self) -> Option<TransferIdentity> {
         self.source.native_identity()
+    }
+    fn requires_copy_directory_guard(&self) -> bool {
+        self.source.requires_copy_directory_guard()
     }
     fn native_original_identity(&self) -> Option<TransferIdentity> {
         self.source.native_original_identity()

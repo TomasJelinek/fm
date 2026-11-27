@@ -260,7 +260,7 @@ pub(super) fn validate(
             ));
         }
         let folder = service.prepare_transfer_source(folder, cancel)?;
-        if folder.native_identity() == Some(directory.identity()) {
+        if crate::copy_operations::copy_binding(folder.as_ref()) == Some(directory.identity()) {
             return Err(error(
                 io::ErrorKind::InvalidInput,
                 "The drop would target the source itself.",
@@ -283,10 +283,10 @@ pub(super) fn validate(
                 "Only ordinary files and directories can be dropped.",
             ));
         }
-        let identity = source.native_identity().ok_or_else(|| {
+        let identity = crate::copy_operations::copy_binding(source.as_ref()).ok_or_else(|| {
             error(
                 io::ErrorKind::Unsupported,
-                "A native source identity is required.",
+                "A retained native Copy source is required.",
             )
         })?;
         if entry.item.kind == EntryKind::Directory {

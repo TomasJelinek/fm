@@ -161,7 +161,7 @@ fn record(buffer: &mut [u64], offset: usize, next: u32, name: &str) {
 fn malformed_native_records_are_rejected() {
     let parse_names = |buffer: &[u64]| {
         let mut names = Vec::new();
-        parse(buffer, &mut |record| {
+        parse(buffer, false, &mut |record| {
             names.push(OsString::from_wide(record.name));
             Ok(())
         })

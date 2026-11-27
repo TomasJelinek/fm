@@ -90,7 +90,8 @@ impl LinkFacts {
         #[cfg(test)]
         count_read(0, 1);
         // A network location says so before anything is asked of its volume.
-        let facts = if crate::storage_kind::network(&directory.path) {
+        let network = directory.ids.network() || crate::storage_kind::network(&directory.path);
+        let facts = if network {
             VolumeLinks {
                 network: true,
                 reparse_points: false,

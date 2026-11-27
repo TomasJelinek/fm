@@ -16,7 +16,8 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES},
     Storage::FileSystem::{
-        FILE_ID_BOTH_DIR_INFO, FileIdBothDirectoryInfo, GetFileInformationByHandleEx,
+        FILE_FULL_DIR_INFO, FILE_ID_BOTH_DIR_INFO, FileFullDirectoryInfo, FileIdBothDirectoryInfo,
+        GetFileInformationByHandleEx,
     },
 };
 
@@ -46,9 +47,18 @@ impl Record<'_> {
 pub(crate) struct Cursor {
     started: bool,
     ended: bool,
+    without_ids: bool,
 }
 
 impl Cursor {
+    /// The full directory record omits the file ID and short name. In particular,
+    /// a redirector need not implement the ID-bearing enumeration class for Copy.
+    pub(crate) fn without_ids() -> Self {
+        Self {
+            without_ids: true,
+            ..Default::default()
+        }
+    }
     pub(crate) fn ended(&self) -> bool {
         self.ended
     }
@@ -82,7 +92,11 @@ impl Cursor {
         if unsafe {
             GetFileInformationByHandleEx(
                 directory.as_raw_handle(),
-                FileIdBothDirectoryInfo,
+                if self.without_ids {
+                    FileFullDirectoryInfo
+                } else {
+                    FileIdBothDirectoryInfo
+                },
                 buffer.as_mut_ptr().cast(),
                 size_of_val(buffer) as u32,
             )
@@ -96,7 +110,7 @@ impl Cursor {
             return Err(error);
         }
         self.started = true;
-        parse(buffer, visit)
+        parse(buffer, self.without_ids, visit)
     }
 }
 
@@ -108,20 +122,36 @@ fn end_of_directory(code: Option<i32>, started: bool) -> bool {
         || (!started && code == Some(ERROR_FILE_NOT_FOUND as i32))
 }
 
-fn parse(buffer: &[u64], visit: &mut dyn FnMut(Record<'_>) -> io::Result<()>) -> io::Result<()> {
+fn parse(
+    buffer: &[u64],
+    without_ids: bool,
+    visit: &mut dyn FnMut(Record<'_>) -> io::Result<()>,
+) -> io::Result<()> {
     let length = size_of_val(buffer);
     // Every record and filename pointer derives from the whole buffer, never from the
     // one-element FileName field, so reads past that field keep their provenance.
     let base = buffer.as_ptr().cast::<u8>();
-    let header = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
+    // Both classes have the same fixed header through EaSize. The ID-bearing class
+    // adds its short name and file ID between that header and its filename.
+    let (header, minimum) = if without_ids {
+        (
+            offset_of!(FILE_FULL_DIR_INFO, FileName),
+            size_of::<FILE_FULL_DIR_INFO>(),
+        )
+    } else {
+        (
+            offset_of!(FILE_ID_BOTH_DIR_INFO, FileName),
+            size_of::<FILE_ID_BOTH_DIR_INFO>(),
+        )
+    };
     let mut offset = 0usize;
     loop {
-        if offset + size_of::<FILE_ID_BOTH_DIR_INFO>() > length {
+        if offset + minimum > length {
             return Err(invalid());
         }
         // SAFETY: the complete record header lies inside the aligned buffer and native
         // record offsets are checked to stay eight-byte aligned below.
-        let record = unsafe { &*base.add(offset).cast::<FILE_ID_BOTH_DIR_INFO>() };
+        let record = unsafe { &*base.add(offset).cast::<FILE_FULL_DIR_INFO>() };
         let bytes = record.FileNameLength as usize;
         if !bytes.is_multiple_of(2) || offset + header + bytes > length {
             return Err(invalid());

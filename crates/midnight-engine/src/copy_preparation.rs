@@ -871,9 +871,10 @@ impl PinnedSource {
 }
 
 #[derive(Clone)]
-struct SharedSource {
+pub(super) struct SharedSource {
     entry: TransferEntry,
     native_identity: Option<TransferIdentity>,
+    requires_copy_directory_guard: bool,
     native_original_identity: Option<TransferIdentity>,
     virtual_identity: Option<VirtualEntryId>,
     display_path: Option<PathBuf>,
@@ -881,10 +882,11 @@ struct SharedSource {
 }
 
 impl SharedSource {
-    fn new(source: Box<dyn TransferSource>) -> Self {
+    pub(super) fn new(source: Box<dyn TransferSource>) -> Self {
         Self {
             entry: source.entry().clone(),
             native_identity: source.native_identity(),
+            requires_copy_directory_guard: source.requires_copy_directory_guard(),
             native_original_identity: source.native_original_identity(),
             virtual_identity: source.virtual_identity(),
             display_path: source.display_path().map(Path::to_path_buf),
@@ -924,6 +926,10 @@ impl TransferSource for SharedSource {
 
     fn native_identity(&self) -> Option<TransferIdentity> {
         self.native_identity
+    }
+
+    fn requires_copy_directory_guard(&self) -> bool {
+        self.requires_copy_directory_guard
     }
 
     fn native_original_identity(&self) -> Option<TransferIdentity> {

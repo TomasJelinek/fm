@@ -235,7 +235,7 @@ impl Job {
             &path,
             roots
                 .iter()
-                .filter(|source| source.native_identity().is_some())
+                .filter(|source| copy_binding(source.as_ref()).is_some())
                 .count(),
         )?;
         if metadata != TransferMetadataPolicy::ContentOnly {
@@ -276,7 +276,7 @@ impl Job {
                     "Captured Copy source kind is unsupported by this link policy.",
                 ));
             }
-            if let Some(id) = source.native_identity() {
+            if let Some(id) = copy_binding(source.as_ref()) {
                 if id != source.entry().identity {
                     return Err(error(
                         &path,
@@ -284,7 +284,9 @@ impl Job {
                         "Native Copy source identity is inconsistent.",
                     ));
                 }
-                let original = if links.materializes_directory_links() {
+                let original = if links.materializes_directory_links()
+                    && !source.requires_copy_directory_guard()
+                {
                     source.native_original_identity().ok_or_else(|| {
                         error(
                             &source.entry().item.path,
@@ -311,7 +313,7 @@ impl Job {
         let directories: Vec<_> = roots
             .iter()
             .filter(|source| source.entry().item.kind == EntryKind::Directory)
-            .filter_map(|source| source.native_identity())
+            .filter_map(|source| copy_binding(source.as_ref()))
             .collect();
         let mut parents = Vec::new();
         if !directories.is_empty() {
@@ -320,7 +322,7 @@ impl Job {
             let mut checked = HashSet::new();
             for source in roots
                 .iter()
-                .filter(|source| source.native_identity().is_some())
+                .filter(|source| copy_binding(source.as_ref()).is_some())
             {
                 let source_path = &source.entry().item.path;
                 let parent = source_path.parent().ok_or_else(|| {
@@ -384,8 +386,12 @@ impl Job {
     ) -> Self {
         let protected_roots = roots
             .iter()
-            .filter_map(|source| source.native_identity())
+            .filter_map(|source| copy_binding(source.as_ref()))
             .collect();
+        let mut native_roots = NativeRoots::default();
+        for source in &roots {
+            native_roots.observe(source.as_ref());
+        }
         let mut progress = snapshot(&status);
         progress.requested_roots = roots.len() as u64;
         let link_retirement = Arc::new(link_job::LinkRetirement::new());
@@ -406,6 +412,7 @@ impl Job {
             streamed: None,
             awaiting_identities: None,
             protected_roots,
+            native_roots,
             stack: vec![],
             failed_child: None,
             reopened_child: None,

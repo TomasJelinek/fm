@@ -71,12 +71,29 @@ struct RootCompletion {
     failed: u64,
     skipped: u64,
 }
+#[derive(Default)]
+struct NativeRoots {
+    directories: usize,
+    has_unidentified_source: bool,
+    has_unidentified_directory: bool,
+}
+impl NativeRoots {
+    fn observe(&mut self, source: &dyn TransferSource) {
+        let unidentified = source.requires_copy_directory_guard();
+        self.has_unidentified_source |= unidentified;
+        if source.entry().item.kind == EntryKind::Directory && copy_binding(source).is_some() {
+            self.directories += 1;
+            self.has_unidentified_directory |= unidentified;
+        }
+    }
+}
 struct EntryWork {
     removal: EntryRemoval,
     entry: TransferEntry,
     /// Where progress shows this entry (`TransferSource::display_path`).
     shown: PathBuf,
     native_identity: Option<TransferIdentity>,
+    unidentified_source: bool,
     source: Option<Box<dyn TransferSource>>,
     copy: Option<VerifiedFileCopy>,
     link: Option<link_job::LinkCopy>,
@@ -135,6 +152,7 @@ pub(super) struct Job {
     /// (`Job::identities_ready`); `current` holds its entry meanwhile.
     awaiting_identities: Option<TransferEntry>,
     protected_roots: HashSet<TransferIdentity>,
+    native_roots: NativeRoots,
     stack: Vec<Frame>,
     /// The name of a child that the top folder's enumeration reached but could not
     /// open (or, in a Move, prepare for Move), while its failure waits for a decision
@@ -817,6 +835,7 @@ impl Job {
                 .unwrap_or(&source.entry().item.path)
                 .to_path_buf(),
             native_identity: source.native_identity(),
+            unidentified_source: source.requires_copy_directory_guard(),
             source: Some(source),
             copy: None,
             link: None,
@@ -1071,7 +1090,7 @@ impl Job {
         let preserved = self.read_preserved(source.as_ref());
         match source.entry().item.kind {
             EntryKind::Directory => {
-                if let Some(identity) = source.native_identity() {
+                if let Some(identity) = copy_binding(source.as_ref()) {
                     work.destination
                         .reject_source_ancestor(identity, &self.cancel)?;
                 }
@@ -1079,9 +1098,10 @@ impl Job {
                 let destination = if !created {
                     let target = work.target.as_ref().expect("consented target pin");
                     target.revalidate(&self.cancel)?;
-                    let merged = work.destination.open_merge_directory(
+                    let merged = target.open_merge_directory(
+                        work.destination.as_ref(),
                         &work.name,
-                        target.entry(),
+                        source.requires_copy_directory_guard(),
                         &self.cancel,
                     )?;
                     // A nested merge can enter a followed referent belonging
@@ -1090,7 +1110,7 @@ impl Job {
                         for identity in self
                             .stack
                             .iter()
-                            .filter_map(|frame| frame.source.native_identity())
+                            .filter_map(|frame| copy_binding(frame.source.as_ref()))
                         {
                             merged.reject_source_ancestor(identity, &self.cancel)?;
                         }
@@ -1100,13 +1120,14 @@ impl Job {
                         .iter()
                         .filter(|root| root.entry().item.kind == EntryKind::Directory)
                     {
-                        let identity = match (pending.native_identity(), self.move_work.as_mut()) {
-                            (Some(identity), _) => Some(identity),
-                            (None, Some(moves)) => {
-                                moves.pending_link_identity(pending.as_ref(), &self.cancel)?
-                            }
-                            (None, None) => None,
-                        };
+                        let identity =
+                            match (copy_binding(pending.as_ref()), self.move_work.as_mut()) {
+                                (Some(identity), _) => Some(identity),
+                                (None, Some(moves)) => {
+                                    moves.pending_link_identity(pending.as_ref(), &self.cancel)?
+                                }
+                                (None, None) => None,
+                            };
                         if let Some(identity) = identity {
                             merged.reject_source_ancestor(identity, &self.cancel)?;
                         }
@@ -1114,12 +1135,16 @@ impl Job {
                     self.reject_streamed_ancestors(merged.as_ref())?;
                     merged
                 } else {
-                    let created = work.destination.create_directory(&work.name, &self.cancel);
+                    let created = work.destination.create_copy_directory(
+                        &work.name,
+                        source.requires_copy_directory_guard(),
+                        &self.cancel,
+                    );
                     let created = self.at_final_name(created)?;
                     self.progress.directories_created += 1;
                     created
                 };
-                if let Some(identity) = source.native_identity() {
+                if let Some(identity) = copy_binding(source.as_ref()) {
                     destination.reject_source_ancestor(identity, &self.cancel)?;
                 }
                 // A merged folder keeps its own times and attributes.
@@ -1415,13 +1440,21 @@ impl Job {
             && work.native_identity().is_some_and(|identity| {
                 work.destination.supports_native_move_replacement(identity)
             });
-        let distinct = work.native_identity() != Some(target.identity)
+        let source_binding = work
+            .native_identity()
+            .or(work.unidentified_source.then_some(work.entry.identity));
+        let distinct = source_binding != Some(target.identity)
             && !self.protected_roots.contains(&target.identity)
             && !self
                 .streamed
                 .as_ref()
                 .is_some_and(|roots| roots.protects(target.identity));
-        let guarded = work.target.is_some() && distinct;
+        let guarded = work.target.is_some()
+            && distinct
+            && self
+                .streamed
+                .as_ref()
+                .is_none_or(|roots| roots.protects_all());
         let target_kind = target.item.kind;
         let source_kind = work.entry().item.kind;
         // A link replaces a file or another link (never a folder): Move by its own
@@ -1438,17 +1471,41 @@ impl Job {
                 && target_kind == EntryKind::File
                 && (capabilities.recoverable_replacement || native_replacement)
         };
+        let roots = self
+            .streamed
+            .as_ref()
+            .map_or(&self.native_roots, |streamed| &streamed.native_roots);
+        let can_merge = guarded
+            && capabilities.directory_merge
+            && source_kind == EntryKind::Directory
+            && target_kind == EntryKind::Directory
+            && work.target.as_ref().is_some_and(|pin| {
+                if !pin.can_open_merge_directory(work.unidentified_source) {
+                    return false;
+                }
+                let active_native = self
+                    .stack
+                    .first()
+                    .map_or(source_binding.is_some(), |frame| {
+                        copy_binding(frame.source.as_ref()).is_some()
+                    });
+                // The output's sharing guard protects the directory being copied now.
+                // A different selected folder would need a reliable ancestry comparison.
+                roots.directories <= usize::from(active_native)
+                    || (!roots.has_unidentified_directory && pin.can_check_merge_ancestry())
+            });
         let mut conflict = CopyConflict {
             id: self.progress.id,
             version,
             source: work.entry().item.clone(),
             target: target.item,
             destination: work.destination.path().join(&work.name),
-            can_replace: guarded && replaceable,
-            can_merge: guarded
-                && capabilities.directory_merge
-                && work.entry().item.kind == EntryKind::Directory
-                && target_kind == EntryKind::Directory,
+            // Without an ID, an existing target may be an alias of a selected source.
+            can_replace: guarded
+                && replaceable
+                && !work.unidentified_source
+                && !roots.has_unidentified_source,
+            can_merge,
         };
         let automatic = !work.force_prompt;
         if automatic && self.replace_all && conflict.can_replace {

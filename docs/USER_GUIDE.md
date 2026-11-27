@@ -106,6 +106,10 @@ See [the transfer capabilities and implementation limits](developer/TRANSFERS.md
 On Windows, you can copy files and folders from NTFS to a local FAT32 or exFAT
 drive. If a file already exists there, choose another name or skip it. Move still
 requires a filesystem with stable file identifiers.
+Windows can also copy regular files and folders to, from, or within an SMB share
+whose server does not supply file IDs. Verification and **Preserve times and
+attributes** work there. For a file conflict, choose another name or skip the
+file. Copying a link from such a share requires the server to supply a usable ID.
 On Linux, Copy writes only to filesystems with anonymous `O_TMPFILE` files (ext4,
 XFS, Btrfs, tmpfs): FAT/exFAT/NTFS media and NFS/SMB, sshfs or GVfs shares are
 refused as destinations. Rename and permanent Delete on vfat, exFAT, ntfs3 and CIFS
