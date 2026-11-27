@@ -165,15 +165,21 @@ struct Listed {
 
 impl Visible {
     /// Whether the rows' listing finished reading the directory before the
-    /// subscription that counts `counter` took effect: they then may lack a
-    /// change that nothing counted, and are checked at once. A folder is
-    /// subscribed only after its listing read entries (`Prepared`) or once it
-    /// is accepted (`register`), so a small folder is often read completely
+    /// subscription that now watches them, counting with `counter`, took
+    /// effect (`registered`: it is in place): they then may lack a change that
+    /// nothing counted, and are checked at once. A folder is subscribed only
+    /// after its listing read entries (`Prepared`) or once it is accepted
+    /// (`register`), so a small or empty folder is often read completely
     /// before that, and a file written right after it was listed was shown
-    /// only by the periodic check (`Timing::poll`). Without a watch service
-    /// nothing is counted, and the rows are checked periodically as before.
-    fn read_unwatched(&self, worker: &Worker, counter: &Arc<AtomicU64>) -> bool {
-        worker.native.is_some()
+    /// only by the periodic check (`Timing::poll`). Rows that a listing read
+    /// while that subscription was already in place, such as a refresh or a
+    /// resort of a watched folder, are not checked again. Neither are rows
+    /// that no subscription watches: without a watch service nothing is
+    /// counted and the rows are checked periodically as before, and a folder
+    /// whose registration failed is checked often while it is retried, and at
+    /// once when a retry succeeds (`Target::retry_registration`).
+    fn read_unwatched(&self, counter: &Arc<AtomicU64>, registered: bool) -> bool {
+        registered
             && self.listed.as_ref().is_some_and(|listed| {
                 !listed
                     .counted
@@ -205,8 +211,8 @@ struct Started {
     /// It read the directory to its end (`Reporter::listing_done`).
     done: bool,
     /// The counter of a subscription of the directory that was in place
-    /// before the listing finished reading: when it started, or taking effect
-    /// while it read (`Worker::subscribed`).
+    /// before the listing finished reading: when it started, or the latest
+    /// one taking effect while it read (`Worker::subscribed`).
     counted: Option<Arc<AtomicU64>>,
     /// It ended without rows to accept; the pane shows its previous rows.
     failed: bool,
@@ -857,8 +863,10 @@ impl Target {
     /// published its counter) are the accepted rows or were listed after them,
     /// so they keep `accepted_at`; they are no newer than a check that came due
     /// before this acceptance (one the dispatch superseded, or one due while
-    /// the target was parked), so that check runs at once. So do rows read
-    /// while the target was not subscribed (`Visible::read_unwatched`).
+    /// the target was parked), so that check runs at once. So do rows read to
+    /// their end before the target's subscription took effect, once it is in
+    /// place (`Visible::read_unwatched`): a refresh while its registration
+    /// was failing.
     fn retarget(
         &mut self,
         worker: &Worker,
@@ -870,19 +878,20 @@ impl Target {
         // Read before subscribing again: a notification through the new
         // subscription is counted after this and reaches the debounce.
         let version = self.dirty.load(Ordering::Acquire);
-        let unwatched = visible.read_unwatched(worker, &self.dirty);
         let fence = visible
             .fence
+            .as_ref()
             .filter(|fence| Arc::ptr_eq(&fence.counter, &self.dirty));
-        if let Some(fence) = &fence {
+        if let Some(fence) = fence {
             self.accepted_at = fence.value;
         }
-        let activity = version != self.accepted_at || unwatched;
         let (subscription, retry, status) = outcome(
             subscribe(worker, supervision, &self.path, &self.dirty, &self.active),
             self.retry.as_ref(),
             worker.timing,
         );
+        let activity = version != self.accepted_at
+            || visible.read_unwatched(&self.dirty, subscription.is_some());
         // Destruction can join native watcher threads; it stays on this worker.
         drop(std::mem::replace(&mut self._subscription, subscription));
         self.retry = retry;
@@ -909,8 +918,8 @@ impl Target {
     /// listing fenced against this counter (a later listing of the folder,
     /// dispatched while it was subscribed): the rows are probed at once if a
     /// notification was counted after that fence, or at all without one, and
-    /// if they were read before the subscription took effect
-    /// (`Visible::read_unwatched`).
+    /// if they were read to their end before the subscription that now watches
+    /// them took effect (`Visible::read_unwatched`).
     ///
     /// A failed preparation is registered once more, as acceptance registers a
     /// folder that was not prepared; the failure can be transient. A counted
@@ -932,9 +941,9 @@ impl Target {
         let active = prepared.active.clone();
         // Read before subscribing again, as `retarget` does.
         let version = dirty.load(Ordering::Acquire);
-        let unwatched = visible.read_unwatched(worker, &dirty);
         let accepted_at = visible
             .fence
+            .as_ref()
             .filter(|fence| Arc::ptr_eq(&fence.counter, &dirty))
             .map_or(0, |fence| fence.value);
         let (subscription, retry, status) = match prepared.subscription.take() {
@@ -958,6 +967,7 @@ impl Target {
             ),
             None => (None, None, None),
         };
+        let unwatched = visible.read_unwatched(&dirty, subscription.is_some());
         worker.publish(&path, &dirty);
         let now = Instant::now();
         let mut target = Self {
@@ -1087,12 +1097,17 @@ impl Worker {
                 published.armed = armed;
             }
         }
+        // Replaces a counter recorded when the listing started: a pane counts
+        // a folder with one counter at a time, so a different one belongs to a
+        // target released since (a view without a flat listing leaves its
+        // counter published and armed), and the rows will be watched by this
+        // subscription (`Visible::read_unwatched`).
         if armed
             && let Some(started) = started
                 .as_mut()
                 .filter(|started| started.path == path && !started.done)
         {
-            started.counted.get_or_insert_with(|| counter.clone());
+            started.counted = Some(counter.clone());
         }
     }
 
@@ -1185,7 +1200,8 @@ fn outcome(
 
 /// A target for accepted rows of a folder that was not prepared. `check` probes
 /// the rows at once (after a restart lost the target's history); so do rows
-/// that a listing read before this subscription (`Visible::read_unwatched`).
+/// that a listing read to its end before this subscription
+/// (`Visible::read_unwatched`), once it is in place.
 fn register(
     worker: &Worker,
     supervision: &mut Supervision,
@@ -1195,24 +1211,29 @@ fn register(
     check: bool,
 ) -> (Target, Option<WatchStatus>) {
     let dirty = Arc::new(AtomicU64::new(0));
-    let check = check || visible.read_unwatched(worker, &dirty);
-    let Visible {
-        directory: visible,
-        hide,
-        ..
-    } = visible;
     // Published before the subscription exists, so a listing that starts from
     // now on fences against this counter. A fence covers counted changes only:
     // a change before the subscription exists is never counted, and a listing
     // that read the directory before then can lack it until a check (see
     // `Visible::read_unwatched`).
-    worker.publish(&visible.path, &dirty);
+    let path = visible.directory.path.as_path();
+    worker.publish(path, &dirty);
     let active = Arc::new(AtomicBool::new(true));
     let (subscription, retry, status) = outcome(
-        subscribe(worker, supervision, &visible.path, &dirty, &active),
+        subscribe(worker, supervision, path, &dirty, &active),
         None,
         worker.timing,
     );
+    // No other subscription in this pane counts the folder (the target or the
+    // prepared folder would watch the rows), so a listing that read it to its
+    // end did so before this one took effect: the new counter never matches
+    // its record, and the rows are checked once this one is in place.
+    let check = check || visible.read_unwatched(&dirty, subscription.is_some());
+    let Visible {
+        directory: visible,
+        hide,
+        ..
+    } = visible;
     let now = Instant::now();
     let mut target = Target {
         revision,

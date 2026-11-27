@@ -776,3 +776,128 @@ async fn rows_read_while_their_folder_was_subscribed_are_not_checked_again() {
     assert_eq!(probes(&files), 0, "a quiet listing is not checked again");
     stop(&controller, &mut tasks).await;
 }
+
+/// Rows of a refresh that read its folder to the end while the folder's
+/// subscription was in place miss no uncounted change: they are not checked
+/// again, so a folder that keeps changing is read once per hint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refresh_read_while_its_folder_was_subscribed_is_not_checked_again() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    native.registrations(1).await;
+    native.fire(0);
+    hint_for(&mut events, 1).await;
+    // The UI refreshes for the hint.
+    list(&controller, 2, "left");
+    let reporter = controller.reporter();
+    reporter.listing_read(PaneId::Left, NavigationId(2));
+    reporter.listing_done(PaneId::Left, NavigationId(2));
+    controller.set_visible(files.visible(PaneId::Left, 2, "left"));
+    native.registrations(2).await;
+    native.fire(1);
+    hint_for(&mut events, 2).await;
+    assert_eq!(probes(&files), 0, "the refresh listing is not checked");
+    stop(&controller, &mut tasks).await;
+}
+
+/// An empty folder's listing reads no entries, so the folder is subscribed
+/// only when its rows are accepted. A file written meanwhile is counted by
+/// nothing, so the accepted rows are checked at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_folder_listed_before_it_was_subscribed_is_checked_once_shown() {
+    let files = Arc::new(Files::default());
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
+    list(&controller, 1, "left");
+    let listed = files.visible(PaneId::Left, 1, "left");
+    controller
+        .reporter()
+        .listing_done(PaneId::Left, NavigationId(1));
+    files.put("left", 7);
+    controller.set_visible(listed);
+    hint_for(&mut events, 1).await;
+    assert_eq!(probes(&files), 1, "the accepted rows are checked once");
+    assert_eq!(native.callbacks.lock().unwrap().len(), 1);
+    stop(&controller, &mut tasks).await;
+}
+
+/// A view without a flat listing releases the target but leaves its counter
+/// published, still marked subscribed, so a later listing of the folder
+/// starts with it. The folder is subscribed again while that listing reads it
+/// (for the rows shown until it is accepted), and rows read while that
+/// subscription was in place are not checked again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rows_read_while_a_released_folder_was_subscribed_again_are_not_checked() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let (_owner, controller, mut tasks, mut events, native) = watcher(&files);
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    listings_until(&controller, |listings| {
+        listings
+            .counter
+            .as_ref()
+            .is_some_and(|published| published.armed)
+    })
+    .await;
+    let released = controller.listings[0]
+        .lock()
+        .unwrap()
+        .counter
+        .as_ref()
+        .map(|published| published.counter.clone())
+        .unwrap();
+    // An archive or network view.
+    controller
+        .handle()
+        .clear_scope(PaneId::Left, NavigationId(2));
+    native.released(1).await;
+    // Back in the folder, which is subscribed again while it is listed.
+    list(&controller, 3, "left");
+    let listed = files.visible(PaneId::Left, 3, "left");
+    let reporter = controller.reporter();
+    reporter.listing_read(PaneId::Left, NavigationId(3));
+    listings_until(&controller, |listings| {
+        listings
+            .counter
+            .as_ref()
+            .is_some_and(|published| published.armed && !Arc::ptr_eq(&published.counter, &released))
+    })
+    .await;
+    reporter.listing_done(PaneId::Left, NavigationId(3));
+    controller.set_visible(listed);
+    native.registrations(3).await;
+    native.fire(2);
+    hint_for(&mut events, 3).await;
+    assert_eq!(probes(&files), 0, "a quiet listing is not checked again");
+    stop(&controller, &mut tasks).await;
+}
+
+/// A folder whose registration fails counts nothing: it is checked often while
+/// the registration is retried (every 30 s here), and at once when a retry
+/// succeeds. A refresh of it is not checked at once as well, which would read
+/// a folder that keeps changing twice per hint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refresh_of_a_folder_without_notifications_is_not_checked_at_once() {
+    let files = Arc::new(Files::default());
+    files.put("left", 7);
+    let native = Arc::new(Native {
+        fail: true,
+        ..Native::default()
+    });
+    let (_owner, controller, mut tasks, mut events) =
+        controller(files.clone(), Some(native.clone()), Duration::from_secs(30));
+    controller.set_visible(files.visible(PaneId::Left, 1, "left"));
+    assert_eq!(status(&mut events).await.0, flat(PaneId::Left, 1));
+    list(&controller, 2, "left");
+    let reporter = controller.reporter();
+    reporter.listing_read(PaneId::Left, NavigationId(2));
+    reporter.listing_done(PaneId::Left, NavigationId(2));
+    controller.set_visible(files.visible(PaneId::Left, 2, "left"));
+    // The acceptance registers the folder again and reports the failure; a
+    // check at once would follow without delay.
+    assert_eq!(status(&mut events).await.0, flat(PaneId::Left, 2));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(probes(&files), 0, "the refresh listing is not checked");
+    stop(&controller, &mut tasks).await;
+}

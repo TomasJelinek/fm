@@ -91,6 +91,14 @@ and accessible description give the registration error of `PollingOnly`.
 `TreeEvent::WatchFailed` keeps reporting scope enrollment failures and epoch
 exhaustion.
 
+A flat folder's accepted rows are checked right away when the listing that produced
+them read the folder to its end before the folder's watch took effect, as a small or
+empty folder usually is: nothing counts a change in between, which would otherwise
+wait for the 15-second check. Rows listed while the folder's watch was in place, such
+as a refresh or re-sort of a watched folder, are not checked again; neither are rows
+of a folder whose registration fails, which is checked often anyway and right away
+when a retry succeeds.
+
 A flat folder also registers again with a refresh; a tree batch with a later scope
 update, at most once per poll interval. A pane's watch worker that panics restarts
 in place on its resident worker thread: at once the first time, afterwards no sooner than a

@@ -459,11 +459,20 @@ impl ManualWatch {
     }
 }
 
+/// Reads of the directory by `start`: its first listing, and the check of the
+/// rows that listing read before the directory was subscribed.
+const START_READS: usize = 2;
+
 /// Starts an engine over `directory` whose left pane shows it as navigation 1.
 /// That first listing finds the directory empty, so it is not subscribed while
 /// it is listed: subscription 0 is registered when the rows are accepted, and
 /// firing it is hinted. (A notification while a folder's first listing is
-/// read is checked when the rows are accepted instead.)
+/// read is checked when the rows are accepted instead.) The file that every
+/// later read finds was written after that listing and before the
+/// subscription took effect, so nothing counted it: the accepted rows are
+/// checked at once and the change is hinted, without waiting for the periodic
+/// check. Tests go on after that hint, with the directory read `START_READS`
+/// times.
 async fn start(
     directory: &Arc<TestDirectory>,
     watch: &Arc<ManualWatch>,
@@ -492,6 +501,12 @@ async fn start(
         .await
         .unwrap();
     commit(&commands, &mut events, NavigationId(1), &directory.path).await;
+    hinted(&mut events, NavigationId(1)).await;
+    assert_eq!(
+        directory.reads(),
+        START_READS,
+        "the first listing and one check of its rows"
+    );
     (commands, events, engine)
 }
 
@@ -628,8 +643,8 @@ async fn assert_an_event_driven_listing_reads_once(listing: fn(u64, &TestDirecto
     hinted(&mut events, NavigationId(2)).await;
     assert_eq!(
         directory.reads(),
-        2,
-        "each listing reads the directory once, with no further check"
+        START_READS + 1,
+        "the listing reads the directory once, with no further check"
     );
     shut_down(commands, events, engine).await;
 }
@@ -675,14 +690,18 @@ async fn a_resort_of_rows_a_check_found_current_reads_nothing() {
     watch.fire_on_watch.store(true, Ordering::SeqCst);
     let rows = commit(&commands, &mut events, NavigationId(2), &directory.path).await;
     hinted(&mut events, NavigationId(2)).await;
-    assert_eq!(directory.reads(), 3, "two listings and one check");
+    assert_eq!(
+        directory.reads(),
+        START_READS + 2,
+        "the refresh listing and one check"
+    );
     // The check found the rows current, so re-sorting them reads nothing.
     let source = Some((NavigationId(2), rows));
     commands.send(resort(3, &directory, source)).await.unwrap();
     commit(&commands, &mut events, NavigationId(3), &directory.path).await;
     watch.fire(2).await;
     hinted(&mut events, NavigationId(3)).await;
-    assert_eq!(directory.reads(), 3);
+    assert_eq!(directory.reads(), START_READS + 2);
     shut_down(commands, events, engine).await;
 }
 
@@ -715,8 +734,8 @@ async fn a_failed_refresh_keeps_the_shown_directory_watched() {
     );
     assert_eq!(
         directory.reads(),
-        2,
-        "one listing and the failed refresh, which is not checked again at once"
+        START_READS + 1,
+        "the failed refresh, which is not checked again at once"
     );
     shut_down(commands, events, engine).await;
 }
@@ -742,7 +761,11 @@ async fn a_change_during_a_refresh_listing_is_hinted_for_the_new_view() {
     commit(&commands, &mut events, NavigationId(2), &directory.path).await;
     // The directory stayed subscribed, so the accepted rows are checked at once.
     hinted(&mut events, NavigationId(2)).await;
-    assert_eq!(directory.reads(), 3, "two listings and one check");
+    assert_eq!(
+        directory.reads(),
+        START_READS + 2,
+        "the refresh listing and one check"
+    );
     shut_down(commands, events, engine).await;
 }
 
@@ -772,8 +795,8 @@ async fn a_failed_navigation_to_another_directory_keeps_the_shown_directory_watc
     assert_eq!(watch.callbacks.lock().unwrap().len(), 1);
     assert_eq!(
         directory.reads(),
-        1,
-        "one listing, which is not checked again"
+        START_READS,
+        "the shown directory is not checked again"
     );
     assert_eq!(directory.reads_of(&unreadable), 1, "one failed listing");
     shut_down(commands, events, engine).await;
@@ -841,8 +864,8 @@ async fn a_change_while_a_new_directory_is_listed_is_hinted_once_it_is_shown() {
     assert_eq!(directory.reads_of(&second), 2, "one listing and one check");
     assert_eq!(
         directory.reads(),
-        1,
-        "the folder shown before is not checked"
+        START_READS,
+        "the folder shown before is not checked again"
     );
     shut_down(commands, events, engine).await;
 }
