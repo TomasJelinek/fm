@@ -226,7 +226,7 @@ its build steps, and on Windows `pwsh -File scripts\acceptance.ps1` builds and r
 synthetic input against a generated fixture tree and writes an HTML report below
 `_build/acceptance/` on every platform, unless `MIDNIGHT_ACCEPTANCE_RUN_DIR` (or
 `--run-dir` of `scripts\acceptance.ps1` and of the test executable) names another
-absolute folder ([results](ACCEPTANCE.md#results)). Its only test target
+absolute folder ([acceptance results](ACCEPTANCE.md#results)). Its only test target
 requires the `acceptance` feature of `crates/midnight-acceptance`, so
 `cargo test --workspace` and `scripts/ci-workspace-tests.py` never build or run it.
 See [the acceptance suite](ACCEPTANCE.md) and its
@@ -237,7 +237,7 @@ The suite's own test target is built at `opt-level = 2` even in the debug test p
 hash and compare whole rendered frames many times a second, and unoptimized those loops,
 not the product, set the pace of the viewer and UI polish scenarios. The product crates
 it drives keep their debug profiles. Each scenario's report ends with `timing` notes,
-the time spent per named phase ([results](ACCEPTANCE.md#results)); look there before
+the time spent per named phase ([acceptance results](ACCEPTANCE.md#results)); look there before
 making a scenario faster ([acceptance time](../verification/2026-11-24-acceptance-time.md)).
 
 ## Targeted test execution

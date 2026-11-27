@@ -1594,7 +1594,7 @@ classifications.
 - Plugin projects share one Git repository but depend only on the public API/SDK, except
   the in-repository path dependencies that the [developer
   guide](docs/developer/README.md) lists (PLUGIN-01 in the
-  [backlog](docs/IMPLEMENTATION_BACKLOG.md)). Their independent Cargo workspaces contain
+  [implementation backlog](docs/IMPLEMENTATION_BACKLOG.md)). Their independent Cargo workspaces contain
   their tests and have no write access to the host application's sources. CI checks the
   basic, source, Markdown, image and PDF viewers, the image thumbnailer, the viewer
   conformance fixture and the Windows/Linux native, network and archive filesystems from

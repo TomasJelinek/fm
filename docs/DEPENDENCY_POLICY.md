@@ -130,7 +130,7 @@ SHA256SUMS with scripts/release-signing.py
 **Native runtimes:** Windows/system graphics libraries remain governed by their
 vendors; their use does not make the operating system open source. Linux libraries
 retain their distribution's licenses. Rust bindings do not relicense native
-libraries. See the separate native/runtime section of the [inventory](THIRD_PARTY.md).
+libraries. See the separate native/runtime section of the [third-party inventory](THIRD_PARTY.md).
 
 **Required media workers:** standard builds include the independent image/video
 thumbnailers and the installed video playback worker. `image` 0.25.10 is MIT OR Apache-2.0. The pinned FFmpeg 9.0.2 shared

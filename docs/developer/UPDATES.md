@@ -3,8 +3,8 @@
 Midnight Explorer can check GitHub for a newer release, download it, verify it against
 the project's release key and install it into its own folder, keeping the user's
 settings, panels and tabs. An extracted release folder replaces its own files; an
-MSI installation (a copy installed with the release's Windows Installer package)
-hands the verified MSI to Windows Installer. This document describes the protocol,
+MSI installation (a copy installed with the release's Windows Installer package, the
+MSI) hands the verified MSI to Windows Installer. This document describes the protocol,
 the trust model, the installation swap and rollback, the Windows Installer hand-off,
 the files that record an update's state, and how the release key is handled. The user-facing
 description is in the [user guide](../USER_GUIDE.md#updates); the network and

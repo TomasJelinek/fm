@@ -177,7 +177,7 @@ nothing behind when it is refused.
 A release consists of a Windows x64 ZIP and a Linux x86-64 GNU/glibc tar.gz, from 0.6.1
 on a Windows installer (MSI) made from that ZIP ([Windows installer](#windows-installer-msi)),
 plus a `SHA256SUMS` file and, from 0.5.1 on, its signature `SHA256SUMS.minisig`
-([signing](#signing-the-release)). Every release so far is a preview: [0.1.0](releases/0.1.0.md), [0.5.0](releases/0.5.0.md),
+([Signing the release](#signing-the-release)). Every release so far is a preview: [0.1.0](releases/0.1.0.md), [0.5.0](releases/0.5.0.md),
 [0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md), [0.5.3](releases/0.5.3.md),
 [0.5.4](releases/0.5.4.md), [0.6.0](releases/0.6.0.md), [0.6.1](releases/0.6.1.md),
 [0.6.2](releases/0.6.2.md) and [0.6.3](releases/0.6.3.md), the current one. Linux archives
@@ -421,7 +421,7 @@ objects.
 `midnight-explorer-<version>-x86_64-pc-windows-msvc.msi` beside it. It runs on Windows
 with Python 3.11 or later and needs nothing else: it writes the database with the
 Windows Installer API (`msi.dll`) and the cabinet with `makecab.exe`, and checks it with
-`expand.exe`, all part of Windows ([tool choice](DEPENDENCY_POLICY.md#current-decisions)).
+`expand.exe`, all part of Windows ([installer tooling decision](DEPENDENCY_POLICY.md#current-decisions)).
 It neither builds nor publishes. For 0.6.3, in PowerShell at the repository root:
 
 ```powershell
@@ -521,7 +521,7 @@ refuses an existing MSI.
   folder ([MSI installations](developer/UPDATES.md#msi-installations)). The MSI therefore
   must keep its name, its `UpgradeCode`, `SetInstallLocation`, the `INSTALLDIR`
   property and its major upgrade, and its line must be in the signed `SHA256SUMS`
-  ([signing](#signing-the-release)); a release without it offers MSI installations the
+  ([Signing the release](#signing-the-release)); a release without it offers MSI installations the
   release page. No marker file is added: Windows Installer's own records identify the copy,
   also for a copy installed by 0.6.1. That version cannot run the hand-off itself; its
   users run a newer MSI once by hand. The first update through the hand-off is from an
