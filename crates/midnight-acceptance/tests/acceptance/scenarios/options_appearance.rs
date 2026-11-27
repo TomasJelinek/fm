@@ -15,7 +15,7 @@ const SPACING_TOUCH: &str = "Touch · larger controls";
 const ICON_PICKER: &str = "Application icon";
 /// The theme ids `Theme.scheme` uses (PreferenceTheme order).
 const DEFAULT_DARK: i32 = PreferenceTheme::DEFAULT_DARK.index();
-const DARK: i32 = PreferenceTheme::Dark.index();
+const BLUE: i32 = PreferenceTheme::Blue.index();
 const PAPER: i32 = PreferenceTheme::PaperContrast.index();
 
 fn config(folder: &Path, store: &Arc<SettingsStore>) -> Config {
@@ -82,7 +82,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
 
     // Theme: the panels follow the previewed theme (the right list is mostly outside
     // the dialog), the light pick too while the host stays dark; Paper Contrast is much brighter
-    // than Dark.
+    // than Blue, a dark theme other than the default Dark.
     options::open(&mut app)?;
     options::page(&mut app, "Appearance")?;
     options::choose(&mut app, "Light theme", "Paper Contrast")?;
@@ -91,13 +91,13 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     });
     app.idle(std::time::Duration::from_millis(300));
     let light_list = Frame::of(&mut app).luma(options::list_area(&app, PaneId::Right));
-    options::choose(&mut app, "Dark theme", "Dark")?;
-    app.until("the Dark theme", |app| app.window.get_theme_index() == DARK);
+    options::choose(&mut app, "Dark theme", "Blue")?;
+    app.until("the Blue theme", |app| app.window.get_theme_index() == BLUE);
     app.idle(std::time::Duration::from_millis(300));
     let dark_list = Frame::of(&mut app).luma(options::list_area(&app, PaneId::Right));
     if light_list < dark_list + 60.0 {
         return Err(format!(
-            "the theme preview is not visible: panel luma {light_list:.1} in Paper Contrast, {dark_list:.1} in Dark"
+            "the theme preview is not visible: panel luma {light_list:.1} in Paper Contrast, {dark_list:.1} in Blue"
         ));
     }
 
@@ -164,7 +164,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         &mut app,
         context,
         "appearance-changed",
-        "Options › Appearance: Dark, touch spacing, DejaVu Sans Mono, 16/18 px, smooth text",
+        "Options › Appearance: Blue, touch spacing, DejaVu Sans Mono, 16/18 px, smooth text",
     );
     if !options::ok(&mut app, &store)? {
         return Err("OK did not save the appearance".into());
@@ -173,7 +173,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     if saved.app_icon.storage_name() != "interleave" {
         return Err(format!("OK saved application icon {:?}", saved.app_icon));
     }
-    if saved.dark_theme != PreferenceTheme::Dark
+    if saved.dark_theme != PreferenceTheme::Blue
         || saved.light_theme != PreferenceTheme::PaperContrast
         || saved.density != UiDensity::Touch
         || saved.font_family != "DejaVu Sans Mono"
@@ -195,7 +195,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     app.screenshot(
         context,
         "appearance-saved",
-        "Main window after OK: Dark, touch spacing, DejaVu Sans Mono",
+        "Main window after OK: Blue, touch spacing, DejaVu Sans Mono",
     );
 
     // Restart on the saved settings: the same appearance and row height.
@@ -206,7 +206,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     if app.window.get_current_app_icon() != interleave {
         return Err("the restarted window did not restore the Interleave artwork".into());
     }
-    if app.window.get_theme_index() != DARK
+    if app.window.get_theme_index() != BLUE
         || app.window.get_density_index() != 1
         || (row_height(&app) - final_rows).abs() > 0.5
     {
@@ -223,7 +223,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         app.window.get_font_list_ready()
     });
     for (label, wanted) in [
-        ("Dark theme", "Dark"),
+        ("Dark theme", "Blue"),
         ("Light theme", "Paper Contrast"),
         (ICON_PICKER, "Interleave"),
         ("Spacing", SPACING_TOUCH),
@@ -310,6 +310,6 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         ));
     }
     context.note("All three icon choices displayed distinct window artwork. OK saved Interleave, restart restored it, cancelling Reset kept it, and accepting Reset saved Harvest Navigator.");
-    context.note("Appearance: Cancel restored the previewed theme. Paper Contrast was previewed on a dark host, then the Dark pick. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Dark and Light with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
+    context.note("Appearance: Cancel restored the previewed theme. Paper Contrast was previewed on a dark host, then the Blue pick. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Dark and Light with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
     app.shutdown()
 }
