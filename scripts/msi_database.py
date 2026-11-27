@@ -9,6 +9,7 @@ from ctypes import wintypes
 import os
 
 MSIDBOPEN_READONLY = 0
+MSIDBOPEN_TRANSACT = 1
 MSIDBOPEN_CREATE = 3
 MSIMODIFY_INSERT = 1
 MSICOLINFO_TYPES = 1
@@ -124,6 +125,41 @@ def _library():
     return msi
 
 
+def rehearse_actions(path, actions, properties=()):
+    """Run `actions` of the package at `path` in a client session that installs nothing.
+
+    The session ignores this machine's installation state and shows no UI; it checks
+    that the package's own actions (searches, costing, property settings) run, the way
+    they do before the first dialog of a real installation. Raises MsiError naming the
+    first action that fails, with Windows Installer's error text.
+    """
+    msi = _library()
+    msi.MsiSetInternalUI.argtypes = (wintypes.UINT, ctypes.c_void_p)
+    msi.MsiSetInternalUI.restype = wintypes.UINT
+    msi.MsiOpenPackageExW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(MSIHANDLE))
+    msi.MsiOpenPackageExW.restype = wintypes.UINT
+    msi.MsiDoActionW.argtypes = (MSIHANDLE, wintypes.LPCWSTR)
+    msi.MsiDoActionW.restype = wintypes.UINT
+    msi.MsiSetPropertyW.argtypes = (MSIHANDLE, wintypes.LPCWSTR, wintypes.LPCWSTR)
+    msi.MsiSetPropertyW.restype = wintypes.UINT
+    INSTALLUILEVEL_NONE = 2
+    MSIOPENPACKAGEFLAGS_IGNOREMACHINESTATE = 1
+    previous = msi.MsiSetInternalUI(INSTALLUILEVEL_NONE, None)
+    try:
+        handle = MSIHANDLE()
+        _check(msi.MsiOpenPackageExW(os.fspath(path), MSIOPENPACKAGEFLAGS_IGNOREMACHINESTATE,
+                                     ctypes.byref(handle)), "open the package")
+        with _Handle(handle.value) as session:
+            for name, value in properties:
+                _check(msi.MsiSetPropertyW(session.value, name, value), f"set {name}")
+            for action in actions:
+                result = msi.MsiDoActionW(session.value, action)
+                if result != 0:
+                    raise MsiError(f"Action {action} failed ({result}): {_last_error_text()}")
+    finally:
+        msi.MsiSetInternalUI(previous, None)
+
+
 def _last_error_text():
     msi = _library()
     record = msi.MsiGetLastErrorRecord()
@@ -202,10 +238,10 @@ def _string(record, index):
 class Database:
     """An MSI database opened read-only or created anew (then committed explicitly)."""
 
-    def __init__(self, path, *, create=False):
+    def __init__(self, path, *, create=False, update=False):
         msi = _library()
         handle = MSIHANDLE(0)
-        mode = MSIDBOPEN_CREATE if create else MSIDBOPEN_READONLY
+        mode = MSIDBOPEN_CREATE if create else MSIDBOPEN_TRANSACT if update else MSIDBOPEN_READONLY
         _check(msi.MsiOpenDatabaseW(os.fspath(path), mode, ctypes.byref(handle)),
                f"Opening {path}")
         self._handle = _Handle(handle.value)

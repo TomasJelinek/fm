@@ -108,6 +108,11 @@ TABLES = {
     "CustomAction": ("`Action` CHAR(72) NOT NULL, `Type` SHORT NOT NULL, `Source` CHAR(72), "
                      "`Target` CHAR(255) PRIMARY KEY `Action`"),
     "AppSearch": "`Property` CHAR(72) NOT NULL, `Signature_` CHAR(72) NOT NULL PRIMARY KEY `Property`, `Signature_`",
+    # The AppSearch action reads Signature for every search, also when only registry
+    # locators are used: without the (empty) table it fails with error 2228.
+    "Signature": ("`Signature` CHAR(72) NOT NULL, `FileName` CHAR(255) NOT NULL, `MinVersion` CHAR(20), "
+                  "`MaxVersion` CHAR(20), `MinSize` LONG, `MaxSize` LONG, `MinDate` LONG, `MaxDate` LONG, "
+                  "`Languages` CHAR(255) PRIMARY KEY `Signature`"),
     "RegLocator": ("`Signature_` CHAR(72) NOT NULL, `Root` SHORT NOT NULL, `Key` CHAR(255) NOT NULL, "
                    "`Name` CHAR(255), `Type` SHORT PRIMARY KEY `Signature_`"),
     "TextStyle": ("`TextStyle` CHAR(72) NOT NULL, `FaceName` CHAR(32) NOT NULL, `Size` SHORT NOT NULL, "
@@ -714,6 +719,7 @@ def build(archive, output=None, *, icon=ICON, repository=ROOT, out=sys.stdout):
         cabinet = write_cabinet(tables["File"], work / "files", work)
         write_database(partial, payload, tables, cabinet, icon)
         check(partial, payload, work / "check")
+        rehearse(partial)
         os.rename(partial, msi_path)
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -857,7 +863,31 @@ def verify(msi_path, archive, *, repository=ROOT, out=sys.stdout):
         check(msi_path, payload, work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    rehearse(msi_path)
     print(f"{msi_path.name}: {len(payload.files)} files match {Path(archive).name}", file=out)
+
+
+def ui_actions():
+    """The actions the UI sequence runs before its first dialog, in order (no dialogs)."""
+    steps = sorted((step for step in SEQUENCES["InstallUISequence"] if step[1] > 0), key=lambda s: s[1])
+    # Dialogs and the hand-off to the server need a real installation, and so does
+    # MigrateFeatureStates (it reports 1626 in a session without one).
+    dialogs = {"ScopeDlg", "MaintenanceDlg", "ProgressDlg", "ExecuteAction", "MigrateFeatureStates"}
+    return [step[0] for step in steps if step[0] not in dialogs]
+
+
+def rehearse(msi_path):
+    """Run the UI sequence's actions for both scopes in a session that installs nothing.
+
+    A table an action needs but the package lacks (error 2228) or a failing search stops
+    a real installation before its first dialog; this finds it at build time.
+    """
+    import msi_database as msi
+    for scope in ((("MSIINSTALLPERUSER", "1"),), (("ALLUSERS", "1"), ("MSIINSTALLPERUSER", ""))):
+        try:
+            msi.rehearse_actions(msi_path, ui_actions(), scope)
+        except msi.MsiError as error:
+            raise ValueError(f"{Path(msi_path).name} cannot start an installation: {error}") from error
 
 
 def main(argv=None):

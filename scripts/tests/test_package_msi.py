@@ -296,6 +296,18 @@ class WindowsInstaller(Workspace):
         with self.assertRaisesRegex(ValueError, "exists"):
             package_msi.build(archive)
 
+    def test_verify_runs_the_actions_before_the_first_dialog(self):
+        # 0.6.2's MSI lacked the Signature table that AppSearch reads: Windows Installer
+        # stopped with error 2228 before its first dialog.
+        archive = write_release(self.folder, release_files())
+        msi = package_msi.build(archive, out=io.StringIO())
+        import msi_database
+        with msi_database.Database(msi, update=True) as database:
+            database.execute("DROP TABLE `Signature`")
+            database.commit()
+        with self.assertRaisesRegex(ValueError, "cannot start an installation: Action AppSearch"):
+            package_msi.verify(msi, archive, out=io.StringIO())
+
     def test_verify_refuses_an_msi_of_another_payload(self):
         archive = write_release(self.folder, release_files())
         msi = package_msi.build(archive, out=io.StringIO())
