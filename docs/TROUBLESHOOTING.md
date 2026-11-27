@@ -123,6 +123,21 @@ polkit authentication agent, which is known only when the retry asks.
 **Details** in the message names the refused file or folder; **Copy details** copies
 the whole report. Background: [directory authorization helper](../SECURITY.md#directory-authorization-helper).
 
+### The panel goes back to the previous folder after Retry with authorization
+
+**Symptom (0.6.2 and earlier):** after **Retry with authorization** the folder's files
+appeared, and about a second later the panel showed the folder you came from.
+
+**Cause:** the panel's change watch checked the folder with your own rights. The denied
+check counted as a change, and the automatic re-read that followed was denied too and
+went back to the parent folder.
+
+**Fix:** use 0.6.3 or later. A folder listed with authorization stays as listed, and the
+status row says `Listed with authorization; not updated automatically. Refresh offers
+authorization again.` Refresh (Ctrl+R) lists it with your own rights first; while access
+is still denied, the files stay and **Cannot open folder** offers **Retry with
+authorization** again.
+
 ### Delete: the Trash cannot take the items
 
 **Symptom:** a Delete (Delete or F8) stops in a window titled **Move to Trash** with the
