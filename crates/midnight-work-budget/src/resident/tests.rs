@@ -1112,6 +1112,16 @@ fn elastic_pool_refuses_as_thread_unavailable_when_a_thread_cannot_start() {
     let (owner, spawner) =
         Owner::start_with("elastic-no-thread", 1, Some(no_thread), Builder::spawn).unwrap();
     let runtime = runtime();
+    // A submission that arrives before the resident worker waits for work starts another
+    // thread, which this pool cannot: let the resident worker reach its wait first.
+    let deadline = std::time::Instant::now() + LIMIT;
+    while spawner.shared.lock().idle == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the resident worker never waited"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
     // The resident worker is busy, so the next submission needs another thread.
     let (busy, _, release) = start_blocked(&spawner, &runtime);
     let (ran, observed) = mpsc::channel();
