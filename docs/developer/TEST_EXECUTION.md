@@ -8,30 +8,58 @@ full-validation entry point: they run every test that CI
 and build only the SDK bundles, packages and fixtures that those tests need.
 `build.bat --validate` runs `validate.ps1` after its build steps and before
 the private deployment; `./build.sh --validate` runs `validate.sh` after its last
-build step (native backend only). Run them on their own once the toolchain and
-Python 3.12+ are installed:
+build step (native backend only). Run them on their own, from the repository root,
+once the toolchain and Python 3.12+ are installed. Synopsis (square brackets mark
+optional arguments, `|` alternatives, capitals values you supply):
 
 ```text
 pwsh -NoProfile -File scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run] [--jobs N] [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
 bash scripts/validate.sh [debug|release] [--strict] [--offline] [--dry-run] [--jobs N] [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
 ```
 
-`--offline` (or `CARGO_NET_OFFLINE=true`) forbids downloads. The `--*-sdk` options use an
-already packaged SDK bundle instead of packaging one, as CI's plugin jobs download theirs.
+For example, validate a release build on Windows with at most eight parallel jobs and
+fail on any skipped CI step, or rerun only the workspace tests on Linux:
+
+```powershell
+pwsh -NoProfile -File scripts\validate.ps1 release --strict --jobs 8
+```
+
+```sh
+bash scripts/validate.sh --only workspace-tests
+```
+
+| Option | Meaning |
+| --- | --- |
+| `debug` or `release` | Profile of the `host-build` and `smoke-test` steps (default `debug`); tests always use the debug test profile. |
+| `--strict` | A step skipped for a missing prerequisite fails the run. |
+| `--offline` | Forbids downloads, as `CARGO_NET_OFFLINE=true` does. |
+| `--dry-run` | Prints every step with its commands, variables and skip reasons, and runs nothing. |
+| `--jobs N` | Limits Cargo's build jobs, libtest's test threads and the native dav1d builds to N. |
+| `--only ID[,ID...]` | Runs the named steps (IDs from the [step table](#validation-steps)) and the steps they need. |
+| `--plugin-sdk CONFIG` | Uses an already packaged plugin SDK bundle, CONFIG being its `.cargo/config.toml`, instead of packaging one. |
+| `--worker-sdk CONFIG` | The same for the worker SDK bundle's `.cargo/registry.toml`. |
+| `--web-sdk CONFIG` | The same for the web SDK's `config.toml`. |
+
+The `--*-sdk` options use an already packaged SDK bundle instead of packaging one, as
+CI's plugin jobs download theirs.
 
 Builds and tests use every logical CPU: Cargo's build jobs, libtest's test threads
 and the native dav1d builds of the raster plugins. `--jobs N` limits all of them to N
 (it sets `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` for every step);
 `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` set by the caller have the same effect.
 `--dry-run` prints every step with its commands, the variables they use and why a step
-would be skipped, and runs nothing. Both scripts list the same 42 steps in CI's job
+would be skipped, and runs nothing.
+
+### Validation steps
+
+Both scripts list the same 42 steps in CI's job
 order (`test_validate.py` keeps them in step); a step that belongs to the other platform
 is listed as skipped:
 
 | CI job | Steps |
 | --- | --- |
 | `public-sdk` | `sdk-api` (tests), `sdk-abi` (C/Rust layouts; MSVC on Windows), `sdk-package` |
-| `public-worker-sdk` | `sdk-protocols` (tests of the worker, thumbnail, filesystem, image-viewer and web-viewer APIs), `sdk-web-package`, `sdk-worker-package` |
+| `public-worker-sdk` | `sdk-protocols` (tests of the [worker](../GLOSSARY.md#worker), thumbnail, filesystem, image-viewer and web-viewer APIs), `sdk-web-package`, `sdk-worker-package` |
 | `viewers`, `viewer-conformance` | `viewer-basic`, `viewer-source`, `viewer-markdown` (the test command of their `scripts/ci.*`, then their package build), `viewer-conformance` (tests, fixture build and the native C loader test) |
 | `image-viewer`, `thumbnail-image` | `viewer-image`, `viewer-pdf`, `thumbnail-image` (the test commands of their `scripts/ci.*`; the two viewers then build their packages) |
 | not in CI | `thumbnail-video` (needs an FFmpeg 9.0.2 prefix; it also runs the platform decoder helpers' tests, which CI runs in its `thumbnail-video-platform` job), `html-viewer` (`--no-default-features`, without native CEF) |
@@ -46,13 +74,15 @@ runs these steps in addition: it packages the bundles its plugin steps need, and
 `sdk-api`, `sdk-abi` (`api/scripts/check-abi.ps1`, which CI never runs) and
 `sdk-protocols` are extra Windows coverage.
 
-`workspace-tests` runs CI's gates (below) with
+`workspace-tests` runs CI's gates ([Workspace gates](#workspace-gates)) with
 `scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast`: the same Cargo
 selections and features, including doc tests and example builds (its `--jobs N`
 limits Cargo's jobs and the test threads, as `validate`'s does), but it retires no
 test executable, needs no `CI=true` or `_build` target directory, adds Cargo's
 `--no-fail-fast` and runs every gate after a failure (exiting with the first failing
-status). The later qualification steps reuse those executables through its `run` and
+status). The later qualification steps (the steps that run ignored tests against
+installed packages, listed in the `check` row of the
+[step table](#validation-steps)) reuse those executables through its `run` and
 `artifact` modes, as CI does.
 
 Each step runs in its own process (a PowerShell 7 process, or Windows PowerShell 5.1
@@ -67,13 +97,15 @@ normal target directory. A few outputs lie outside `_build/validate/`: the plugi
 packager writes its bundle to `_build/plugin-sdk-<timestamp>` (removed when
 validation ends), the web SDK packager compiles in `_build/html-viewer/api-target`,
 `thumbnail-video` prepares FFmpeg in the build helpers' `_build/thumbnailers/ffmpeg`,
-temporary files go to `_build/tmp`, and the Windows private test installation
-(below) is created in `%USERPROFILE%`.
+temporary files go to `_build/tmp`, and the Windows
+[private installation root](#private-installation-root) is created in `%USERPROFILE%`.
 `test-install` mirrors CI's `private-test-installation` and `plugin-packages` actions
 with the packages this run built: on Windows a new `%USERPROFILE%\MidnightViewerTests-<guid>` whose DACL
 grants only the user, SYSTEM and Administrators; on Linux a mode-700
 `_build/tmp/viewer-tests-*` directory. It sets `HOST_TEST_INSTALL_ROOT` and the other
-installation variables of that action for every later step, and is removed when
+installation variables of that action
+([Test environment variables](#test-environment-variables)) for every later step, and is
+removed when
 validation ends, as are the SDK bundles the run packaged. Tests use the debug test
 profile; the selected profile applies only to `host-build` and `smoke-test`.
 
@@ -93,16 +125,33 @@ step it needs did not pass), the summary names it before the result:
 `WARNING: N CI step(s) SKIPPED for a missing prerequisite or needed step: IDS (use
 --strict to fail)`; the two steps that CI does not run are not listed. `--only` runs
 the named steps (at least one, comma-separated) and the steps they need, for example
-`--only workspace-tests` reruns the workspace tests with their private installation.
+`--only workspace-tests` reruns the workspace tests with their private installation
+root.
 A flag given a value, such as `--strict=no`, is rejected with exit status 2.
 
 Validation continues after a failure. Each step's output is shown and saved as
 `_build/validate/logs/<run>/NN-<step>.log`, next to the generated step script
-(Windows) and `summary.txt`, the closing table of every step with its result,
-duration and the passed, failed and ignored counts of its libtest and unittest
-summaries. The exit status is 0 when no step failed, 1 when a step failed (or a
-`--strict` skip), 2 for invalid arguments and 127 when cargo, rustc or Python 3.12+
-is missing.
+(Windows) and `summary.txt`. The exit status is 0 when no step failed, 1 when a step
+failed (or a `--strict` skip), 2 for invalid arguments and 127 when cargo, rustc or
+Python 3.12+ is missing.
+
+`summary.txt` is the closing summary, also printed at the end of the run. After a
+header line (`Validation summary: <platform> (<target>), profile <profile>, started
+<time>`) it has one row per step with these columns:
+
+| Column | Meaning |
+| --- | --- |
+| `#` | The step's number in CI's job order. |
+| `Step` | The step ID, as in the [step table](#validation-steps). |
+| `Result` | `PASS`, `FAIL` or `SKIPPED`. |
+| `Time` | The step's duration; `-` for a skipped step. |
+| `Passed`, `Failed`, `Ignored` | The counts of the step's libtest and unittest summaries, empty when it printed none. |
+| `CI job / reason` | The step's CI job, or the reason it was skipped or failed. |
+
+The rows are followed by the totals (`Steps: … passed, … failed, … skipped in <time>.
+Tests: … passed, … failed, … ignored.`), the `--only` note when steps were selected, the
+`WARNING` line for skipped CI steps, `VALIDATION PASSED` or `VALIDATION FAILED`, and the
+log folder.
 
 Differences from CI, all deliberate: validation runs tests only, so CI's
 formatting, Clippy and source size checks are not steps, the plugins' `scripts/ci.*`
@@ -117,7 +166,8 @@ kept, while CI's `check` and `scripts-and-lint` jobs set `CARGO_PROFILE_DEV_DEBU
 `CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0` (set them yourself to reproduce
 a CI build exactly; see [CI jobs and build time](#ci-jobs-and-build-time));
 the filesystem API tests run once instead of in both filesystem jobs; and the two
-modules above that CI does not build are included when their inputs exist. CI's `thumbnail-video-platform` job has
+modules that CI does not build (`thumbnail-video` and `html-viewer`, the "not in CI" row
+of the [step table](#validation-steps)) are included when their inputs exist. CI's `thumbnail-video-platform` job has
 no step of its own; its tests run inside `thumbnail-video` and are skipped, without a
 WARNING line, when no FFmpeg prefix exists.
 Validation does not run inside `build.sh`'s Docker backend: the build image has no
@@ -127,10 +177,10 @@ Xvfb, mounts the source read-only and has not been tested for this, so
 ## CI jobs and build time
 
 CI's `check` and `release` jobs start with the run instead of after the plugin jobs.
-The workspace gates use no plugin package, only the empty protected root
-(`HOST_TEST_INSTALL_ROOT`) that the `private-test-installation` action creates; every
-test that reads an installed package is `#[ignore]`d and runs in a later qualification
-step. So both jobs build and test first, and only then does the `plugin-packages`
+The workspace gates use no plugin package, only the empty
+[private installation root](#private-installation-root) (`HOST_TEST_INSTALL_ROOT`) that
+the `private-test-installation` action creates; every test that reads an installed
+package is `#[ignore]`d and runs in a later qualification step. So both jobs build and test first, and only then does the `plugin-packages`
 action wait for this run's viewer and filesystem packages
 (`scripts/ci-wait-for-artifacts.py`), download them and install them into that root.
 The wait lists every artifact its pattern downloads select, so none starts with a
@@ -192,7 +242,7 @@ making a scenario faster ([acceptance time](../verification/2026-11-24-acceptanc
 
 ## Targeted test execution
 
-Use `scripts/run-targeted-tests.py` for independent **headless Rust libtest** targets that have already been built. It does not change CI coverage, compile code, discover executables by glob, or delete build artifacts. Native dialogs, desktop input, renderer pacing and profiling are unsupported: run their dedicated tools serially, with compilers and other test processes idle. For example, `scripts/probe-keyboard-search.ps1` drives the release `native_keyboard_search` example with real Windows keyboard input on a desktop session (see its [verification record](../verification/2026-11-07-keyboard-native-input.md)). Idle event-loop wakeups are measured the same way: `MIDNIGHT_IDLE_WAKEUP_PROBE=<warmup_s>:<seconds>[:thumbnails]` makes `midnight-explorer` use in-memory default preferences, count winit wakeups by cause after the warmup and print one `idle_wakeups=` line to stderr before it quits. Only the preferences are isolated: the probe uses the plugins installed next to `midnight-explorer` and the real preview cache, so set `LOCALAPPDATA` (Windows) or `XDG_CACHE_HOME` (Linux) to a scratch directory for the run. Run one probe at a time with the pointer outside the window (see the [idle wakeup record](../verification/2026-11-18-ui-idle-wakeups.md)).
+Use `scripts/run-targeted-tests.py` for independent **headless Rust libtest** targets that have already been built. It does not change CI coverage, compile code, discover executables by glob, or delete build artifacts. Native dialogs, desktop input, renderer pacing and profiling are unsupported: run their dedicated tools serially, with compilers and other test processes idle. For example, `scripts/probe-keyboard-search.ps1` drives the release `native_keyboard_search` example with real Windows keyboard input on a desktop session (see the [native keyboard input verification](../verification/2026-11-07-keyboard-native-input.md)). Idle event-loop wakeups are measured the same way: `MIDNIGHT_IDLE_WAKEUP_PROBE=<warmup_s>:<seconds>[:thumbnails]` makes `midnight-explorer` use in-memory default preferences, count winit wakeups by cause after the warmup and print one `idle_wakeups=` line to stderr before it quits. Only the preferences are isolated: the probe uses the plugins installed next to `midnight-explorer` and the real preview cache, so set `LOCALAPPDATA` (Windows) or `XDG_CACHE_HOME` (Linux) to a scratch directory for the run. Run one probe at a time with the pointer outside the window (see the [idle wakeup record](../verification/2026-11-18-ui-idle-wakeups.md)).
 
 A target directory shared between checkouts of different commits (a `CARGO_TARGET_DIR` outside the checkout) can silently link another checkout's code. Cargo names a path package's artifacts by its path relative to the workspace root, so every checkout of this workspace uses the same artifact names, and it judges freshness by modification times, so a checkout whose sources are older than another checkout's artifacts reuses them unchanged. This holds for every path package of the dependency graph, not only the workspace members: `filesystem-api/*`, `api/*` and the vendored crates (`vendor/*`) too. Give each checkout its own target directory, or before building in another checkout run `cargo clean -p <package id>` for every path package (`cargo metadata` with dependencies lists them as the packages whose `source` is null; registry dependencies may stay).
 
@@ -274,6 +324,8 @@ features, state any differences, and claim results only for that scope.
 Independent plugins still use their own workspace and normal configuration;
 this does not require blanket workspace builds for independent plugin checks.
 
+<a id="workspace-gates"></a>
+
 CI's `check` job runs the workspace in `scripts/ci-workspace-tests.py` gates
 (`cargo test --workspace` with every member's active features, one gate per
 target kind and bounded batches of integration names; a same-name group such as
@@ -293,8 +345,12 @@ prints its path. Neither mode retires anything or needs `CI=true`. Locally,
 `python -B scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast` runs
 all gates without retiring executables ([full validation](#full-validation)).
 
+The next rules concern the inline-tree watch fixtures; hints, watch fences, the
+acknowledged projection and occurrences are described in
+[Native watches and reconciliation](TREE_PANEL.md#native-watches-and-reconciliation).
 Fixture readiness is not a maintenance-quiescence fence. Exact pre-ACK capture
-fixtures must account for independent startup maintenance without weakening
+fixtures (captures made before the UI acknowledges a tree publication) must account
+for independent startup maintenance without weakening
 production projection/occurrence guards. If an opt-in fixture defers hints, hold
 only pure scalar `Changed` / `DirectoryChanged` through transfer terminal, then
 replay the originals before reconciliation/external-write assertions; retain
@@ -306,8 +362,8 @@ overflow names every directory of its batch), or the registration of a batch tha
 contains the directory. A registration counts because a directory that joins a
 batch is probed at once instead of waiting for a callback; a directory already in
 the old batch stays covered by the old subscription until the swap ends, and the
-new registration counts for it as well. The subscription may belong to either pane:
-these fixtures root the other pane at `destination`, so its subscription can supply
+new registration counts for it as well. The subscription may belong to either panel:
+these fixtures root the other panel at `destination`, so its subscription can supply
 that directory's evidence. A subscription that does not contain the directory and
 the engine's periodic poll are no evidence, so the poll alone never satisfies a
 wait; a batch registered after the change does, even when the old subscription
@@ -360,27 +416,84 @@ The default process limit is the smaller of four and the available CPU count. `-
 Each artifact runs from its package manifest directory, with private `TEMP`, `TMP` and `TMPDIR` directories. Caller-provided installed-provider variables and `MIDNIGHT_NATIVE_TEST_ROOT` remain intact. Do not parallelize targets that mutate the same external fixture simply because their temporary directories differ.
 UI software-render snapshots are off by default, as in CI: the runner does not pass `MIDNIGHT_UI_RENDER_DIR` to its children, even when the caller sets it. `--render-snapshots` gives each artifact a private `render` directory beside its logs instead. `midnight-ui` tests then write every snapshot there as `<test>--<snapshot>.bmp`, where `<test>` is the libtest test name with `::` replaced by `.`, and geometry sweeps render every theme and combination instead of only their reference case, so such a run takes much longer. `MIDNIGHT_UI_RENDER_FILTER`, when set, still limits the written snapshots to names that contain it.
 
-### Private plugin installation root
+<a id="private-plugin-installation-root"></a>
 
-Plugin discovery accepts an installation that other accounts can change only through permissions and reports it (`midnight_plugin_host::installation_sharing`), but the tests that inspect that report, the runtime registrations and the strict checks (`trust::check_private`) need fixtures whose ancestors no other account can change. Tests that install plugin fixtures (`midnight-image-viewer-host` catalog and startup tests, the opt-in `midnight-plugin-host`, `midnight-filesystem-host` and engine filesystem-plugin tests) therefore need a private root. By default they create fixtures below the checkout's `_build` or the temporary directory, which works for a checkout under your user profile. A checkout whose ancestors other accounts may change, for example on a secondary Windows drive with the default ACL (Authenticated Users: Modify), or a temporary directory redirected there, cannot pass: the `midnight-image-viewer-host` fixtures then stop with an explanation. Point `HOST_TEST_INSTALL_ROOT` at a private directory instead, as CI's `private-test-installation` action does:
+### Private installation root
 
-```powershell
-$root = Join-Path $env:USERPROFILE ('MidnightViewerTests-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $root | Out-Null
-$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$acl = New-Object Security.AccessControl.DirectorySecurity
-$acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", 'Access')
-Set-Acl -LiteralPath $root -AclObject $acl
-$env:HOST_TEST_INSTALL_ROOT = $root
+Plugin discovery accepts an installation that other accounts can change only through permissions and reports it (`midnight_plugin_host::installation_sharing`), but the tests that inspect that report, the runtime registrations and the strict checks (`trust::check_private`) need fixtures whose ancestors no other account can change. Tests that install plugin fixtures (`midnight-image-viewer-host` catalog and startup tests, the opt-in `midnight-plugin-host`, `midnight-filesystem-host` and engine filesystem-plugin tests) therefore need a [private installation root](../GLOSSARY.md#private-installation-root): a folder that only you, the system and administrators can change, named by `HOST_TEST_INSTALL_ROOT`. By default they create fixtures below the checkout's `_build` or the temporary directory, which works for a checkout under your user profile. A checkout whose ancestors other accounts may change, for example on a secondary Windows drive with the default ACL (Authenticated Users: Modify), or a temporary directory redirected there, cannot pass: the `midnight-image-viewer-host` fixtures then stop with an explanation. Create a private installation root instead, as CI's `private-test-installation` action does.
+
+On Windows, in PowerShell:
+
+1. Create a new folder in your profile:
+
+   ```powershell
+   $root = Join-Path $env:USERPROFILE ('MidnightViewerTests-' + [guid]::NewGuid().ToString('N'))
+   New-Item -ItemType Directory -Path $root | Out-Null
+   ```
+
+2. Give it a protected ACL that grants full control only to you, SYSTEM and
+   Administrators:
+
+   ```powershell
+   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+   $acl = New-Object Security.AccessControl.DirectorySecurity
+   $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$sid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", 'Access')
+   Set-Acl -LiteralPath $root -AclObject $acl
+   ```
+
+3. Point `HOST_TEST_INSTALL_ROOT` at it:
+
+   ```powershell
+   $env:HOST_TEST_INSTALL_ROOT = $root
+   ```
+
+On Linux, use a `chmod 700` directory on a native filesystem whose ancestors are not group- or world-writable (sticky `/tmp`-style ancestors are accepted); drvfs mounts such as `/mnt/d` report permissive modes and are refused. For example, in your home folder:
+
+```sh
+root=$(mktemp -d "$HOME/midnight-viewer-tests.XXXXXXXX")
+chmod 700 "$root"
+export HOST_TEST_INSTALL_ROOT="$root"
 ```
 
-On Linux, use a `chmod 700` directory on a native filesystem whose ancestors are not group- or world-writable (sticky `/tmp`-style ancestors are accepted); drvfs mounts such as `/mnt/d` report permissive modes and are refused.
-
-Archive tests that run a real worker (the opt-in `midnight-filesystem-host` worker and streaming tests, and engine archive tests with installed workers) stage decoded members on the real private spool volume (`%TEMP%` on Windows, usually `~/.cache` on Linux). Keep more than max(1 GiB, 2% of its capacity) plus the largest member a test stages (and at least 64 MiB) free there: a member that does not fit above the reserve is refused before staging, and content of undeclared length stops at the reserve, both with a disk-full error. Unit tests stage on fake volumes.
+Archive tests that run a real [worker](../GLOSSARY.md#worker) (the opt-in `midnight-filesystem-host` worker and streaming tests, and engine archive tests with installed workers) stage decoded members on the real private [spool](../GLOSSARY.md#spool) volume (`%TEMP%` on Windows, usually `~/.cache` on Linux). Keep more than max(1 GiB, 2% of its capacity) plus the largest member a test stages (and at least 64 MiB) free there: a member that does not fit above the reserve is refused before staging, and content of undeclared length stops at the reserve, both with a disk-full error. Unit tests stage on fake volumes.
 
 Listing and execution each have a 300-second deadline, configurable with `--timeout SECONDS`. On a failure the runner stops admitting new processes and lets already admitted children finish within their deadlines. On interruption or an exceptional wait, it terminates only its retained child process handles and waits for them; it does not kill by process name or manage arbitrary descendants. Tests requiring independent long-lived descendants need their own cleanup and should use a dedicated harness.
 
-Every admitted run retains separate listing/test logs, output directories and `summary.json` under a unique `_build/qa/targeted-tests` directory. `--log-dir` selects a new directory under `_build`; existing directories are refused. The summary records selected workspace, executable SHA-256, package cwd, filters, counts, process limit, thread budget, whether render snapshots were requested, deadlines, errors and cases not run. Exit codes are 0 for success, 1 for test/execution failure, 2 for invalid inputs before execution, and 130 for interruption. Invalid receipts/selectors are rejected before any test child starts. Logs and artifacts remain available after failure.
+Every admitted run retains separate listing/test logs, output directories and `summary.json` under a unique `_build/qa/targeted-tests` directory. `--log-dir` selects a new directory under `_build`; existing directories are refused. The summary records selected workspace, executable SHA-256, package cwd, filters, counts, process limit, thread budget, whether render snapshots were requested, deadlines, errors and cases not run ([summary.json](#summaryjson)). Exit codes are 0 for success, 1 for test/execution failure, 2 for invalid inputs before execution, and 130 for interruption. Invalid receipts/selectors are rejected before any test child starts. Logs and artifacts remain available after failure.
+
+#### summary.json
+
+One indented UTF-8 JSON object:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `workspace` | string | The selected workspace folder. |
+| `exit_code` | number | The runner's exit code: 0, 1 or 130. |
+| `jobs` | number | The process limit after clamping. |
+| `thread_budget` | number | The total libtest thread budget. |
+| `threads_per_process` | number | The `--test-threads` value given to each child. |
+| `render_snapshots` | boolean | Whether `--render-snapshots` was given. |
+| `peak_processes` | number | The most child processes that ran at once. |
+| `interrupted` | boolean | Whether the run was interrupted. |
+| `timeout_seconds` | number | The listing and execution deadline of each child. |
+| `cleanup_errors` | array of strings | Children that could not be terminated or waited for. |
+| `cases` | array of case objects | One per selected target, in selection order. |
+
+| Field of a case | Type | Meaning |
+| --- | --- | --- |
+| `package`, `kind`, `target` | string | The selected package and target, for example `"midnight-core"`, `"test"`, `"integration"`. |
+| `filters` | array of strings | The requested libtest filters. |
+| `all_tests` | boolean | Whether the whole target was requested (`--target`). |
+| `status` | string | `"passed"`, `"failed"` or `"not-run"` (not admitted after another case failed or the run was interrupted). |
+| `executable`, `sha256` | string | The test executable and its SHA-256. |
+| `cwd` | string | The package directory the executable ran in. |
+| `list_log`, `test_log` | string | The listing and test logs. |
+| `filter_matches` | object | Listed tests matched per filter. |
+| `matched` | number | Tests selected from the listing. |
+| `exit_code` | number | The child's exit status, when it ran. |
+| `counts` | object or `null` | `passed`, `failed`, `ignored`, `measured` and `filtered` from the last complete libtest summary line. |
+| `error` | string | Why the case failed or was not run, when it did not pass. |
+| `elapsed_seconds` | number | The case's duration. |
 
 The focused regression command is:
 
@@ -417,11 +530,14 @@ Those tests use actual subprocesses and a socket rendezvous to prove simultaneou
 The ignored X11 drag/drop and clipboard tests of `midnight-platform-linux` use XTEST
 input and clipboard ownership on a private Xvfb display, and run only when opted in.
 CI's Linux `check` job runs them from `crates/midnight-platform-linux` with the library
-test executable `$executable` (CI takes it from
-`scripts/ci-workspace-tests.py artifact midnight-platform-linux lib`; locally, use the
-one that `cargo test -p midnight-platform-linux --lib --locked --no-run` reports):
+test executable in `$executable`, which `scripts/ci-workspace-tests.py artifact`
+prints (locally, the one that
+`cargo test -p midnight-platform-linux --lib --locked --no-run` reports works too). From
+the repository root:
 
 ```sh
+executable=$(python3 -B scripts/ci-workspace-tests.py artifact midnight-platform-linux lib)
+cd crates/midnight-platform-linux
 xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp -noreset" \
     env MIDNIGHT_DND_TEST_ISOLATED=1 "$executable" file_drag_drop:: --ignored --test-threads=1
 xvfb-run -a -s "-screen 0 1280x1024x24 -nolisten tcp -noreset" \
@@ -439,43 +555,113 @@ your working desktop display.
 ### Installed archive worker qualification
 
 The ignored real-worker tests of `midnight-filesystem-host` launch the independently
-built archive worker from a [private installation root](#private-plugin-installation-root).
+built archive worker from a [private installation root](#private-installation-root).
 `test:worker` and `test:nested_worker` (archives inside archives) install
 `ARCHIVE_WORKER` below `ARCHIVE_TEST_INSTALL_ROOT`;
 `test:streaming_worker` and the library's `captured_source_tests::` use the package
 installed at `ARCHIVE_CAPTURE_INSTALLATION/filesystems/archive`; `test:discovery_kinds`
-creates its packages below `HOST_TEST_INSTALL_ROOT`. CI's `check` job runs all of them
-with one root for all three variables, except the manual measurement
+creates its packages below `HOST_TEST_INSTALL_ROOT`
+([Test environment variables](#test-environment-variables)). CI's `check` job runs all
+of them with one root for all three variables, except the manual measurement
 `real_sandboxed_worker_lists_archives_of_millions_of_members` in `test:worker`. That
-test lists the archives that the archive plugin's `measure_index_memory` keeps
-(`MIDNIGHT_ARCHIVE_MEMORY_KEEP`; see the plugin's README), named in
-`MIDNIGHT_ARCHIVE_LARGE` with `MIDNIGHT_ARCHIVE_LARGE_MEMBERS` members each. To run
-them locally:
+test lists the archives that the archive worker plugin's `measure_index_memory` test
+keeps (`MIDNIGHT_ARCHIVE_MEMORY_KEEP`; see the
+[archive worker README](../../plugins/midnight-fs-archive/README.md)), named in
+`MIDNIGHT_ARCHIVE_LARGE` with `MIDNIGHT_ARCHIVE_LARGE_MEMBERS` members each.
 
-1. Test, build and package the worker with a released worker SDK, for example
-   `plugins/midnight-fs-archive/scripts/build.ps1 -SdkConfig <registry.toml> -BuildRoot _build/archive-ci -OutputDirectory _build/archive-ci/package/archive -Test -Offline`
-   (Linux: `bash plugins/midnight-fs-archive/scripts/build.sh <registry.toml> <build root> <package> debug --test --offline`).
-   Copy the package directory to `<root>/filesystems/archive`; on Linux make its
-   directories and the `midnight-fs-archive` executable `chmod 700` and its other
-   files `chmod 600`.
-2. Export the plugin's owned format, cancellation and password fixtures (`password.zip`
-   and `password.7z`, whose password the streaming test knows):
-   `cargo test --config <registry.toml> --manifest-path plugins/midnight-fs-archive/Cargo.toml --test worker_fixtures --locked --offline -- --ignored`
-   with `MIDNIGHT_ARCHIVE_FIXTURES` set to a directory below `_build`. To reuse the
-   test build of step 1 instead of compiling everything again, also set
-   `CARGO_TARGET_DIR` to its build root and `CARGO_INCREMENTAL=0`,
-   `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0`, as the build scripts do.
-3. Write the large read-only ZIP with `py -3 -B scripts/archive-test-zip.py _build/archive-test.zip`
-   (Linux: `python3 -B`). It is larger than 64 MiB and never replaces an existing
-   file.
-4. Set `HOST_TEST_INSTALL_ROOT`, `ARCHIVE_TEST_INSTALL_ROOT` and
-   `ARCHIVE_CAPTURE_INSTALLATION` to `<root>`, `ARCHIVE_WORKER` to the packaged
-   executable, and `MIDNIGHT_ARCHIVE_FIXTURES` and `MIDNIGHT_ARCHIVE_TEST_ZIP` to the
-   fixtures. Then run `cargo test -p midnight-filesystem-host` with `--test worker`,
-   `--test nested_worker`, `--test streaming_worker`, `--test discovery_kinds` and
-   `--lib captured_source_tests::`,
-   each followed by `-- --ignored --test-threads=1`. Without the generated archives, add
-   `--skip real_sandboxed_worker_lists_archives_of_millions_of_members` to `--test worker`.
+The commands below are PowerShell 7, run at the repository root; on Linux run them in
+`pwsh` too, as CI does. Before you start:
+
+- Create a private installation root as
+  [Private installation root](#private-installation-root) describes, so that
+  `HOST_TEST_INSTALL_ROOT` names it, and keep it in `$root`:
+
+  ```powershell
+  $root = $env:HOST_TEST_INSTALL_ROOT
+  ```
+
+- Set `$sdk` to the `.cargo/registry.toml` of a public worker SDK bundle, a released
+  one or one that a normal build packaged. `build.bat` records the one it packaged as
+  `config` in `sdk-state.json` in `_build/thumbnailers`, `_build/image-viewer` or
+  `_build/pdf-viewer`; `./build.sh` writes its path into `linux-sdk-config` in the
+  same folders. For example:
+
+  ```powershell
+  $sdk = (Get-Content _build/thumbnailers/sdk-state.json -Raw | ConvertFrom-Json).config   # Windows
+  $sdk = Get-Content _build/thumbnailers/linux-sdk-config                                  # Linux
+  ```
+
+Then:
+
+1. Test, build and package the worker:
+
+   ```powershell
+   & plugins/midnight-fs-archive/scripts/build.ps1 -SdkConfig $sdk -BuildRoot _build/archive-ci -OutputDirectory _build/archive-ci/package/archive -Test -Offline
+   ```
+
+   On Linux: `bash plugins/midnight-fs-archive/scripts/build.sh $sdk _build/archive-ci _build/archive-ci/package/archive debug --test --offline`.
+2. Copy the package folder into the private installation root:
+
+   ```powershell
+   New-Item -ItemType Directory -Force -Path (Join-Path $root 'filesystems') | Out-Null
+   Copy-Item -Recurse -LiteralPath _build/archive-ci/package/archive -Destination (Join-Path $root 'filesystems/archive')
+   ```
+
+3. On Linux only, make the copied package private: its folders and the
+   `midnight-fs-archive` executable mode 700, its other files mode 600.
+
+   ```powershell
+   find "$root/filesystems/archive" -type d -exec chmod 700 '{}' '+'
+   find "$root/filesystems/archive" -type f -exec chmod 600 '{}' '+'
+   chmod 700 "$root/filesystems/archive/midnight-fs-archive"
+   ```
+
+4. Export the plugin's owned format, cancellation and password fixtures (`password.zip`
+   and `password.7z`, whose password the streaming test knows) to an absolute folder
+   below `_build`:
+
+   ```powershell
+   $env:MIDNIGHT_ARCHIVE_FIXTURES = Join-Path (Get-Location) '_build/archive-fixtures'
+   cargo test --config $sdk --manifest-path plugins/midnight-fs-archive/Cargo.toml --test worker_fixtures --locked --offline -- --ignored
+   ```
+
+   - To reuse the test build of step 1 instead of compiling everything again, first
+     set `CARGO_TARGET_DIR` to its build root and `CARGO_INCREMENTAL=0`,
+     `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0`, as the build
+     scripts do.
+5. Write the large read-only ZIP. It is larger than 64 MiB and never replaces an
+   existing file.
+
+   ```powershell
+   $env:MIDNIGHT_ARCHIVE_TEST_ZIP = Join-Path (Get-Location) '_build/archive-test.zip'
+   py -3 -B scripts/archive-test-zip.py $env:MIDNIGHT_ARCHIVE_TEST_ZIP
+   ```
+
+   On Linux use `python3 -B` instead of `py -3 -B`.
+   - When `_build/archive-test.zip` already exists, run only the first line: the
+     script refuses to replace the file and exits with status 1.
+6. Point the remaining variables at the root and the packaged worker (on Linux the
+   executable has no `.exe`):
+
+   ```powershell
+   $env:ARCHIVE_TEST_INSTALL_ROOT = $root
+   $env:ARCHIVE_CAPTURE_INSTALLATION = $root
+   $env:ARCHIVE_WORKER = (Resolve-Path _build/archive-ci/package/archive/midnight-fs-archive.exe).Path
+   ```
+
+7. Run each test target with `--ignored --test-threads=1`:
+
+   ```powershell
+   cargo test -p midnight-filesystem-host --test worker -- --ignored --test-threads=1 --skip real_sandboxed_worker_lists_archives_of_millions_of_members
+   cargo test -p midnight-filesystem-host --test nested_worker -- --ignored --test-threads=1
+   cargo test -p midnight-filesystem-host --test streaming_worker -- --ignored --test-threads=1
+   cargo test -p midnight-filesystem-host --test discovery_kinds -- --ignored --test-threads=1
+   cargo test -p midnight-filesystem-host --lib captured_source_tests:: -- --ignored --test-threads=1
+   ```
+
+   - The `--skip` leaves out the manual measurement; drop it when
+     `MIDNIGHT_ARCHIVE_LARGE` and `MIDNIGHT_ARCHIVE_LARGE_MEMBERS` name generated
+     archives.
 
 ### Windows Copy/Move qualification volume
 
@@ -487,11 +673,14 @@ short-name creation is disabled ([Windows namespace pins](TRANSFERS.md#windows-n
 Elsewhere these tests fail; each failing `copy_planning_tests` case (and each scheduler
 test that runs two jobs side by side) then reports first that its fixture "requires a
 supported local lookup domain". The application itself is unaffected: Copy/Move on such
-a volume takes the opaque lane with full pin refreshes, and so runs alone: another job
+a volume takes the opaque lane, the path of a job whose native footprint is unknown
+([Verification and ownership](TRANSFERS.md#verification-and-ownership)), with full pin
+refreshes, and so runs alone: another job
 waits for it, even beside a paused one, and says so ("Waiting for another job: jobs
-whose folders cannot be confirmed run alone", `UnconfirmedFolders`). Tests that expect
-`SameFolders` see that reason there instead.
-Acceptance scenarios that check jobs side by side (`files_transfer_jobs` T-J01,
+whose folders cannot be confirmed run alone", the wait reason `UnconfirmedFolders`).
+Tests that expect the wait reason `SameFolders` see that reason there instead.
+Acceptance scenarios that check jobs side by side (`files_transfer_jobs` scenario T-J01
+of the [transfers acceptance coverage](acceptance/transfers.md),
 `journeys_concurrent_jobs`) therefore need their `--run-dir` on a qualified volume too.
 
 The tests create their folders in `TEMP`/`TMP`. `scripts/cargo.ps1`, the targeted runner
@@ -507,8 +696,8 @@ example the checkout's `_build/tmp` on a data volume), or disable short-name cre
 on a data volume with `fsutil 8dot3name set D: 1` (elevated; it applies to names
 created afterwards, and other software then gets no 8.3 names on that volume). ReFS
 (including Dev Drive) and FAT volumes never qualify. `MIDNIGHT_TEST_NAMESPACE_LOOKUP`
-forces a lookup mode only in `midnight-platform-windows`'s own test build, not for
-engine tests.
+(`short-names-disabled` or `unqualified`) forces a lookup mode only in
+`midnight-platform-windows`'s own test build, not for engine tests.
 
 ### Test fixtures under `_build/qa`
 
@@ -523,3 +712,44 @@ attributes are cleared and a short wait for closing handles is named on stderr
 (`could not remove test fixture <path>`); the test does not fail for it. The other tests
 that write there use a temporary folder inside a fixed one, removed when the test ends,
 and the ignored manual performance fixtures reuse a fixed tree.
+
+## Test environment variables
+
+The tests and tools on this page read these variables. Set paths as absolute paths:
+a test runs in its package's folder.
+
+| Variable | Value | Read by | Effect |
+| --- | --- | --- | --- |
+| `HOST_TEST_INSTALL_ROOT` | a [private installation root](#private-installation-root) | tests that install plugin fixtures, `test:discovery_kinds`, the `extracted_installation` tests | Root below which they install packages. Validation's `test-install` step and CI's `private-test-installation` action set it. |
+| `ARCHIVE_WORKER` | the packaged archive worker executable | `midnight-filesystem-host` `test:worker`, `test:nested_worker` | The worker these tests install. |
+| `ARCHIVE_TEST_INSTALL_ROOT` | a private installation root | the same tests | Where they install `ARCHIVE_WORKER`, in a temporary folder of their own. |
+| `ARCHIVE_CAPTURE_INSTALLATION` | a private installation root that holds `filesystems/archive` | `test:streaming_worker`, the library's `captured_source_tests::` | The installed archive package they use. |
+| `MIDNIGHT_ARCHIVE_FIXTURES` | a folder below `_build` | the archive worker plugin's `worker_fixtures` test (writes), `test:streaming_worker` (reads) | The exported format, cancellation and password fixtures. |
+| `MIDNIGHT_ARCHIVE_TEST_ZIP` | path of the ZIP from `scripts/archive-test-zip.py` | `test:streaming_worker` | The large read-only ZIP. |
+| `MIDNIGHT_ARCHIVE_LARGE` | archive paths, separated as in `PATH` (`;` on Windows, `:` on Linux) | `real_sandboxed_worker_lists_archives_of_millions_of_members` in `test:worker` | The archives to list. |
+| `MIDNIGHT_ARCHIVE_LARGE_MEMBERS` | a number | the same test | Members in each of those archives. |
+| `MIDNIGHT_ARCHIVE_MEMORY_KEEP` | any value | the archive worker plugin's `measure_index_memory` test | Keeps the generated archives. |
+| `MIDNIGHT_THUMBNAILERS_TEST_PACKAGE` | an unpacked release's `thumbnailers` folder | the ignored `extracted_installation` tests | The package they copy ([Before publishing](../RELEASE_BUILD.md#before-publishing)). |
+| `MIDNIGHT_NATIVE_TEST_ROOT` | a folder | thumbnail cache, worker store and native UI operation tests | Parent folder of their native fixtures; unset, each uses its own default below `_build` or a temporary folder. The targeted runner passes it through. |
+| `MIDNIGHT_KEEP_TEST_FIXTURES` | `1` | tests with fixtures below `_build/qa` | Keeps the fixtures of passing tests ([Test fixtures under `_build/qa`](#test-fixtures-under-_buildqa)). |
+| `MIDNIGHT_UI_RENDER_DIR` | a folder | `midnight-ui` tests | Writes software-render snapshots there; the targeted runner never passes it ([Targeted test execution](#targeted-test-execution)). |
+| `MIDNIGHT_UI_RENDER_FILTER` | text | `midnight-ui` tests | Writes only snapshots whose names contain it. |
+| `MIDNIGHT_IDLE_WAKEUP_PROBE` | `<warmup_s>:<seconds>[:thumbnails]`, for example `5:30` | `midnight-explorer` | Measures idle event-loop wakeups and quits. |
+| `MIDNIGHT_COPY_SEAL_TEST_CHILD` | a test name | the `midnight-engine` library test executable | Set by a Copy seal test for the child it starts, which then runs the test body. |
+| `MIDNIGHT_DND_TEST_ISOLATED` | `1` | `midnight-platform-linux` `file_drag_drop::` tests | Opts in on a private Xvfb display ([Isolated X11 tests](#isolated-x11-tests)). |
+| `MIDNIGHT_CLIPBOARD_TEST_ISOLATED` | `1` | `midnight-platform-linux` clipboard tests | The same for the clipboard tests. |
+| `MIDNIGHT_TEST_NAMESPACE_LOOKUP` | `short-names-disabled` or `unqualified` | `midnight-platform-windows`'s own test build | Forces a lookup mode ([Windows Copy/Move qualification volume](#windows-copymove-qualification-volume)). |
+| `MIDNIGHT_ACCEPTANCE_RUN_DIR` | an absolute folder | the acceptance suite | Its run folder instead of one below `_build/acceptance/` ([Acceptance suite](#acceptance-suite)). |
+
+Standard variables that this page uses:
+
+| Variable | Effect here |
+| --- | --- |
+| `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` | Limit Cargo's build jobs and libtest's test threads; `--jobs N` of the scripts sets both. |
+| `CARGO_NET_OFFLINE=true` | Forbids downloads, like `--offline`. |
+| `CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_INCREMENTAL=0` | Set by CI's `check` and `scripts-and-lint` jobs and by the build scripts; set them to reproduce a CI build. |
+| `CARGO_TARGET_DIR` | Cargo's target folder; give each checkout its own. |
+| `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=rust-lld.exe` | Faster test links on a developer machine; test builds only. |
+| `RUSTC` | Names `rustc` for the user-command probe when it is not on `PATH`. |
+| `TEMP`, `TMP`, `TMPDIR` | Where tests create temporary folders; validation, the targeted runner and CI put them below `_build`. |
+| `LOCALAPPDATA` (Windows), `XDG_CACHE_HOME` (Linux) | Point them at a scratch folder for the idle wakeup probe. |
