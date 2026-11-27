@@ -69,13 +69,14 @@ executable; extract the complete archive again. For a source build, use `build.b
 
 **Cause:** the default renderer needs a working GPU driver: Vulkan or Direct3D 12 on
 Windows, Vulkan on Linux. When it fails before the first window is shown, the application retries once
-with the CPU renderer by itself; an explicit `SLINT_BACKEND` turns that retry off.
+with the software renderer, which draws on the CPU, by itself; an explicit
+`SLINT_BACKEND` turns that retry off.
 
 **Fix:** try these one at a time; the
 [environment variables](SYSTEM_REQUIREMENTS.md#environment-variables) table describes
 each.
 
-1. Start with the CPU renderer: `midnight-explorer --software`.
+1. Start with the software renderer: `midnight-explorer --software`.
 2. Use one GPU device per window: set `MIDNIGHT_SHARED_WGPU=0`.
 3. Choose another graphics interface: set `WGPU_BACKEND=dx12` (Windows) or
    `WGPU_BACKEND=gl` (Linux).
