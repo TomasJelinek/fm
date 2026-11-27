@@ -138,24 +138,35 @@ authorization again.` Refresh (Ctrl+R) lists it with your own rights first; whil
 is still denied, the files stay and **Cannot open folder** offers **Retry with
 authorization** again.
 
-### Delete: the Trash cannot take the items
+### Delete or F8 asks to delete permanently instead of moving to the Trash
 
-**Symptom:** a Delete (Delete or F8) stops in a window titled **Move to Trash** with the
-heading **Cannot move to the Trash**.
+**Symptom:** Delete or F8 opens the permanent-deletion confirmation, the same one as
+Shift+Delete, instead of moving the items to the Trash (on Windows, the Recycle Bin).
 
-**Cause:** the Trash (on Windows, the Recycle Bin) refused the items. On Windows the
-drive's Recycle Bin may be set to remove files immediately, and removable FAT32 or exFAT
-media usually have no Recycle Bin; on Linux the Trash takes only items on the same
-filesystem as your home folder.
+**Cause:** no Trash takes the selected items. The line above `Permanent deletion cannot
+be undone.` says why:
 
-**Fix:** the window lists the refused items and asks:
+| The line starts with | Meaning |
+| --- | --- |
+| `The Recycle Bin is turned off for C:` | That drive's Recycle Bin is set to "Don't move files to the Recycle Bin. Remove files immediately when deleted." To recycle again, open the Recycle Bin's **Properties**, select the drive and choose **Custom size**. |
+| `A policy turns off the Recycle Bin` | The Group Policy "Do not move deleted files to the Recycle Bin" (User Configuration › Administrative Templates › Windows Components › File Explorer) is set; ask your administrator. |
+| `There is no Recycle Bin on E:` (or on `\\server\share`) | Network shares, mapped network drives, USB sticks, memory cards, CD/DVD and RAM drives have no Recycle Bin on Windows. |
+| `There is no Trash on /run/user/1000` (Linux) | Midnight Explorer uses your home Trash (`~/.local/share/Trash`, or `$XDG_DATA_HOME/Trash`) only for items on the same filesystem; items on tmpfs, a USB stick or another partition have none. |
+| `There is no Trash, because the home folder is unknown` (Linux) | `HOME` is not set. |
 
-- **Permanently delete** deletes them; this cannot be undone.
-- **Cancel job** keeps them where they are; items already moved to the Trash stay there.
-- **Decide later** leaves the job waiting; **Resolve** in its progress window or in
-  [Jobs](GLOSSARY.md#jobs) asks again.
+**Fix:** choose **Cancel** (or press Escape) to keep everything, or confirm to delete
+permanently. If you selected items from several places (a tree, Find results) and only
+some cannot go to the Trash, confirming deletes all of them permanently: cancel and
+delete those separately.
 
-Midnight Explorer never deletes permanently without this question.
+### Delete stops with "The Trash did not take this item, and it was kept"
+
+**Cause:** the Trash refused an item after the Delete started: the Recycle Bin setting
+was changed after F8, or the item is too large or its path too long for the Recycle Bin.
+
+**Fix:** the item is kept. Choose **Retry** once the Trash takes it, **Skip** to keep it,
+or delete it with Shift+Delete. Midnight Explorer never deletes an item permanently
+because the Trash refused it.
 
 ### Linux: Copy to a USB stick or network share fails
 
