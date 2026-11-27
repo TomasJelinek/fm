@@ -500,9 +500,10 @@ Find window open and retries admission.
 Keys keep their configured meaning: Up/Down, Page Up/Down, Home/End move; Insert
 marks and moves; Space also measures the focused folder before moving. The bulk
 selection keys mark with a panel's
-rules (`SelectionOperation`): select files only (Ctrl+A) replaces the marks with the
-files, invert files only (Ctrl+I) keeps folder marks, and Ctrl+Shift+A, Ctrl+D and
-Ctrl+Shift+I select, clear and invert files and folders; Ctrl+click and Shift+click
+rules (`SelectionOperation`): Ctrl+A, Ctrl+D and Ctrl+I select, clear and invert
+files and folders; select files only (Ctrl+Shift+A) replaces the marks with the files,
+and deselect and invert files only (Ctrl+Shift+D, Ctrl+Shift+I) keep folder marks;
+Ctrl+click and Shift+click
 mark with the pointer. Enter (or a double click) goes to the focused result: a
 folder is opened, a file is shown in its folder with the cursor on it, and the list
 is left. The visible **Go to file** button does the same. Refused navigation keeps
@@ -557,7 +558,7 @@ folder hidden underneath: create folder or file, paste, and Compare directories.
 These require a single directory destination, which a mixed-folder result list
 does not supply. The toolbar and menus follow the same target rules as the keys.
 Keypad * (and its F10 Selection entry) inverts as in a panel: the files only, like
-Ctrl+I, or the folders too when Select by mask last included folders
+Ctrl+Shift+I, or the folders too when Select by mask last included folders
 (`Presenter::mask_invert_operation`). The hidden rows start
 no drag, and nothing is dropped onto a panel that shows results. After Move
 the list still shows the old locations (their actions report that the file changed

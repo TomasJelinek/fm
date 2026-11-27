@@ -1468,42 +1468,105 @@ fn remapped_clear_files_uses_effective_binding_and_preserves_editor_focus() {
     );
 }
 
+/// The selection operations the keys dispatch, in order.
+fn bulk_operations(h: &Harness, keys: &[(bool, &str)]) -> Vec<Option<SelectionOperation>> {
+    keys.iter()
+        .map(|&(shift, key)| {
+            h.commands.borrow_mut().clear();
+            let modifiers: &[Key] = if shift {
+                &[Key::Control, Key::Shift]
+            } else {
+                &[Key::Control]
+            };
+            ui::chord(&h.ui.window, modifiers, key);
+            let sent = h.commands.borrow();
+            let selections = sent
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Selection(request) => match request.action {
+                        SelectionAction::Bulk(operation) => Some(operation),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                selections.len() <= 1,
+                "a chord dispatches at most one action: {selections:?}"
+            );
+            selections.first().copied()
+        })
+        .collect()
+}
+
+const SELECTION_KEYS: [(bool, &str); 6] = [
+    (false, "a"),
+    (true, "a"),
+    (false, "d"),
+    (true, "d"),
+    (false, "i"),
+    (true, "i"),
+];
+
+#[test]
+fn default_selection_keys_include_folders_and_shift_keeps_them() {
+    use SelectionOperation::{All, Clear, ClearFilesOnly, FilesOnly, Invert, InvertAll};
+    let h = Harness::new(&[]);
+    assert_eq!(
+        bulk_operations(&h, &SELECTION_KEYS),
+        [
+            Some(All),
+            Some(FilesOnly),
+            Some(Clear),
+            Some(ClearFilesOnly),
+            Some(InvertAll),
+            Some(Invert)
+        ]
+    );
+}
+
 #[test]
 fn saved_legacy_select_and_clear_bindings_keep_their_original_operations() {
+    use SelectionOperation::{All, Clear, ClearFilesOnly, FilesOnly, Invert};
+    // The old defaults written out explicitly keep their actions; the Shift keys of
+    // actions nobody changed take their new defaults.
+    let h = Harness::new(&[
+        ("selection.all", &["Ctrl+Shift+A"]),
+        ("selection.files", &["Ctrl+A"]),
+        ("selection.clear", &["Ctrl+D"]),
+        ("selection.invert", &["Ctrl+I"]),
+    ]);
+    assert_eq!(
+        bulk_operations(&h, &SELECTION_KEYS),
+        [
+            Some(FilesOnly),
+            Some(All),
+            Some(Clear),
+            Some(ClearFilesOnly),
+            Some(Invert),
+            None
+        ],
+        "Ctrl+Shift+I: Invert files only keeps only its saved Ctrl+I, and Invert \
+         top-level files and folders yields that key"
+    );
+}
+
+#[test]
+fn saved_plain_select_and_clear_bindings_leave_the_new_shift_defaults_in_place() {
+    use SelectionOperation::{All, Clear, ClearFilesOnly, FilesOnly, Invert, InvertAll};
     let h = Harness::new(&[
         ("selection.all", &["Ctrl+A"]),
         ("selection.clear", &["Ctrl+D"]),
     ]);
-    for (key, operation) in [
-        ("a", SelectionOperation::All),
-        ("d", SelectionOperation::Clear),
-    ] {
-        h.commands.borrow_mut().clear();
-        ui::chord(&h.ui.window, &[Key::Control], key);
-        let sent = h.commands.borrow();
-        let selections = sent
-            .iter()
-            .filter_map(|command| match command {
-                Command::Selection(request) => Some(&request.action),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            selections.len(),
-            1,
-            "a saved chord dispatches exactly one action"
-        );
-        assert!(matches!(selections[0], SelectionAction::Bulk(actual) if *actual == operation));
-    }
-    h.commands.borrow_mut().clear();
-    for key in ["a", "d"] {
-        ui::chord(&h.ui.window, &[Key::Control, Key::Shift], key);
-    }
-    assert!(
-        h.commands
-            .borrow()
-            .iter()
-            .all(|command| !matches!(command, Command::Selection(_))),
-        "explicit legacy bindings replace the new default aliases"
+    assert_eq!(
+        bulk_operations(&h, &SELECTION_KEYS),
+        [
+            Some(All),
+            Some(FilesOnly),
+            Some(Clear),
+            Some(ClearFilesOnly),
+            Some(InvertAll),
+            Some(Invert)
+        ]
     );
 }

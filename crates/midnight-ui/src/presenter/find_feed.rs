@@ -158,8 +158,8 @@ pub(crate) enum FeedAction {
         advance: bool,
     },
     /// A bulk selection key, with the panels' row policy (`SelectionOperation::selects`):
-    /// Ctrl+A marks the files only and Ctrl+I inverts the files, both leaving folders
-    /// as a panel does.
+    /// Ctrl+Shift+A marks the files only and Ctrl+Shift+I inverts the files, both
+    /// leaving folders as a panel does.
     Bulk(SelectionOperation),
     /// Keypad *: inverts as in a panel (`Presenter::mask_invert_operation`), the
     /// folders too when Select by mask includes them.

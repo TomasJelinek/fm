@@ -33,7 +33,7 @@ const NEW_KEY: &str = "Ctrl+Alt+K";
 const SIZE_KEY: &str = "Ctrl+Alt+Z";
 
 /// The main menu's items and their actions (main-menu.slint), in display order.
-const MENU: [(&str, &str); 66] = [
+const MENU: [(&str, &str); 67] = [
     ("Open", "panel.open"),
     ("View", "files.view"),
     ("View as plain text", "files.view-basic"),
@@ -54,8 +54,9 @@ const MENU: [(&str, &str); 66] = [
     ("Select files and folders", "selection.all"),
     ("Select files only", "selection.files"),
     ("Deselect files and folders", "selection.clear"),
-    ("Invert files only", "selection.invert"),
+    ("Deselect files only", "selection.clear-files"),
     ("Invert top-level files and folders", "selection.invert-all"),
+    ("Invert files only", "selection.invert"),
     ("Select by mask…", "selection.mask-select"),
     ("Deselect by mask…", "selection.mask-deselect"),
     (
@@ -107,7 +108,11 @@ const MENU: [(&str, &str); 66] = [
 
 /// Keys the main menu must show, written out (the documented spellings): every key of
 /// the item's action, in binding order.
-const ANCHORS: [(&str, &str); 9] = [
+const ANCHORS: [(&str, &str); 12] = [
+    // The plain key includes folders; Shift acts on files only.
+    ("Select files and folders", "Ctrl+A"),
+    ("Deselect files only", "Ctrl+Shift+D"),
+    ("Invert files only", "Ctrl+Shift+I"),
     ("Select by mask…", "Ctrl+= / Num + / Ctrl++"),
     ("Deselect by mask…", "Ctrl+- / Num -"),
     ("Invert, folders as in Select by mask", "Num *"),

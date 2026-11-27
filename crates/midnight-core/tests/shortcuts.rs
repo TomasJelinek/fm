@@ -1,15 +1,16 @@
 use midnight_core::*;
 
 #[test]
-fn selection_shortcuts_distinguish_files_and_folders_for_select_clear_and_invert() {
+fn selection_shortcuts_include_folders_on_the_plain_key_and_files_only_with_shift() {
     let map = ShortcutMap::new(&[]).unwrap();
     for context in [ShortcutContext::Files, ShortcutContext::Search] {
         for (key, expected) in [
-            ("Ctrl+A", "selection.files"),
-            ("Ctrl+Shift+A", "selection.all"),
+            ("Ctrl+A", "selection.all"),
+            ("Ctrl+Shift+A", "selection.files"),
             ("Ctrl+D", "selection.clear"),
-            ("Ctrl+I", "selection.invert"),
-            ("Ctrl+Shift+I", "selection.invert-all"),
+            ("Ctrl+Shift+D", "selection.clear-files"),
+            ("Ctrl+I", "selection.invert-all"),
+            ("Ctrl+Shift+I", "selection.invert"),
         ] {
             assert_eq!(
                 action(&map, key, context).as_deref(),
@@ -18,20 +19,31 @@ fn selection_shortcuts_distinguish_files_and_folders_for_select_clear_and_invert
             );
         }
     }
-    assert_eq!(action(&map, "Ctrl+Shift+D", ShortcutContext::Files), None);
-    assert_eq!(action(&map, "Ctrl+Shift+D", ShortcutContext::Search), None);
-    assert!(map.bindings("selection.clear-files").unwrap().is_empty());
-    assert_eq!(
-        map.bindings("selection.files").unwrap()[0].display(),
-        "Ctrl+A"
-    );
+    // Menus and Options show these keys as each action's first binding.
+    for (id, key) in [
+        ("selection.all", "Ctrl+A"),
+        ("selection.files", "Ctrl+Shift+A"),
+        ("selection.clear", "Ctrl+D"),
+        ("selection.clear-files", "Ctrl+Shift+D"),
+        ("selection.invert-all", "Ctrl+I"),
+        ("selection.invert", "Ctrl+Shift+I"),
+    ] {
+        let keys = map
+            .bindings(id)
+            .unwrap()
+            .iter()
+            .map(ShortcutChord::display)
+            .collect::<Vec<_>>();
+        assert_eq!(keys, [key], "{id}");
+    }
     for context in [
         ShortcutContext::Command,
         ShortcutContext::Other,
         ShortcutContext::Viewer,
     ] {
-        assert_eq!(action(&map, "Ctrl+Shift+A", context), None);
-        assert_eq!(action(&map, "Ctrl+Shift+I", context), None);
+        for key in ["Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+I", "Ctrl+Shift+I"] {
+            assert_eq!(action(&map, key, context), None, "{key} in {context:?}");
+        }
     }
     let map = ShortcutMap::new(&[ShortcutBinding {
         action: "selection.files".into(),
@@ -39,13 +51,14 @@ fn selection_shortcuts_distinguish_files_and_folders_for_select_clear_and_invert
     }])
     .unwrap();
     assert_eq!(
-        action(&map, "Ctrl+Shift+A", ShortcutContext::Files).as_deref(),
+        action(&map, "Ctrl+A", ShortcutContext::Files).as_deref(),
         Some("selection.all")
     );
     assert_eq!(
         action(&map, "Ctrl+Shift+J", ShortcutContext::Files).as_deref(),
         Some("selection.files")
     );
+    assert_eq!(action(&map, "Ctrl+Shift+A", ShortcutContext::Files), None);
     let legacy = ShortcutMap::new(&[ShortcutBinding {
         action: "files.rename".into(),
         keys: vec!["Ctrl+Shift+A".into()],
@@ -55,44 +68,53 @@ fn selection_shortcuts_distinguish_files_and_folders_for_select_clear_and_invert
         action(&legacy, "Ctrl+Shift+A", ShortcutContext::Files).as_deref(),
         Some("files.rename")
     );
+    assert!(legacy.bindings("selection.files").unwrap().is_empty());
 }
 
 #[test]
-fn selection_new_default_aliases_preserve_explicit_assignments_and_hints() {
+fn moved_selection_defaults_yield_to_keys_saved_for_other_actions() {
+    // Saved before Ctrl+A and Ctrl+I included folders: the old defaults written out
+    // as explicit assignments, and other actions given the keys that were free then.
     let bindings = [
         ShortcutBinding {
             action: "selection.files".into(),
-            keys: vec!["Ctrl+Shift+A".into()],
+            keys: vec!["Ctrl+A".into()],
+        },
+        ShortcutBinding {
+            action: "selection.invert-all".into(),
+            keys: vec!["Ctrl+Shift+I".into()],
         },
         ShortcutBinding {
             action: "files.rename".into(),
-            keys: vec!["Ctrl+Shift+I".into()],
+            keys: vec!["Ctrl+Shift+D".into()],
         },
     ];
     let map = ShortcutMap::new(&bindings).unwrap();
-    assert_eq!(
-        action(&map, "Ctrl+Shift+A", ShortcutContext::Files).as_deref(),
-        Some("selection.files")
-    );
-    assert_eq!(
-        action(&map, "Ctrl+Shift+I", ShortcutContext::Files).as_deref(),
-        Some("files.rename")
-    );
-    assert_eq!(
-        map.bindings("selection.all")
-            .unwrap()
-            .iter()
-            .map(ShortcutChord::display)
-            .collect::<Vec<_>>(),
-        Vec::<String>::new()
-    );
-    assert!(map.bindings("selection.invert-all").unwrap().is_empty());
+    for (key, expected) in [
+        ("Ctrl+A", Some("selection.files")),
+        ("Ctrl+Shift+I", Some("selection.invert-all")),
+        ("Ctrl+Shift+D", Some("files.rename")),
+        // Overridden actions keep exactly their saved keys.
+        ("Ctrl+Shift+A", None),
+        ("Ctrl+I", None),
+        ("Ctrl+D", Some("selection.clear")),
+    ] {
+        assert_eq!(
+            action(&map, key, ShortcutContext::Files).as_deref(),
+            expected,
+            "{key}"
+        );
+    }
+    // The yielding actions advertise no key they do not own.
+    for id in ["selection.all", "selection.invert", "selection.clear-files"] {
+        assert!(map.bindings(id).unwrap().is_empty(), "{id}");
+    }
     assert!(
         ShortcutMap::new(&[
             bindings[0].clone(),
             ShortcutBinding {
-                action: "files.rename".into(),
-                keys: vec!["Ctrl+Shift+A".into()]
+                action: "selection.all".into(),
+                keys: vec!["Ctrl+A".into()]
             },
         ])
         .is_err(),
@@ -811,7 +833,7 @@ fn reassigned_file_actions_preserve_clipboard_keys_in_filename_search() {
     let map = ShortcutMap::new(&[]).unwrap();
     assert_eq!(
         action(&map, "Ctrl+A", ShortcutContext::Search),
-        Some("selection.files".into())
+        Some("selection.all".into())
     );
     assert_eq!(
         action(&map, "Shift+Delete", ShortcutContext::Search),
@@ -842,8 +864,12 @@ fn make_file_list_uses_configurable_control_m_without_stealing_editor_input() {
 #[test]
 fn changed_selection_defaults_preserve_explicit_legacy_assignments() {
     for (key, saved_action, default_action) in [
-        ("Ctrl+A", "selection.all", "selection.files"),
+        ("Ctrl+A", "selection.files", "selection.all"),
+        ("Ctrl+Shift+A", "selection.all", "selection.files"),
+        ("Ctrl+I", "selection.invert", "selection.invert-all"),
+        ("Ctrl+Shift+I", "selection.invert-all", "selection.invert"),
         ("Ctrl+D", "files.rename", "selection.clear"),
+        ("Ctrl+Shift+D", "files.rename", "selection.clear-files"),
     ] {
         let saved = ShortcutBinding {
             action: saved_action.into(),

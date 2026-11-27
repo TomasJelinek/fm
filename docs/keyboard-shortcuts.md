@@ -182,13 +182,14 @@ or remove that assignment in Options › Keyboard to free the number.
 | Space | Toggle selection, advance one row and calculate the focused directory's size on the backend |
 | Insert | Toggle selection and move to the next row |
 | Shift+click / Ctrl+Shift+click in files | Select / add the range from the anchor to the clicked row, in every view. The anchor is the row last clicked or Ctrl+clicked; after the cursor moved without Shift (cursor keys, Space, Insert, search, Alt+↑ / Alt+↓) or Ctrl+D, Ctrl+A or an invert, the range starts at the cursor's row |
-| Ctrl+A | Select displayed top-level files only; deselect folders and nested rows |
-| Ctrl+Shift+A | Select displayed top-level files and folders; exclude `..` and nested rows |
+| Ctrl+A | Select displayed top-level files and folders; exclude `..` and nested rows |
+| Ctrl+Shift+A | Select displayed top-level files only; deselect folders and nested rows |
 | Ctrl+D | Clear all selection, including folders and expanded descendants, in the focused panel |
-| Ctrl+I | Invert file selection in the focused panel; preserve selected and unselected folders, including directory links |
-| Ctrl+Shift+I | Invert top-level files and folders; preserve nested tree marks |
+| Ctrl+Shift+D | Deselect files only, including expanded descendants; keep folder marks |
+| Ctrl+I | Invert top-level files and folders; preserve nested tree marks |
+| Ctrl+Shift+I | Invert file selection in the focused panel; preserve selected and unselected folders, including directory links |
 | Ctrl+=, Num + or Ctrl++ / Ctrl+− or Num − in files | Select / Deselect files by mask (Ctrl+= and Ctrl+− need no numeric keypad): a small dialog with the mask (the last one, `*` at first) and Include folders. Configurable as `selection.mask-select` / `selection.mask-deselect`; see [selection by mask](#hidden-files-and-selection-by-mask) |
-| Num * in files | Invert files only, or top-level files and folders when Select by mask last had Include folders checked; without a keypad, Ctrl+I and Ctrl+Shift+I invert the same two ways. Search results fed to a panel invert the same way. Configurable as `selection.mask-invert` |
+| Num * in files | Invert files only, or top-level files and folders when Select by mask last had Include folders checked; without a keypad, Ctrl+Shift+I and Ctrl+I invert the same two ways. Search results fed to a panel invert the same way. Configurable as `selection.mask-invert` |
 | Ctrl+H | Show or hide hidden files in both panels (`panel.hidden-files`); also in F10, each panel's View menu and Options › General |
 | Ctrl+C / Ctrl+V in files | Publish selected/focused files to the native clipboard / paste into the captured active folder; a Cut clipboard opens Move confirmation |
 | Ctrl+X in files | Publish a Cut clipboard for captured native files and folders. Paste opens the same Move confirmation as F6 (up to 1,000,000 selected items; links as its link choice says); archive Move is unavailable |
@@ -624,25 +625,35 @@ their ordinary Ctrl+A behavior. Ctrl+D deselects, unlike Total Commander, where 
 opens the directory hotlist. During progressive listing, all/invert may wait for that
 listing to complete; input remains responsive.
 
-Select files and folders (`selection.all`) uses Ctrl+Shift+A. It replaces
-selection with displayed top-level files and folders, clearing nested tree marks.
-Invert files only (`selection.invert`, Ctrl+I) toggles displayed files, including
-expanded descendants, while preserving folders. Invert top-level files and folders
-(`selection.invert-all`, Ctrl+Shift+I) toggles only displayed top-level rows and
-preserves nested marks. The synthetic parent and context-only ancestors remain
-unselectable.
+One rule sets the default keys: the plain key includes folders, and the same key with
+Shift acts on files only and leaves folder marks as they are.
 
-Select files only (`selection.files`, Ctrl+A) replaces selection with displayed
-top-level files, clearing folder and nested marks. Deselect files and folders
-(`selection.clear`, Ctrl+D) clears every mark, including nested rows. Ctrl+Shift+D
-has no default assignment. These selection actions appear in F10 › Selection and
-Options › Keyboard, including filtered lists and archives. The optional files-only
-clear action (`selection.clear-files`) remains configurable without a default key
-for compatibility with saved custom mappings. Directory
-links/junctions count as folders; archive containers in native listings count as
-files. Explicitly selecting nested rows by click or range remains available.
-If saved settings already assign one of these keys to another action, that
-assignment keeps working and the selection default stays unassigned.
+| Key | Action | What it does |
+| --- | --- | --- |
+| Ctrl+A | Select files and folders (`selection.all`) | Replaces the selection with the displayed top-level files and folders, clearing nested tree marks. |
+| Ctrl+Shift+A | Select files only (`selection.files`) | Replaces the selection with the displayed top-level files, clearing folder and nested marks. |
+| Ctrl+D | Deselect files and folders (`selection.clear`) | Clears every mark, including nested rows. |
+| Ctrl+Shift+D | Deselect files only (`selection.clear-files`) | Clears the marks of the displayed files, expanded descendants included; folder marks stay. |
+| Ctrl+I | Invert top-level files and folders (`selection.invert-all`) | Toggles only the displayed top-level rows and preserves nested marks. |
+| Ctrl+Shift+I | Invert files only (`selection.invert`) | Toggles the displayed files, including expanded descendants, and preserves folders. |
+
+The synthetic parent and context-only ancestors remain unselectable. These actions
+appear in F10 › Selection and Options › Keyboard and work in filtered lists, archives
+and search results fed to a panel. Directory links/junctions count as folders; archive
+containers in native listings count as files. Explicitly selecting nested rows by click
+or range remains available.
+
+Until 27 November 2026 the plain keys acted on files only: Ctrl+A selected files only,
+Ctrl+Shift+A files and folders, Ctrl+I inverted files only and Ctrl+Shift+I files and
+folders, and Ctrl+Shift+D had no default key. Saved settings hold only the bindings
+that differ from the defaults, so whoever never changed these keys gets the new ones.
+A saved binding keeps exactly its keys: an action whose keys were changed or removed
+keeps them, and when a saved binding gives one of the six keys to another action (for
+example Ctrl+A to Select files only, or Ctrl+Shift+D to Rename), that binding keeps
+working and the action whose new default it is goes without that key; F10 and the hints
+then show no key for it. **Restore all defaults** in Options › Keyboard gives every
+action its default keys again, and **Restore command** one action, once no other
+command's saved binding holds its keys.
 
 ## The parent row
 
@@ -709,8 +720,8 @@ filename search filter limits them too), marks on other rows stay, and `..` is
 never marked. In inline trees every shown row takes part, so with Include folders
 the subfolders of expanded branches (which list folders only) do too; context-only
 ancestors kept for a filter never change. **Num \*** (the `selection.mask-invert`
-action) inverts files only, like Ctrl+I, or top-level files and folders, like
-Ctrl+Shift+I, when Include folders is checked; without a keypad, press the one of
+action) inverts files only, like Ctrl+Shift+I, or top-level files and folders, like
+Ctrl+I, when Include folders is checked; without a keypad, press the one of
 those two that matches. OK and Enter do not accept an invalid mask (two `|`, nothing
 after `|`, more than 64 masks or 4096 bytes): the dialog stays open and says why,
 as the panel filter's does, and neither the marks nor the remembered mask change.
@@ -961,13 +972,13 @@ stored and its [scope](#scopes). "None" means that the action has no default key
 | `panel.folder-sizes` | Calculate or cancel folder sizes | `Ctrl+Shift+S`, `Ctrl+Shift+F10` | File list and filename search |
 | `selection.toggle-size` | Toggle selection and calculate focused folder size | `Space` | File list outside filename search |
 | `selection.toggle` | Toggle selection and advance | `Insert` | File list and filename search |
-| `selection.all` | Select files and folders | `Ctrl+Shift+A` | File list and filename search |
+| `selection.all` | Select files and folders | `Ctrl+A` | File list and filename search |
 | `files.make-list` | Make File List | `Ctrl+M` | File list and filename search |
-| `selection.files` | Select files only | `Ctrl+A` | File list and filename search |
-| `selection.clear-files` | Deselect files only | None | File list and filename search |
+| `selection.files` | Select files only | `Ctrl+Shift+A` | File list and filename search |
+| `selection.clear-files` | Deselect files only | `Ctrl+Shift+D` | File list and filename search |
 | `selection.clear` | Deselect files and folders | `Ctrl+D` | File list and filename search |
-| `selection.invert` | Invert files only | `Ctrl+I` | File list and filename search |
-| `selection.invert-all` | Invert top-level files and folders | `Ctrl+Shift+I` | File list and filename search |
+| `selection.invert` | Invert files only | `Ctrl+Shift+I` | File list and filename search |
+| `selection.invert-all` | Invert top-level files and folders | `Ctrl+I` | File list and filename search |
 | `selection.mask-select` | Select by mask… | `Ctrl+Equal`, `NumpadAdd`, `Ctrl+Plus` | File list outside filename search |
 | `selection.mask-deselect` | Deselect by mask… | `Ctrl+Minus`, `NumpadSubtract` | File list outside filename search |
 | `selection.mask-invert` | Invert selection (folders as in Select by mask) | `NumpadMultiply` | File list outside filename search |

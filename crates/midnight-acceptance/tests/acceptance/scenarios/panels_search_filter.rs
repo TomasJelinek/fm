@@ -638,7 +638,7 @@ fn combinations(app: &mut App, failures: &mut Vec<String>) -> Result<(), String>
     panel::focus_list(app, LEFT)?;
     input::chord(app.slint(), &[Key::Control], "a");
     if !ps::wait(app, Duration::from_secs(5), |app| {
-        ps::marked(app, LEFT) == ps::sorted(&["alpha.txt", "Alpha2.log"])
+        ps::marked(app, LEFT) == ps::sorted(&["alpine", "alpha.txt", "Alpha2.log"])
     }) {
         failures.push(format!(
             "Ctrl+A in the filtered list marked {:?}",
@@ -647,7 +647,7 @@ fn combinations(app: &mut App, failures: &mut Vec<String>) -> Result<(), String>
     }
     input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
     if !ps::wait(app, Duration::from_secs(5), |app| {
-        ps::marked(app, LEFT) == ps::sorted(&["alpine", "alpha.txt", "Alpha2.log"])
+        ps::marked(app, LEFT) == ps::sorted(&["alpha.txt", "Alpha2.log"])
     }) {
         failures.push(format!(
             "Ctrl+Shift+A in the filtered list marked {:?}",
@@ -700,8 +700,8 @@ fn combinations(app: &mut App, failures: &mut Vec<String>) -> Result<(), String>
     open_filter(app, RIGHT)?;
     input::click_button(app.slint(), "Show all")?;
     ps::wait(app, Duration::from_secs(5), |app| !filter_open(app));
-    // Hidden files hidden plus a *.txt filter: Ctrl+A marks only the shown .txt files,
-    // and showing hidden files again leaves the dot-file unmarked.
+    // Hidden files hidden plus a *.txt filter: Ctrl+A marks only the shown folder and
+    // .txt files, and showing hidden files again leaves the dot-file unmarked.
     open_filter(app, LEFT)?;
     crate::options_support::choose(app, "Filter mode", "Masks")?;
     input::fill(app.slint(), "File filter expression", "*.txt")?;
@@ -716,7 +716,7 @@ fn combinations(app: &mut App, failures: &mut Vec<String>) -> Result<(), String>
     }
     input::chord(app.slint(), &[Key::Control], "a");
     if !ps::wait(app, Duration::from_secs(5), |app| {
-        ps::marked(app, LEFT) == ps::sorted(&["alpha.txt", "beta.txt", UNICODE])
+        ps::marked(app, LEFT) == ps::sorted(&["alpine", "alpha.txt", "beta.txt", UNICODE])
     }) {
         failures.push(format!(
             "Ctrl+A with *.txt and hidden files hidden marked {:?}",

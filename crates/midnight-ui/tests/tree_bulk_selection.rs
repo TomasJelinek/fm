@@ -44,22 +44,23 @@ fn exercise(pane: PaneId, archive: bool) {
     assert_eq!(h.ui.window.get_active_pane(), pane.index() as i32);
     assert_eq!(h.ui.window.get_focused_pane(), pane.index() as i32);
 
-    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "i");
+    // Ctrl+I inverts the top level and keeps the nested mark.
+    ui::chord(&h.ui.window, &[Key::Control], "i");
     selected(&h, &["folder", "root.txt", "z.txt"]);
     settle(&mut h, &["folder", "root.txt", "z.txt"]);
-    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "i");
+    ui::chord(&h.ui.window, &[Key::Control], "i");
     selected(&h, &["z.txt"]);
     settle(&mut h, &["z.txt"]);
 
-    ui::chord(&h.ui.window, &[Key::Control], "a");
+    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "a");
     selected(&h, &["root.txt"]);
     settle(&mut h, &["root.txt"]);
-    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "a");
+    ui::chord(&h.ui.window, &[Key::Control], "a");
     selected(&h, &["folder", "root.txt"]);
     settle(&mut h, &["folder", "root.txt"]);
     ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "d");
-    selected(&h, &["folder", "root.txt"]);
-    settle(&mut h, &["folder", "root.txt"]);
+    selected(&h, &["folder"]);
+    settle(&mut h, &["folder"]);
     ui::chord(&h.ui.window, &[Key::Control], "d");
     selected(&h, &[]);
     settle(&mut h, &[]);
@@ -99,16 +100,17 @@ fn clear_nested_marks(pane: PaneId, archive: bool) {
     }
     settle(&mut h, &["folder", "large", "root.txt"]);
     h.ui.window.invoke_focus_files();
+    // Ctrl+Shift+D clears the file and keeps both folder marks, the nested one too.
     ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "d");
-    selected(&h, &["folder", "large", "root.txt"]);
-    settle(&mut h, &["folder", "large", "root.txt"]);
+    selected(&h, &["folder", "large"]);
+    settle(&mut h, &["folder", "large"]);
     ui::chord(&h.ui.window, &[Key::Control], "d");
     selected(&h, &[]);
     settle(&mut h, &[]);
-    ui::chord(&h.ui.window, &[Key::Control], "a");
+    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "a");
     selected(&h, &["root.txt"]);
     settle(&mut h, &["root.txt"]);
-    ui::chord(&h.ui.window, &[Key::Control, Key::Shift], "a");
+    ui::chord(&h.ui.window, &[Key::Control], "a");
     selected(&h, &["folder", "root.txt"]);
     settle(&mut h, &["folder", "root.txt"]);
 }

@@ -50,12 +50,12 @@ fn several(context: &mut Context) -> Result<(), String> {
     let mut app = App::start(config);
     let mut failures = Vec::new();
     panel::focus_list(&mut app, LEFT)?;
-    input::chord(app.slint(), &[Key::Control], "a");
+    input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
     if !ps::wait(&mut app, Duration::from_secs(10), |app| {
         support::selected_names(app, LEFT).len() == 9
     }) {
         return Err(format!(
-            "Ctrl+A marked {:?}, not the nine files",
+            "Ctrl+Shift+A marked {:?}, not the nine files",
             support::selected_names(&app, LEFT)
         ));
     }

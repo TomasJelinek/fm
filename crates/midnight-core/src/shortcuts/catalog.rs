@@ -385,24 +385,26 @@ fn build() -> Vec<ShortcutDefinition> {
         FilesAny,
         &["Insert"],
     );
+    // The plain key of each bulk selection action includes folders; Shift keeps
+    // folder marks as they are and acts on files only.
     add(
         "selection.all",
         "Select files and folders",
         FilesAny,
-        &["Ctrl+Shift+A"],
+        &["Ctrl+A"],
     );
     add("files.make-list", "Make File List", FilesAny, &["Ctrl+M"]);
     add(
         "selection.files",
         "Select files only",
         FilesAny,
-        &["Ctrl+A"],
+        &["Ctrl+Shift+A"],
     );
     add(
         "selection.clear-files",
         "Deselect files only",
         FilesAny,
-        &[],
+        &["Ctrl+Shift+D"],
     );
     add(
         "selection.clear",
@@ -414,13 +416,13 @@ fn build() -> Vec<ShortcutDefinition> {
         "selection.invert",
         "Invert files only",
         FilesAny,
-        &["Ctrl+I"],
+        &["Ctrl+Shift+I"],
     );
     add(
         "selection.invert-all",
         "Invert top-level files and folders",
         FilesAny,
-        &["Ctrl+Shift+I"],
+        &["Ctrl+I"],
     );
     // Ctrl+= and Ctrl+− also work without a numeric keypad; Ctrl++ serves layouts
     // whose + needs no Shift. The first key is the one menus show.

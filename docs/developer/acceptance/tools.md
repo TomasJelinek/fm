@@ -16,8 +16,8 @@ bug, with its finding), **PENDING** (not verified yet; the reason is given), **S
 
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
-| O-M01 | F10 categories list exactly their items | `tools_main_menu` | item lists per category | PASS |
-| O-M02 | Every F10 item does what it says (cancelled or undone); Exit last | `tools_main_menu` | dialogs, windows, effects | PASS |
+| O-M01 | F10 categories list exactly their items | `tools_main_menu` | item lists per category | Not run since 27 November, when Selection gained Deselect files only and its two invert items swapped places (plain key first); before: PASS |
+| O-M02 | Every F10 item does what it says (cancelled or undone); Exit last | `tools_main_menu` | dialogs, windows, effects | PASS; Deselect files only, added to F10 › Selection on 27 November, not run yet |
 | O-M03 | F9 lists the built-in items, the commands (separator as a rule, disabled shown disabled) and Close | `tools_user_menu` | button order and states | PASS |
 | O-M04 | F9 items: Command line, Bookmarks and Hot Paths, Properties, folder sizes, Checksums, Close | `tools_user_menu` | focus, manager, notice, sizes, window | PASS |
 | O-M05 | F9 keyboard: Tab then Enter runs an item; Escape closes; a click outside closes | `tools_user_menu` | effect; menu closed | PASS |

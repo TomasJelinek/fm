@@ -49,8 +49,9 @@ fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
         "Select files and folders",
         "Select files only",
         "Deselect files and folders",
-        "Invert files only",
+        "Deselect files only",
         "Invert top-level files and folders",
+        "Invert files only",
         "Find files…",
         "Checksums…",
         "Make File List…",
@@ -73,7 +74,11 @@ fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
     test.window.on_bulk_selection(move |pane, operation| {
         captured.borrow_mut().push((pane, operation));
     });
-    for label in ["Invert files only", "Invert top-level files and folders"] {
+    for label in [
+        "Invert files only",
+        "Invert top-level files and folders",
+        "Deselect files only",
+    ] {
         test.window.invoke_show_app_menu(2);
         test.draw();
         category(&mut test, 2);
@@ -81,7 +86,7 @@ fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
         test.draw();
         assert!(!ui::has_popup(&test.window));
     }
-    assert_eq!(*selections.borrow(), [(1, 2), (1, 4)]);
+    assert_eq!(*selections.borrow(), [(1, 2), (1, 4), (1, 5)]);
 }
 
 fn enabled(test: &ui::TestUi, label: &str) -> bool {
@@ -230,6 +235,7 @@ fn menu_shortcut(test: &ui::TestUi, label: &str) -> Vec<String> {
 
 #[test]
 fn selection_menu_shows_current_defaults_and_dispatches_exact_file_or_folder_scope() {
+    // The plain key includes folders; Shift acts on files only.
     let (mut test, _) = shortcut_menu(&[]);
     ui::key(&test.window, Key::Escape);
     test.window.set_active_pane(1);
@@ -239,9 +245,12 @@ fn selection_menu_shows_current_defaults_and_dispatches_exact_file_or_folder_sco
         captured.borrow_mut().push((pane, operation));
     });
     for (label, shortcut, operation) in [
-        ("Select files and folders", "Ctrl+Shift+A", 0),
-        ("Select files only", "Ctrl+A", 3),
+        ("Select files and folders", "Ctrl+A", 0),
+        ("Select files only", "Ctrl+Shift+A", 3),
         ("Deselect files and folders", "Ctrl+D", 1),
+        ("Deselect files only", "Ctrl+Shift+D", 5),
+        ("Invert top-level files and folders", "Ctrl+I", 4),
+        ("Invert files only", "Ctrl+Shift+I", 2),
     ] {
         test.window.invoke_show_app_menu(2);
         test.draw();
@@ -253,7 +262,10 @@ fn selection_menu_shows_current_defaults_and_dispatches_exact_file_or_folder_sco
         assert!(!ui::has_popup(&test.window));
         assert_eq!(selections.borrow().last(), Some(&(1, operation)), "{label}");
     }
-    assert_eq!(*selections.borrow(), [(1, 0), (1, 3), (1, 1)]);
+    assert_eq!(
+        *selections.borrow(),
+        [(1, 0), (1, 3), (1, 1), (1, 5), (1, 4), (1, 2)]
+    );
 }
 
 #[test]
@@ -306,6 +318,36 @@ fn menu_suppresses_a_new_default_key_reassigned_to_another_action_and_restores_i
         menu_shortcut(&test, "Deselect files and folders"),
         ["Ctrl+D"]
     );
+    ui::key(&test.window, Key::Escape);
+}
+
+#[test]
+fn menu_hints_keep_saved_selection_keys_over_the_moved_defaults() {
+    // Saved before Ctrl+A included folders: Ctrl+A kept for Select files only, and
+    // Ctrl+Shift+D, free then, given to Rename. The moved defaults yield to both.
+    let (mut test, shortcuts) = shortcut_menu(&[
+        ("selection.files", &["Ctrl+A"]),
+        ("files.rename", &["Ctrl+Shift+D"]),
+    ]);
+    assert_eq!(menu_shortcut(&test, "Select files only"), ["Ctrl+A"]);
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Shift+D"]);
+    for label in ["Select files and folders", "Deselect files only"] {
+        assert!(
+            menu_shortcut(&test, label).is_empty(),
+            "{label} must not advertise a key a saved binding keeps"
+        );
+    }
+    // Reset all brings the new defaults back.
+    shortcuts.reset_all(&test.window);
+    test.draw();
+    for (label, key) in [
+        ("Select files and folders", "Ctrl+A"),
+        ("Select files only", "Ctrl+Shift+A"),
+        ("Deselect files only", "Ctrl+Shift+D"),
+        ("Rename…", "F2"),
+    ] {
+        assert_eq!(menu_shortcut(&test, label), [key], "{label}");
+    }
     ui::key(&test.window, Key::Escape);
 }
 

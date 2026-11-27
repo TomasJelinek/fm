@@ -465,56 +465,65 @@ fn marks(app: &mut App) -> Result<(), String> {
         }
         Ok(marked)
     };
-    bulk(
-        app,
-        &[],
-        &[Key::Control, Key::Shift],
-        "a",
-        &ORDER,
-        "Ctrl+Shift+A (select files and folders)",
-    )?;
+    // The plain key includes folders; Shift acts on files only.
     bulk(
         app,
         &[],
         &[Key::Control],
         "a",
+        &ORDER,
+        "Ctrl+A (select files and folders)",
+    )?;
+    bulk(
+        app,
+        &[],
+        &[Key::Control, Key::Shift],
+        "a",
         &files,
-        "Ctrl+A (select files only)",
+        "Ctrl+Shift+A (select files only)",
     )?;
     bulk(
         app,
         &["sub"],
-        &[Key::Control],
+        &[Key::Control, Key::Shift],
         "a",
         &files,
-        "finding FIND-FEED-SELECT-FILES: Ctrl+A (select files only, which in a panel replaces the selection with the files)",
+        "finding FIND-FEED-SELECT-FILES: Ctrl+Shift+A (select files only, which in a panel replaces the selection with the files)",
     )?;
     bulk(app, &ORDER, &[Key::Control], "d", &[], "Ctrl+D (deselect)")?;
-    let inverted = bulk(
-        app,
-        &["sub", "a.txt"],
-        &[Key::Control],
-        "i",
-        &["sub", "g.txt", "f.txt", "d.txt", "b.txt"],
-        "finding FIND-FEED-INVERT: Ctrl+I (invert files only, which in a panel keeps folder marks)",
-    )?;
     bulk(
         app,
         &["sub", "a.txt"],
         &[Key::Control, Key::Shift],
+        "d",
+        &["sub"],
+        "Ctrl+Shift+D (deselect files only, which keeps folder marks)",
+    )?;
+    let inverted = bulk(
+        app,
+        &["sub", "a.txt"],
+        &[Key::Control, Key::Shift],
+        "i",
+        &["sub", "g.txt", "f.txt", "d.txt", "b.txt"],
+        "finding FIND-FEED-INVERT: Ctrl+Shift+I (invert files only, which in a panel keeps folder marks)",
+    )?;
+    bulk(
+        app,
+        &["sub", "a.txt"],
+        &[Key::Control],
         "i",
         &["g.txt", "f.txt", "d.txt", "b.txt"],
-        "Ctrl+Shift+I (invert files and folders)",
+        "Ctrl+I (invert files and folders)",
     )?;
-    // Keypad * inverts the marks as in a panel: like Ctrl+I while Select by mask leaves
-    // folders out (the default) ...
+    // Keypad * inverts the marks as in a panel: like Ctrl+Shift+I while Select by mask
+    // leaves folders out (the default) ...
     set_marks(app, &["sub", "a.txt"])?;
     if !find::keypad(app, "NumpadMultiply") {
         problems.push("keypad * was not handled by the list".into());
     }
     if feed_marked(app, LEFT) != inverted {
         problems.push(format!(
-            "keypad * marked {:?}, Ctrl+I {inverted:?}",
+            "keypad * marked {:?}, Ctrl+Shift+I {inverted:?}",
             feed_marked(app, LEFT)
         ));
     }

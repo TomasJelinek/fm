@@ -718,8 +718,9 @@ pub fn file_list(context: &mut Context) -> Result<(), String> {
     let mut app = App::start(Config::new(&folder, &context.work));
     let mut failures = Vec::new();
     panel::focus_list(&mut app, LEFT)?;
-    input::chord(app.slint(), &[Key::Control], "a");
-    app.until("Ctrl+A", |app| {
+    // The two files, not sub/.
+    input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
+    app.until("Ctrl+Shift+A", |app| {
         support::selected_names(app, LEFT).len() == 2
     });
     input::chord(app.slint(), &[Key::Control], "m");

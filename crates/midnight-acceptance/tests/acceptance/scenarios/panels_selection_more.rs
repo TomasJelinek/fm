@@ -351,16 +351,16 @@ pub fn selection_more(context: &mut Context) -> Result<(), String> {
     app.settle();
     input::key(app.slint(), Key::Insert);
     app.settle();
-    input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
+    input::chord(app.slint(), &[Key::Control], "a");
     app.settle();
-    input::chord(app.slint(), &[Key::Control, Key::Shift], "i");
+    input::chord(app.slint(), &[Key::Control], "i");
     app.settle();
     if app
         .rows(LEFT)
         .iter()
         .any(|row| row.parent_entry && row.selected)
     {
-        failures.push("`..` was marked by Insert, Ctrl+Shift+A or Ctrl+Shift+I".into());
+        failures.push("`..` was marked by Insert, Ctrl+A or Ctrl+I".into());
     }
     input::chord(app.slint(), &[Key::Control], "d");
     app.settle();

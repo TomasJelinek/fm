@@ -107,17 +107,19 @@ fn selection_shortcuts_use_the_backend_and_preserve_other_pane_parent_and_editor
     window.invoke_set_command("echo draft".into(), 10);
     window.invoke_action(0, 0);
     commands.borrow_mut().clear();
+    // The plain key includes folders; Shift acts on files only.
     for (key, shift, operation, expected) in [
-        ("a", false, SelectionOperation::FilesOnly, [true, false]),
-        ("A", true, SelectionOperation::All, [true, true]),
+        ("A", true, SelectionOperation::FilesOnly, [true, false]),
+        ("a", false, SelectionOperation::All, [true, true]),
+        ("D", true, SelectionOperation::ClearFilesOnly, [false, true]),
         ("d", false, SelectionOperation::Clear, [false, false]),
-        ("a", false, SelectionOperation::FilesOnly, [true, false]),
-        ("A", true, SelectionOperation::All, [true, true]),
-        ("i", true, SelectionOperation::InvertAll, [false, false]),
-        ("i", true, SelectionOperation::InvertAll, [true, true]),
+        ("A", true, SelectionOperation::FilesOnly, [true, false]),
+        ("a", false, SelectionOperation::All, [true, true]),
+        ("i", false, SelectionOperation::InvertAll, [false, false]),
+        ("i", false, SelectionOperation::InvertAll, [true, true]),
         ("d", false, SelectionOperation::Clear, [false, false]),
-        ("i", false, SelectionOperation::Invert, [true, false]),
-        ("i", false, SelectionOperation::Invert, [false, false]),
+        ("i", true, SelectionOperation::Invert, [true, false]),
+        ("I", true, SelectionOperation::Invert, [false, false]),
     ] {
         chord(&window, key, shift);
         // Selection feedback must already be right before the worker replies.
@@ -154,7 +156,7 @@ fn selection_shortcuts_use_the_backend_and_preserve_other_pane_parent_and_editor
         assert_eq!(window.get_command_text(), "echo draft");
     }
     window.invoke_action(1, 0);
-    chord(&window, "a", true);
+    control(&window, "a");
     selection::acknowledge(
         &presenter,
         &commands,
@@ -164,7 +166,7 @@ fn selection_shortcuts_use_the_backend_and_preserve_other_pane_parent_and_editor
     refresh(&window, &presenter.borrow());
     assert!(window.get_right_rows().row_data(1).unwrap().selected);
     assert!(!window.get_left_rows().row_data(1).unwrap().selected);
-    control(&window, "i");
+    chord(&window, "I", true);
     selection::acknowledge(
         &presenter,
         &commands,
@@ -193,6 +195,11 @@ fn selection_shortcuts_use_the_backend_and_preserve_other_pane_parent_and_editor
     assert!(
         commands.borrow().is_empty(),
         "editor Ctrl+Shift+A cannot alter panel selection"
+    );
+    chord(&window, "D", true);
+    assert!(
+        commands.borrow().is_empty(),
+        "editor Ctrl+Shift+D cannot alter panel selection"
     );
     window.hide().unwrap();
 }

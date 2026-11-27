@@ -290,20 +290,20 @@ pub fn copy_every_kind(context: &mut Context) -> Result<(), String> {
         leave_both(&mut app)?;
     }
 
-    // Multi-selection into a subfolder: Ctrl+A (files only) with "Preserve times and
-    // attributes", destination typed into the dialog.
+    // Multi-selection into a subfolder: Ctrl+Shift+A (files only) with "Preserve times
+    // and attributes", destination typed into the dialog.
     let mut preserved = 0;
     for kind in KINDS {
         panel::enter(&mut app, left, kind)?;
         panel::focus_list(&mut app, left)?;
-        input::chord(app.slint(), &[Key::Control], "a");
+        input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
         let files: Vec<String> = entries(&source.join(kind))
             .into_iter()
             .filter(|name| source.join(kind).join(name).is_file())
             .collect();
         let wanted = files.clone();
         app.until(
-            &format!("Ctrl+A to select the files of {kind}/"),
+            &format!("Ctrl+Shift+A to select the files of {kind}/"),
             move |app| {
                 let mut selected = support::selected_names(app, PaneId::Left);
                 selected.sort();
@@ -628,19 +628,19 @@ pub fn move_every_kind(context: &mut Context) -> Result<(), String> {
         failures.push(format!("F6 one at a time moved {moved} of {total} entries"));
     }
 
-    // Move a multi-selection of files and folders (Ctrl+Shift+A) into a subfolder.
+    // Move a multi-selection of files and folders (Ctrl+A) into a subfolder.
     let mut bulk_moved = 0;
     let mut bulk_total = 0;
     navigate_to(&mut app, left, &bulk)?;
     for kind in KINDS {
         panel::enter(&mut app, left, kind)?;
         panel::focus_list(&mut app, left)?;
-        input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
+        input::chord(app.slint(), &[Key::Control], "a");
         let all = entries(&bulk.join(kind));
         bulk_total += all.len();
         let wanted = all.clone();
         app.until(
-            &format!("Ctrl+Shift+A to select everything in {kind}/"),
+            &format!("Ctrl+A to select everything in {kind}/"),
             move |app| {
                 let mut selected = support::selected_names(app, PaneId::Left);
                 selected.sort();

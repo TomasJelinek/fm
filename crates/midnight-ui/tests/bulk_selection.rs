@@ -42,7 +42,8 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
         window.set_active_pane(pane);
         window.invoke_focus_files();
         assert_eq!(window.get_focused_pane(), pane);
-        for (letter, operation) in [("a", 3), ("d", 1), ("i", 2), ("A", 3)] {
+        // The plain key includes folders: All (0), Clear (1) and InvertAll (4).
+        for (letter, operation) in [("a", 0), ("d", 1), ("i", 4), ("A", 0)] {
             let previous = requested.borrow().len();
             chord(&window, &[Key::Control], letter);
             assert_eq!(
@@ -52,27 +53,26 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
             );
             assert_eq!(requested.borrow().len(), previous + 1);
         }
-        let previous = requested.borrow().len();
-        chord(&window, &[Key::Control, Key::Shift], "a");
-        assert_eq!(requested.borrow().get(previous), Some(&(pane, 0)));
-        assert_eq!(requested.borrow().len(), previous + 1);
-        let previous = requested.borrow().len();
-        chord(&window, &[Key::Control, Key::Shift], "i");
-        assert_eq!(requested.borrow().get(previous), Some(&(pane, 4)));
-        assert_eq!(requested.borrow().len(), previous + 1);
+        // Shift acts on files only: FilesOnly (3), ClearFilesOnly (5) and Invert (2).
+        for (letter, operation) in [("a", 3), ("d", 5), ("i", 2)] {
+            let previous = requested.borrow().len();
+            chord(&window, &[Key::Control, Key::Shift], letter);
+            assert_eq!(
+                requested.borrow().get(previous),
+                Some(&(pane, operation)),
+                "Ctrl+Shift+{letter} must reach the focused file pane exactly once"
+            );
+            assert_eq!(requested.borrow().len(), previous + 1);
+        }
         let previous = requested.borrow().len();
         for modifiers in [
             vec![],
             vec![Key::Shift],
             vec![Key::Alt],
-            vec![Key::Control, Key::Shift],
             vec![Key::Control, Key::Alt],
             vec![Key::Control, Key::Meta],
         ] {
             for letter in ["a", "d", "i"] {
-                if modifiers == [Key::Control, Key::Shift] && matches!(letter, "a" | "i") {
-                    continue; // Explicit all-entry select and invert variants.
-                }
                 chord(&window, &modifiers, letter);
             }
         }
@@ -156,7 +156,7 @@ fn bulk_selection_keys_target_only_the_focused_file_pane() {
     assert_eq!(window.get_focused_pane(), 1);
     chord(&window, &[Key::Control], "a");
     assert_eq!(requested.borrow().len(), previous + 1);
-    assert_eq!(requested.borrow().last(), Some(&(1, 3)));
+    assert_eq!(requested.borrow().last(), Some(&(1, 0)));
     assert_eq!(submitted.get(), 0);
     assert_eq!(opened.get(), 0);
     window.hide().unwrap();

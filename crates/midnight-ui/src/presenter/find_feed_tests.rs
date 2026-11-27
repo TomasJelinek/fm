@@ -613,14 +613,14 @@ fn bulk_keys_mark_folders_and_files_of_the_results_as_in_a_panel() {
     // Each key from a marked folder and a marked file: (key, marks after it,
     // their count and file bytes). Rows: sub/, a.txt 1 B, other/, b.txt 2 B, c.txt 4 B.
     let cases: [(SelectionOperation, &[&str], usize, u64); 6] = [
-        // Ctrl+Shift+A: every row.
+        // Ctrl+A: every row.
         (
             SelectionOperation::All,
             &["sub", "a.txt", "other", "b.txt", "c.txt"],
             5,
             7,
         ),
-        // Ctrl+A: the files replace the marks; the marked folder is unmarked.
+        // Ctrl+Shift+A: the files replace the marks; the marked folder is unmarked.
         (
             SelectionOperation::FilesOnly,
             &["a.txt", "b.txt", "c.txt"],
@@ -629,11 +629,11 @@ fn bulk_keys_mark_folders_and_files_of_the_results_as_in_a_panel() {
         ),
         // Ctrl+D: nothing.
         (SelectionOperation::Clear, &[], 0, 0),
-        // Clear files only: the folder marks stay.
+        // Ctrl+Shift+D: the files only; the folder marks stay.
         (SelectionOperation::ClearFilesOnly, &["sub"], 1, 0),
-        // Ctrl+I and keypad *: the files invert; folder marks stay as they are.
+        // Ctrl+Shift+I and keypad *: the files invert; folder marks stay as they are.
         (SelectionOperation::Invert, &["sub", "b.txt", "c.txt"], 3, 6),
-        // Ctrl+Shift+I: files and folders invert.
+        // Ctrl+I: files and folders invert.
         (
             SelectionOperation::InvertAll,
             &["other", "b.txt", "c.txt"],
@@ -660,7 +660,7 @@ fn bulk_keys_mark_folders_and_files_of_the_results_as_in_a_panel() {
         );
         assert_eq!(p.panes[0].selected_count(), 0, "{operation:?}");
     }
-    // A second Ctrl+I restores the files' marks; folder marks never changed.
+    // A second Ctrl+Shift+I restores the files' marks; folder marks never changed.
     let mut p = fed_with_folders(&["sub", "a.txt"]);
     for _ in 0..2 {
         p.feed_action(
@@ -675,7 +675,7 @@ fn bulk_keys_mark_folders_and_files_of_the_results_as_in_a_panel() {
 #[test]
 fn keypad_star_inverts_the_results_with_the_folder_choice_of_select_by_mask() {
     // From a marked folder and a marked file, as in a panel: without Include folders
-    // keypad * inverts the files only, like Ctrl+I.
+    // keypad * inverts the files only, like Ctrl+Shift+I.
     let mut p = fed_with_folders(&["sub", "a.txt"]);
     assert!(!p.preferences.values.mask_selection.folders);
     p.feed_action(PaneId::Left, FeedAction::MaskInvert, &|_| {

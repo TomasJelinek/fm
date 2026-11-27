@@ -244,8 +244,8 @@ its action; stale seeds cannot overwrite newer accepted selection. Validation
 and snapshot construction finish before state is replaced. Repeating a root
 seed at the same revision is idempotent; conflicting selected bits are rejected,
 including after publication of the initial empty revision. Context rows cannot
-be selected by clicks, ranges or rectangles. Ctrl+I inverts non-directory entries
-and retains both folder and directory-link selection.
+be selected by clicks, ranges or rectangles. Ctrl+Shift+I (invert files only)
+inverts non-directory entries and retains both folder and directory-link selection.
 
 The production controller owns these sessions on one persistent model worker per
 pane, which runs on one of the engine's resident worker threads outside Tokio's

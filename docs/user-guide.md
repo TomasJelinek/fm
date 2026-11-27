@@ -913,11 +913,14 @@ current keys. Terms such as [panel](glossary.md#panel), [tab](glossary.md#tab) a
 
 ### Selection, hidden files and filename search
 
-- Ctrl+A selects top-level files only; Ctrl+Shift+A includes top-level folders.
-  Both replace selection and clear nested marks. Ctrl+D clears all selected files
-  and folders, including marked inline descendants; Ctrl+Shift+D has no default binding.
-  Ctrl+I inverts files only; Ctrl+Shift+I inverts top-level files and folders.
-  This works inside archives too. The parent `..` is excluded; text editors retain
+- The plain key includes folders; with Shift it acts on files only. Ctrl+A selects
+  top-level files and folders; Ctrl+Shift+A selects top-level files only. Both replace
+  selection and clear nested marks. Ctrl+D clears all selected files and folders,
+  including marked inline descendants; Ctrl+Shift+D deselects files only and keeps the
+  folder marks. Ctrl+I inverts top-level files and folders; Ctrl+Shift+I inverts files
+  only. (Before 27 November 2026 Ctrl+A and Ctrl+I acted on files only and their Shift
+  variants on files and folders; keys you set yourself in Options › Keyboard stay as
+  you set them.) This works inside archives too. The parent `..` is excluded; text editors retain
   normal editing. Alt+Up / Alt+Down move the cursor to the previous / next selected
   item, without wrapping.
 - Ctrl+= or keypad + opens **Select files**, and Ctrl+− or keypad − **Deselect
@@ -928,7 +931,7 @@ current keys. Terms such as [panel](glossary.md#panel), [tab](glossary.md#tab) a
   shown rows change, and marks on rows that do not match stay. In inline trees the
   subfolders of expanded branches take part too when Include folders is chosen.
   Keypad * inverts files, and folders as well when Include folders is chosen
-  (without a keypad, Ctrl+I or Ctrl+Shift+I). The number-row + − * keys type into
+  (without a keypad, Ctrl+Shift+I or Ctrl+I). The number-row + − * keys type into
   filename search; F10 › Selection offers the same three commands.
 - Ctrl+H (**Show hidden files**) hides or shows dot-names on Linux and macOS and
   entries with the hidden attribute on Windows, in both panels, archives and inline

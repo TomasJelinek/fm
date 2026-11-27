@@ -1,6 +1,6 @@
 //! Inline folder branches with the keyboard and with the other panel features: arrows,
 //! Home and End through nested rows; Insert and Space mark (and measure) nested
-//! folders; Ctrl+Shift+I inverts the top level and keeps nested marks; Ctrl+A keeps only
+//! folders; Ctrl+I inverts the top level and keeps nested marks; Ctrl+Shift+A keeps only
 //! top-level files; Ctrl+D clears every level; sorting orders each branch's folders
 //! (name both ways, modified time); collapsing a branch with the cursor inside moves it
 //! to the branch; Enter on a nested folder opens it and Backspace returns with the
@@ -134,19 +134,19 @@ pub fn tree_keys(context: &mut Context) -> Result<(), String> {
     }) {
         failures.push("Space on the nested c-three did not measure it".into());
     }
-    input::chord(app.slint(), &[Key::Control, Key::Shift], "i");
+    input::chord(app.slint(), &[Key::Control], "i");
     expect_marks(
         &mut app,
-        "Ctrl+Shift+I with nested marks",
+        "Ctrl+I with nested marks",
         &[
             "b-one", "c-three", "branch", "other", "top1.txt", "top2.txt",
         ],
         &mut failures,
     );
-    input::chord(app.slint(), &[Key::Control], "a");
+    input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
     expect_marks(
         &mut app,
-        "Ctrl+A in the tree",
+        "Ctrl+Shift+A in the tree",
         &["top1.txt", "top2.txt"],
         &mut failures,
     );
@@ -270,7 +270,7 @@ pub fn tree_keys(context: &mut Context) -> Result<(), String> {
         );
         panel::select_row(&mut app, LEFT, "other")?;
         press(&mut app, Key::Insert);
-        input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
+        input::chord(app.slint(), &[Key::Control], "a");
         app.settle();
         if ps::marked(&app, LEFT).contains(&"other".to_owned()) {
             failures.push("the filter's context row other/ could be marked".into());

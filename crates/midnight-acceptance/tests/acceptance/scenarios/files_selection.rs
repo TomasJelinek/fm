@@ -1,5 +1,6 @@
 //! Selection with real keys and clicks: Insert, Space (with a folder size), Ctrl+A,
-//! Ctrl+Shift+A, Ctrl+D, Ctrl+I, Ctrl+Shift+I, Ctrl+click, Shift+click, select and
+//! Ctrl+Shift+A, Ctrl+D, Ctrl+Shift+D, Ctrl+I, Ctrl+Shift+I (the plain key includes
+//! folders, Shift acts on files only), Ctrl+click, Shift+click, select and
 //! deselect by mask with the numeric keypad's + and − (and F10), the keypad's *
 //! invert, and a Copy of a multi-selection.
 use crate::{
@@ -289,17 +290,22 @@ pub fn selection(context: &mut Context) -> Result<(), String> {
         ));
     }
 
-    // Ctrl+A: files only; Ctrl+Shift+A: files and folders; Ctrl+D: nothing.
-    input::chord(app.slint(), &[Key::Control], "a");
-    expect_selection(&mut app, &mut failures, "Ctrl+A", &FILES);
-    input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
+    // Ctrl+A: files and folders; Ctrl+Shift+A: files only; Ctrl+Shift+D: the files
+    // leave and the folder marks stay; Ctrl+D: nothing.
     let mut everything: Vec<&str> = FILES.to_vec();
     everything.extend(FOLDERS);
-    expect_selection(&mut app, &mut failures, "Ctrl+Shift+A", &everything);
+    input::chord(app.slint(), &[Key::Control], "a");
+    expect_selection(&mut app, &mut failures, "Ctrl+A", &everything);
+    input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
+    expect_selection(&mut app, &mut failures, "Ctrl+Shift+A", &FILES);
+    input::chord(app.slint(), &[Key::Control], "a");
+    expect_selection(&mut app, &mut failures, "Ctrl+A again", &everything);
+    input::chord(app.slint(), &[Key::Control, Key::Shift], "d");
+    expect_selection(&mut app, &mut failures, "Ctrl+Shift+D", &FOLDERS);
     input::chord(app.slint(), &[Key::Control], "d");
     expect_selection(&mut app, &mut failures, "Ctrl+D", &[]);
 
-    // Ctrl+I inverts files and keeps folder marks; Ctrl+Shift+I inverts everything.
+    // Ctrl+Shift+I inverts files and keeps folder marks; Ctrl+I inverts everything.
     panel::select_row(&mut app, pane, "a1.txt")?;
     input::key(app.slint(), Key::Insert);
     panel::select_row(&mut app, pane, "d1")?;
@@ -310,15 +316,15 @@ pub fn selection(context: &mut Context) -> Result<(), String> {
         "Insert a1 and d1",
         &["a1.txt", "d1"],
     );
-    input::chord(app.slint(), &[Key::Control], "i");
+    input::chord(app.slint(), &[Key::Control, Key::Shift], "i");
     expect_selection(
         &mut app,
         &mut failures,
-        "Ctrl+I",
+        "Ctrl+Shift+I",
         &[".hidden", "a2.txt", "b1.log", "b2.log", "c.dat", "d1"],
     );
-    input::chord(app.slint(), &[Key::Control, Key::Shift], "i");
-    expect_selection(&mut app, &mut failures, "Ctrl+Shift+I", &["a1.txt", "d2"]);
+    input::chord(app.slint(), &[Key::Control], "i");
+    expect_selection(&mut app, &mut failures, "Ctrl+I", &["a1.txt", "d2"]);
     input::chord(app.slint(), &[Key::Control], "d");
     expect_selection(&mut app, &mut failures, "Ctrl+D", &[]);
 

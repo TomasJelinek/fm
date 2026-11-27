@@ -47,8 +47,8 @@ fn hold_left(ui: &mut TestUi, hold: i32) {
 }
 
 const DOWN: i32 = 3;
-/// "selection.files", Ctrl+A in the file list.
-const SELECT_FILES: i32 = 3;
+/// "selection.all", Ctrl+A in the file list.
+const SELECT_ALL: i32 = 0;
 
 #[test]
 fn a_held_panel_replays_its_keys_in_order_with_their_modifiers_once_shown() {
@@ -77,7 +77,7 @@ fn a_held_panel_replays_its_keys_in_order_with_their_modifiers_once_shown() {
     );
     assert_eq!(
         delivered.borrow().bulk,
-        [(0, SELECT_FILES)],
+        [(0, SELECT_ALL)],
         "Ctrl+A keeps its Ctrl rather than typing an a"
     );
     assert!(!ui.window.get_mutation_input_blocked());

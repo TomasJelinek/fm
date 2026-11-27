@@ -75,11 +75,11 @@ a structural change retains only still-visible exact toggles, because replaying
 an old positional range could select rows the user did not see. Rejected
 selection releases its preview without reusing the request revision.
 
-Ctrl+A replaces selection with selectable top-level files (`depth == 0`);
-Ctrl+Shift+A also includes top-level folders. Both clear nested marks. Ctrl+D
+Ctrl+Shift+A replaces selection with selectable top-level files (`depth == 0`);
+Ctrl+A also includes top-level folders. Both clear nested marks. Ctrl+D
 clears every mark, including folders, directory links and expanded descendants.
-**Deselect files only** (`selection.clear-files`) has no default key, and Ctrl+Shift+D
-is unassigned. The shared row policy drives both
+Ctrl+Shift+D (**Deselect files only**, `selection.clear-files`) clears file marks at
+every depth and keeps folder and directory-link marks. The shared row policy drives both
 backend results and immediate preview, so child rows never flash selected while
 waiting for acknowledgement. Filters still exclude hidden/context-only rows;
 explicit click/range selection of descendants remains available.

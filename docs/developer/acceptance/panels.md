@@ -174,7 +174,7 @@ of milliseconds without drawing.
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
 | S-01 | Insert toggles and advances; Space toggles, advances and measures a folder | `files_selection` | PASS |
-| S-02 | Ctrl+A, Ctrl+Shift+A, Ctrl+D, Ctrl+I, Ctrl+Shift+I | `files_selection` | PASS |
+| S-02 | Ctrl+A (files and folders), Ctrl+Shift+A (files only), Ctrl+D, Ctrl+Shift+D (files only; folder marks stay), Ctrl+I (files and folders), Ctrl+Shift+I (files only) | `files_selection` | Not run since the 27 November selection key change (Ctrl+Shift+D is new); with the earlier keys, where the plain key acted on files only: PASS |
 | S-03 | Ctrl+click toggles; Shift+click selects a range | `files_selection` | PASS |
 | S-04 | Ctrl+Shift+click adds a range | `panels_selection_more` | PASS |
 | S-05 | Keypad + − * (physical keys) with masks, Include folders, Escape | `files_selection` | PASS |
@@ -183,10 +183,10 @@ of milliseconds without drawing.
 | S-08 | F10 › Select by mask… | `files_selection` | PASS |
 | S-09 | Alt+Down and Alt+Up visit the marked rows without wrapping, marks kept | `panels_selection_more` | PASS |
 | S-10 | Insert and Space stop at the last row | `panels_selection_more` | PASS |
-| S-11 | `..` is never marked (Insert, Ctrl+Shift+A, Ctrl+Shift+I) | `panels_selection_more` | PASS |
+| S-11 | `..` is never marked (Insert, Ctrl+A, Ctrl+I) | `panels_selection_more` | Not run since the 27 November selection key change; with the earlier keys (Ctrl+Shift+A, Ctrl+Shift+I, the same actions): PASS |
 | S-12 | The rubber band from the gutter: plain replaces, Shift adds, Ctrl toggles | `panels_selection_more` | PASS |
 | S-13 | The details strip counts marked files and folders and their bytes | `panels_selection_more` › every step | PASS |
-| S-14 | Marks with hidden files hidden and with a filter: Ctrl+A marks only what is shown | `files_filter_search`; `panels_search_filter` | PASS |
+| S-14 | Marks with hidden files hidden and with a filter: Ctrl+A and Ctrl+Shift+A mark only what is shown | `files_filter_search`; `panels_search_filter` | Not run since the 27 November selection key change; with the earlier keys (Ctrl+A for the shown files only): PASS |
 | S-15 | F5 of a multi-selection deselects the completed roots | `files_selection` | PASS |
 | S-16 | The number row's + starts a search | `files_selection` | PASS |
 | S-17 | In every theme (26), measured in the rendered rows: a marked file's name keeps the theme's selected-text contrast against the selection fill (12:1 High Contrast, 7:1 Paper, Sandstone and Graphite Contrast, 4.5:1 otherwise), a marked file in a filename colour rule 4.5:1, the cursor row 4.5:1; after Tab the inactive panel's cursor row takes another fill, still 4.5:1 | `panels_selection_more` › selection colours | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
@@ -218,7 +218,7 @@ of milliseconds without drawing.
 | F-06 | Down in the filter's expression line lists the recent filters, newest first (27189334); a click on one fills the line, its mode and its case and applies nothing until OK, which applies it | `panels_search_filter` › recent filters | PASS (Windows `20261122-164746`, Linux `20261122-200640`) |
 | F-07 | Cancel keeps the applied filter | `panels_search_filter` | PASS |
 | F-08 | An invalid regular expression is refused in the dialog; the listing stays | `panels_search_filter` | PASS |
-| F-09 | Ctrl+A, Ctrl+Shift+A, sorting and search inside a filtered list | `panels_search_filter` | PASS |
+| F-09 | Ctrl+A, Ctrl+Shift+A, sorting and search inside a filtered list | `panels_search_filter` | Not run since the 27 November selection key change; with the earlier keys: PASS |
 | F-10 | Each panel has its own filter | `panels_search_filter` | PASS |
 | F-11 | A filtered tree keeps a match's ancestor as context that cannot be marked | `panels_tree_keys` | PASS |
 | F-12 | The filter's Help and F1 show the syntax; Escape closes only the help | `panels_search_filter` | PASS |
@@ -233,7 +233,7 @@ of milliseconds without drawing.
 | B-03 | Arrows, Home and End through nested rows | `panels_tree_keys` | PASS |
 | B-04 | Enter on a nested folder opens it; Backspace returns with the cursor on it | `panels_tree_keys` | PASS |
 | B-05 | Collapsing a branch with the cursor inside moves the cursor to the branch | `panels_tree_keys` | PASS |
-| B-06 | Insert and Space (measuring) on nested rows; Ctrl+Shift+I keeps nested marks; Ctrl+A and Ctrl+D across levels | `panels_tree_keys` | PASS |
+| B-06 | Insert and Space (measuring) on nested rows; Ctrl+I keeps nested marks; Ctrl+Shift+A and Ctrl+D across levels | `panels_tree_keys` | Not run since the 27 November selection key change; with the earlier keys (Ctrl+Shift+I, Ctrl+A, the same actions): PASS |
 | B-07 | Each branch is ordered by the panel's sort (name both ways, time) | `panels_tree_keys` | PASS |
 | B-08 | F5, F2 and Shift+F8 of a folder three levels deep | `files_tree_ops` | PASS |
 | B-09 | A branch that cannot be listed shows its error icon; the icon opens the notice with the whole path | `panels_notices` › failed branch | PASS |

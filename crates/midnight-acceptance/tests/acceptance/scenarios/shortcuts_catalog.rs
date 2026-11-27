@@ -917,6 +917,11 @@ fn probe_for(id: &str, paths: &Paths) -> Option<Probe> {
             &["selection0"],
             |_, _, after| same("the marks", after.selection[0].clone(), Vec::new()),
         )?,
+        "selection.clear-files" => probe(
+            files.marks(&["alpha.txt", "sub"]),
+            &["selection0"],
+            |_, _, after| same("the marks", after.selection[0].clone(), sorted(&["sub"])),
+        )?,
         "selection.invert" | "selection.mask-invert" => probe(
             files.marks(&["alpha.txt", "sub"]),
             &["selection0"],

@@ -363,15 +363,16 @@ mod tests {
     #[test]
     fn modified_file_shortcuts_keep_the_existing_policy_and_precedence() {
         for (text, control, shift, alt, expected) in [
+            // The plain key includes folders; Shift acts on files only.
             (
                 SharedString::from("a"),
                 true,
                 false,
                 false,
-                FileKey::Bulk(3),
+                FileKey::Bulk(0),
             ),
             ("D".into(), true, false, false, FileKey::Bulk(1)),
-            ("i".into(), true, false, false, FileKey::Bulk(2)),
+            ("i".into(), true, false, false, FileKey::Bulk(4)),
             (Key::F3.into(), true, false, false, FileKey::Sort(0)),
             (Key::F4.into(), true, false, false, FileKey::Sort(3)),
             (Key::F5.into(), true, false, false, FileKey::Sort(2)),
@@ -399,9 +400,9 @@ mod tests {
                 FileKey::Action(0),
             ),
             (Key::Return.into(), true, false, true, FileKey::Properties),
-            ("a".into(), true, true, false, FileKey::Bulk(0)),
-            ("d".into(), true, true, false, FileKey::Consumed),
-            ("i".into(), true, true, false, FileKey::Bulk(4)),
+            ("a".into(), true, true, false, FileKey::Bulk(3)),
+            ("d".into(), true, true, false, FileKey::Bulk(5)),
+            ("i".into(), true, true, false, FileKey::Bulk(2)),
         ] {
             assert_eq!(
                 route(&event(text, control, shift, alt), false, false),
@@ -457,7 +458,7 @@ mod tests {
         );
         assert_eq!(
             route(&event("a", true, false, false), true, true),
-            FileKey::Bulk(3)
+            FileKey::Bulk(0)
         );
         assert_eq!(
             route(&event(Key::Tab, false, true, false), false, false),

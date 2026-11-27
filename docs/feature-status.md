@@ -146,8 +146,11 @@ How to read it:
 
 - **Windows and Linux:** Insert, Space, Shift and Ctrl selection (a Shift range starts at
   the cursor once the cursor has moved away from the last clicked row); rectangle selection
-  in every view, in archives and in trees; selection by mask (Ctrl+=, Ctrl+− and the
-  keypad + − *); the panel filter (Ctrl+F12 and the toolbar funnel) with masks, regular
+  in every view, in archives and in trees; bulk selection keys whose plain key includes
+  folders and whose Shift variant acts on files only (Ctrl+A / Ctrl+Shift+A select,
+  Ctrl+D / Ctrl+Shift+D deselect, Ctrl+I / Ctrl+Shift+I invert; since 27 November 2026,
+  before which Ctrl+A and Ctrl+I acted on files only); selection by mask (Ctrl+=, Ctrl+−
+  and the keypad + − *); the panel filter (Ctrl+F12 and the toolbar funnel) with masks, regular
   expressions and metadata expressions, recent filters and an active-filter indicator;
   totals of the selected sizes in the status bar.
 - **Documents:** [panel selection](developer/selection.md),
@@ -155,6 +158,9 @@ How to read it:
   [keyboard shortcuts](keyboard-shortcuts.md).
 - **Verified:** `files_selection`, `panels_selection_more`, `panels_search_filter`,
   `files_filter_search`; statuses in the [panels record](developer/acceptance/panels.md).
+  The 27 November key change is covered by the unit and window tests of the shortcut
+  map, the key routing, F10 and Options › Keyboard; the acceptance scenarios with the
+  new keys have not run yet.
 
 ## Inline folder trees
 

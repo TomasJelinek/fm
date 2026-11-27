@@ -455,7 +455,7 @@ fn plain_typing_searches_the_focused_panes_original_snapshot_without_navigating(
                 Command::Selection(request)
                     if matches!(
                         request.action,
-                        SelectionAction::Bulk(SelectionOperation::FilesOnly)
+                        SelectionAction::Bulk(SelectionOperation::All)
                     ) =>
                     request.view.as_ref(),
                 _ => None,

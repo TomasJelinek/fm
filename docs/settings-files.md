@@ -271,7 +271,7 @@ explicit choices keep them, including Pencil Lead and Letterhead.
 | `command_history` | array of `{"command": <string>, "shell": "powershell"\|"cmd"\|"posix"}` | 5 | required | Command history, newest first; empty when the option is off. |
 | `tabs` | array of two [tab records](#tab-records) | 6 | required | Tabs of the left and right panels. |
 | `panel_view_modes` | array of two strings | 6 | required | `"detailed"`, `"brief"` or `"thumbnails"` for each panel. |
-| `shortcuts` | array of `{"action": <action ID>, "keys": [<chord>, ...]}` | 7 | required | Only deviations from the default key bindings, including those of kept Custom Commands. |
+| `shortcuts` | array of `{"action": <action ID>, "keys": [<chord>, ...]}` | 7 | required | Only deviations from the default key bindings, including those of kept Custom Commands. A changed default therefore reaches every action without a record; a default key that a record gives to another action yields to it ([selection keys](keyboard-shortcuts.md#selection-actions)). |
 | `panel_filters` | array of two [filter records](#filter-records) | 8 | required | The filter of each panel. |
 | `editor` | object: `executable` ([path](#paths) or `null`), `arguments` (array of strings), `rules` (array, schema 30 on) | 9 | required | The F4 editor and editor rules. |
 | `disabled_viewer_plugins` | array of strings | 10 | required | Viewer plugin IDs turned off. |

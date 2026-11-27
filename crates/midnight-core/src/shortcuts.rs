@@ -480,9 +480,11 @@ impl ShortcutMap {
                 let chord = ShortcutChord::parse(text)?;
                 definition.validate_key(&chord)?;
                 let scope = definition.scope_for(&chord);
-                // These defaults were added after configurable shortcuts. Keep
-                // previously saved assignments valid, including their hints,
+                // These defaults were added or moved after configurable shortcuts.
+                // Keep previously saved assignments valid, including their hints,
                 // without weakening conflicts between other defaults or overrides.
+                // The bulk selection keys moved when plain Ctrl+A and Ctrl+I came to
+                // include folders, and their Shift variants to act on files only.
                 let added_default = matches!(
                     definition.id.as_str(),
                     "files.copy-to"
@@ -491,9 +493,11 @@ impl ShortcutMap {
                         | "files.find"
                         | "files.checksums"
                         | "files.compare"
+                        | "selection.all"
                         | "selection.files"
                         | "selection.clear-files"
                         | "selection.clear"
+                        | "selection.invert"
                         | "selection.invert-all"
                         | "selection.mask-select"
                         | "selection.mask-deselect"
@@ -522,12 +526,6 @@ impl ShortcutMap {
                     && !chord.shift
                     && !chord.meta
                     && chord.key == "Right")
-                    || (definition.id == "selection.all"
-                        && chord.control
-                        && chord.shift
-                        && !chord.alt
-                        && !chord.meta
-                        && chord.key == "A")
                     || (definition.id.starts_with("bookmark.open.")
                         && !chord.control
                         && !chord.alt

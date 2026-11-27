@@ -218,27 +218,35 @@ fn hidden_files(
     });
     app.screenshot(context, "hidden-hidden", "Ctrl+H: dot-names are not shown");
 
-    // Ctrl+A selects only shown files.
-    input::chord(app.slint(), &[Key::Control], "a");
-    let files: Vec<String> = shown
-        .iter()
-        .filter(|name| folder.join(name).is_file())
-        .cloned()
-        .collect();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut selected = Vec::new();
-    while Instant::now() < deadline {
-        selected = support::selected_names(&app, LEFT);
-        selected.sort();
-        if selected == files {
-            break;
+    // Ctrl+A selects only the shown files and folders; Ctrl+Shift+A only the shown files.
+    for (key, modifiers, wanted) in [
+        ("Ctrl+A", &[Key::Control][..], shown.clone()),
+        (
+            "Ctrl+Shift+A",
+            &[Key::Control, Key::Shift][..],
+            shown
+                .iter()
+                .filter(|name| folder.join(name).is_file())
+                .cloned()
+                .collect::<Vec<_>>(),
+        ),
+    ] {
+        input::chord(app.slint(), modifiers, "a");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut selected = Vec::new();
+        while Instant::now() < deadline {
+            selected = support::selected_names(&app, LEFT);
+            selected.sort();
+            if selected == wanted {
+                break;
+            }
+            app.idle(Duration::from_millis(20));
         }
-        app.idle(Duration::from_millis(20));
-    }
-    if selected != files {
-        failures.push(format!(
-            "Ctrl+A with hidden files hidden selected {selected:?}"
-        ));
+        if selected != wanted {
+            failures.push(format!(
+                "{key} with hidden files hidden selected {selected:?}, expected {wanted:?}"
+            ));
+        }
     }
     input::chord(app.slint(), &[Key::Control], "d");
     app.settle();

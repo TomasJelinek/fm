@@ -133,7 +133,7 @@ besides the action's own effect fails it.
 | ID | Actions | Check | Status |
 | --- | --- | --- | --- |
 | O-S01 | Panel navigation: switch, open, up, down, page up/down, first, last, left/right (Brief), parent ×2, root ×3, enter folder, back, forward, refresh ×2, path, swap, zoom | cursor, focus, folder, listing, flags | PASS |
-| O-S02 | Selection: Space, Insert, Ctrl+Shift+A, Ctrl+A, Ctrl+D, Ctrl+I, Ctrl+Shift+I, Alt+Up/Down between marks | marks and cursor | PASS |
+| O-S02 | Selection: Space, Insert, Ctrl+A, Ctrl+Shift+A, Ctrl+D, Ctrl+Shift+D, Ctrl+I, Ctrl+Shift+I, Alt+Up/Down between marks | marks and cursor | Not run since the 27 November selection key change (Ctrl+Shift+D is new); with the earlier keys: PASS |
 | O-S03 | Select/Deselect by mask: Ctrl+=, Num +, Ctrl++; Ctrl+−, Num −; Num * | mask dialog (select/deselect); inverted marks | PASS |
 | O-S04 | Sorting Ctrl+F3–F6; Ctrl+H hidden files | sort column and direction; hidden row gone | PASS |
 | O-S05 | File dialogs: F2, Shift+F4, F7, Delete/F8, Shift+Delete/Shift+F8, Ctrl+F2, Ctrl+F7, F5, F6, Alt+Enter, Ctrl+Alt+Enter | the right dialog (title, dangerous, move, case page) | PASS |
@@ -149,7 +149,7 @@ besides the action's own effect fails it.
 | O-S15 | Keys outside their context: Space and a digit typed into filename search, Insert ends it, F7 and Ctrl+A in the command editor, a digit typed there | search text, marks, draft | PASS |
 | O-S16 | An uppercase letter starts a filename search | search text | PASS (after the fix for finding O-1) |
 | O-S17 | Viewer and comparison keys; F3, Alt+F3, Ctrl+Shift+C | viewer windows exist only in staged processes; covered by `viewers_files`, `viewers_controls`, `viewers_compare` | SKIP |
-| O-S18 | Actions without a default key (Options, Jobs, About, Custom Commands, Manage Hot Paths, Deselect files only) | reached from F10 (`tools_main_menu`) and Options | PASS |
+| O-S18 | Actions without a default key (Options, Jobs, About, Custom Commands, Manage Hot Paths) | reached from F10 (`tools_main_menu`) and Options | PASS. Deselect files only was one of them until 27 November; it now has Ctrl+Shift+D and its own F10 › Selection item, not run yet |
 | O-S19 | Clear comparison (`panel.compare-clear`, b70cf8df): Escape and Ctrl+Shift+F11 after Compare directories with subfolders; Escape with nothing compared does nothing; Escape during a filename search ends the search and keeps the badges; the footer's Ctrl+Shift+F11 cell | both panels' badges, the result line, the selection; `shortcuts_footer` the same probe | PASS on Linux (`20261124-183335`) and Windows (`20261124-183236`) |
 
 ## Shortcut hints and the footer
@@ -157,7 +157,7 @@ besides the action's own effect fails it.
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
 | O-F01 | F1 help lists every catalog action with all its keys or "Unassigned" | `shortcuts_hints` | one line per action | PASS |
-| O-F02 | F10 shows every key of each item's action in binding order, as F1 lists them (since 22f46eab): "Ctrl+= / Num + / Ctrl++" beside Select by mask, "Delete / F8" beside Move to Trash, "Num *" beside the invert, nothing beside Options | `shortcuts_hints` | the key texts of every item against the catalog, and nine written out | PASS on Windows (`20261122-200459`) and Linux (`20261122-201240`), d96dec97; in Windows run `20261122-192050` the check still expected one key per item, as the menu showed before 22f46eab |
+| O-F02 | F10 shows every key of each item's action in binding order, as F1 lists them (since 22f46eab): "Ctrl+= / Num + / Ctrl++" beside Select by mask, "Delete / F8" beside Move to Trash, "Num *" beside the invert, nothing beside Options | `shortcuts_hints` | the key texts of every item against the catalog, and twelve written out (since 27 November also Ctrl+A beside Select files and folders, Ctrl+Shift+D beside Deselect files only and Ctrl+Shift+I beside Invert files only; not run yet in this form) | PASS on Windows (`20261122-200459`) and Linux (`20261122-201240`), d96dec97; in Windows run `20261122-192050` the check still expected one key per item, as the menu showed before 22f46eab |
 | O-F03 | Footer F1–F12 in the plain, Ctrl, Shift, Alt and Ctrl+Shift layers: a click does what the key does | `shortcuts_footer` | the key's probe after the click | PASS |
 | O-F04 | Footer cells without an action are disabled and do nothing | `shortcuts_footer` | disabled; state unchanged | PASS (after the fix for finding O-2) |
 | O-F05 | Footer F11/F12 (network) hidden on Linux | `shortcuts_footer` | no cell | PASS |

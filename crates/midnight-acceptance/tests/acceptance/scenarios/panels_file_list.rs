@@ -115,7 +115,7 @@ pub fn file_list(context: &mut Context) -> Result<(), String> {
 
     // Clipboard: the marked files with name parts, extension, size and `$$`.
     panel::focus_list(&mut app, LEFT)?;
-    input::chord(app.slint(), &[Key::Control], "a");
+    input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
     ps::wait(&mut app, Duration::from_secs(5), |app| {
         ps::marked(app, LEFT).len() == 3
     });
@@ -259,7 +259,7 @@ pub fn file_list(context: &mut Context) -> Result<(), String> {
     app.until("the filter to apply", |app| {
         !app.window.get_panel_filter_view().open
     });
-    input::chord(app.slint(), &[Key::Control], "a");
+    input::chord(app.slint(), &[Key::Control, Key::Shift], "a");
     ps::wait(&mut app, Duration::from_secs(5), |app| {
         ps::marked(app, LEFT).len() == 2
     });
