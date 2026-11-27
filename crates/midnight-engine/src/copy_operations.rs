@@ -612,7 +612,8 @@ async fn run(
     let mut jobs = JoinSet::new();
     // This actor's guard on each job's batches of steps (`worker::Awaited`). Dropping the
     // JoinSet with an aborted actor only requests the jobs' aborts; these guards end every
-    // running batch after its step in flight before the actor's abort completes.
+    // running batch after its step in flight before the actor's abort completes, and keep
+    // a job whose poll is still running from beginning another step (`execute_input`).
     let mut batches: Vec<worker::Awaited> = Vec::new();
     loop {
         tokio::select! {
@@ -1039,6 +1040,13 @@ async fn execute_input(
     loop {
         if !ready_for_io(&io, &cancel, &status, outbox, throughput).await {
             break;
+        }
+        // An aborted actor has dropped its twin of the guard and requested this task's
+        // abort, but a poll of it can still be running here (on a worker thread that lost
+        // its CPU, say). Begin no further step: the abort drops this future and with it
+        // the job, which retires as after an abort between batches.
+        if !awaited.is_awaited() {
+            return std::future::pending().await;
         }
         // Cancellation cannot abort an OS call or relinquish its permit early.
         let flag = awaited.flag();

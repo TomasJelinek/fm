@@ -189,6 +189,11 @@ impl Control {
         self.resource_snapshots.lock().unwrap().clone()
     }
 
+    /// The fixture's native calls so far, in order.
+    pub(super) fn events(&self) -> Vec<&'static str> {
+        self.events.lock().unwrap().clone()
+    }
+
     pub(super) fn drop_threads(&self) -> Vec<std::thread::ThreadId> {
         self.drop_threads.lock().unwrap().clone()
     }

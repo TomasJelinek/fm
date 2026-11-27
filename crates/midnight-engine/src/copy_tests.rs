@@ -208,6 +208,16 @@ impl Harness {
         slots: u8,
         capacity: usize,
     ) -> Self {
+        Self::configured_with_wakeup(service, slots, capacity, Arc::new(|| {}))
+    }
+    /// `wakeup` runs inside the poll of whichever task published an event, as the
+    /// application's event-loop wakeup does.
+    fn configured_with_wakeup(
+        service: Option<crate::transfer_composition::QualifiedTransferInstallation>,
+        slots: u8,
+        capacity: usize,
+        wakeup: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
         let (sender, events) = mpsc::channel(capacity);
         let mut tasks = JoinSet::new();
         let mutation = crate::transfer_leases::namespace_gate();
@@ -215,10 +225,7 @@ impl Harness {
         let controller = Controller::new(
             crate::worker_retirement::ActorRetirement::testing(),
             service,
-            Outbox {
-                sender,
-                wakeup: Arc::new(|| {}),
-            },
+            Outbox { sender, wakeup },
             mutation.clone(),
             io.clone(),
             &mut tasks,

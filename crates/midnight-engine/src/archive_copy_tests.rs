@@ -823,6 +823,9 @@ enum Interrupt {
     None,
     /// The copy actor stops awaiting the call: aborted or dropped (`Awaited`).
     Abort,
+    /// The copy actor stopped awaiting before the call began: its abort came while a
+    /// poll of the job's task that then started the call was still running.
+    AbortedBefore,
     Cancel,
     Pause,
 }
@@ -864,8 +867,8 @@ impl ArchiveMount for HookedMount {
 
 /// One `Job::steps` call over a selection of three small members, interrupted as the
 /// step that reads the first member runs. Returns the count of steps begun when that
-/// read ran (its step is the one in flight), the count when the call returned, and the
-/// members published by then.
+/// read ran (its step is the one in flight; when the call began, if no step reached
+/// it), the count when the call returned, and the members published by then.
 fn interrupted_batch(interrupt: Interrupt) -> (u64, u64, usize) {
     let temp = fixture();
     let memory = many(3, false);
@@ -879,7 +882,7 @@ fn interrupted_batch(interrupt: Interrupt) -> (u64, u64, usize) {
         Box::new(move || {
             in_flight.store(worker::STEPS.with(std::cell::Cell::get), Ordering::Release);
             match interrupt {
-                Interrupt::None => {}
+                Interrupt::None | Interrupt::AbortedBefore => {}
                 Interrupt::Abort => drop(awaited.lock().unwrap().take()),
                 Interrupt::Cancel => cancel.cancel(),
                 Interrupt::Pause => cancel.set_pause_requested(true),
@@ -901,6 +904,10 @@ fn interrupted_batch(interrupt: Interrupt) -> (u64, u64, usize) {
         status.clone(),
     )
     .unwrap();
+    in_flight.store(worker::STEPS.with(std::cell::Cell::get), Ordering::Release);
+    if interrupt == Interrupt::AbortedBefore {
+        drop(awaited.lock().unwrap().take());
+    }
     // A limit no batch reaches: only the boundaries under test end the call.
     job.steps_within(&flag, Duration::from_secs(600));
     let ended = worker::STEPS.with(std::cell::Cell::get);
@@ -929,6 +936,15 @@ fn a_batch_of_steps_runs_a_small_member_to_its_completed_root() {
 fn an_aborted_actor_ends_a_batch_after_the_step_in_flight() {
     let (in_flight, ended, published) = interrupted_batch(Interrupt::Abort);
     assert_eq!(ended, in_flight, "a step ran after the one in flight");
+    assert_eq!(published, 0);
+}
+
+/// A call that begins after the copy actor stopped awaiting runs no step at all, not
+/// even a first one: nothing begins after the actor's abort.
+#[test]
+fn a_batch_begun_after_the_actor_stopped_awaiting_runs_no_step() {
+    let (begun, ended, published) = interrupted_batch(Interrupt::AbortedBefore);
+    assert_eq!(ended, begun, "a step ran after the actor stopped awaiting");
     assert_eq!(published, 0);
 }
 

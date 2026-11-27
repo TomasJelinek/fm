@@ -578,6 +578,54 @@ impl Drop for LinkSyncRelease {
     }
 }
 
+/// Blocks the fixture call that takes `slot` until the returned release is sent or
+/// dropped; the returned notification fires once that call is entered.
+fn blocked_call(
+    slot: &std::sync::Mutex<Option<super::super::link_tests::SyncBlock>>,
+) -> (Arc<Notify>, LinkSyncRelease) {
+    let entered = Arc::new(Notify::new());
+    let (release, released) = std::sync::mpsc::channel();
+    *slot.lock().unwrap() = Some(super::super::link_tests::SyncBlock {
+        entered: entered.clone(),
+        release: released,
+    });
+    (entered, LinkSyncRelease(Some(release)))
+}
+
+/// Once armed, holds the poll of the next task that publishes a Copy event (the
+/// harness's wakeup runs inside that poll), as a worker thread that lost its CPU there
+/// would, until the returned release is sent or dropped.
+struct HeldPoll {
+    armed: AtomicBool,
+    held: Notify,
+    release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl HeldPoll {
+    fn new() -> (Arc<Self>, LinkSyncRelease) {
+        let (release, released) = std::sync::mpsc::channel();
+        let poll = Arc::new(Self {
+            armed: AtomicBool::new(false),
+            held: Notify::new(),
+            release: std::sync::Mutex::new(Some(released)),
+        });
+        (poll, LinkSyncRelease(Some(release)))
+    }
+
+    fn wakeup(self: &Arc<Self>) -> Arc<dyn Fn() + Send + Sync> {
+        let poll = self.clone();
+        Arc::new(move || {
+            if poll.armed.swap(false, Ordering::SeqCst) {
+                poll.held.notify_one();
+                let release = poll.release.lock().unwrap().take();
+                if let Some(release) = release {
+                    let _ = release.recv_timeout(Duration::from_secs(4));
+                }
+            }
+        })
+    }
+}
+
 fn observe_link_resources(fixture: &super::super::link_tests::Fixture, h: &Harness) {
     fixture
         .control
@@ -634,20 +682,8 @@ async fn shutdown_during_blocked_link_sync_keeps_actual_return_ownership_and_wor
     let fixture = super::super::link_tests::Fixture::new();
     let registration = fixture.retain_registration();
     let registered = Arc::downgrade(&registration);
-    let entered = Arc::new(Notify::new());
-    let (release, released) = std::sync::mpsc::channel();
-    let mut release = LinkSyncRelease(Some(release));
-    *fixture.control.sync_block.lock().unwrap() = Some(super::super::link_tests::SyncBlock {
-        entered: entered.clone(),
-        release: released,
-    });
-    let cleanup_entered = Arc::new(Notify::new());
-    let (cleanup_release, cleanup_released) = std::sync::mpsc::channel();
-    let mut cleanup_release = LinkSyncRelease(Some(cleanup_release));
-    *fixture.control.cleanup_block.lock().unwrap() = Some(super::super::link_tests::SyncBlock {
-        entered: cleanup_entered.clone(),
-        release: cleanup_released,
-    });
+    let (entered, mut release) = blocked_call(&fixture.control.sync_block);
+    let (cleanup_entered, mut cleanup_release) = blocked_call(&fixture.control.cleanup_block);
     let mut h = Harness::new(Some(fixture.service.clone()));
     observe_link_resources(&fixture, &h);
     let dispatcher = std::thread::current().id();
@@ -708,6 +744,65 @@ async fn shutdown_during_blocked_link_sync_keeps_actual_return_ownership_and_wor
     assert!(registered.upgrade().is_none());
     assert_link_resources_held_until_drop(&fixture, &["stage", "source", "provider"]);
     drop((io, mutation));
+    h.close().await;
+}
+
+/// The actor's abort can come while a poll of a job's task is still running, as on a
+/// worker thread that lost its CPU in it. When that poll then receives the result of
+/// the batch in flight it starts no further batch, so no step begins after the abort.
+/// It used to start one for each result it received, each running its first step
+/// unguarded: on a loaded runner two of them verified and published the link after the
+/// abort, failing the test above.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_poll_still_running_at_the_actor_abort_starts_no_further_step() {
+    let fixture = super::super::link_tests::Fixture::new();
+    let (entered, mut release) = blocked_call(&fixture.control.sync_block);
+    let (cleanup_entered, mut cleanup_release) = blocked_call(&fixture.control.cleanup_block);
+    let (poll, mut poll_release) = HeldPoll::new();
+    let mut h = Harness::configured_with_wakeup(
+        Some(
+            crate::transfer_composition::QualifiedTransferInstallation::audited(
+                fixture.service.clone(),
+            ),
+        ),
+        1,
+        256,
+        poll.wakeup(),
+    );
+    h.controller.enqueue_options(fixture.options(1)).await;
+    tokio::time::timeout(Duration::from_secs(4), entered.notified())
+        .await
+        .unwrap();
+    // The job's next progress tick (`CADENCE`) publishes from its task: hold that poll.
+    poll.armed.store(true, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(4), poll.held.notified())
+        .await
+        .unwrap();
+    h.tasks.abort_all();
+    while h.tasks.join_next().await.is_some() {}
+    release.0.take().unwrap().send(()).unwrap();
+    // The batch in flight ends after its sync step (the job reports the next phase) and
+    // returns its result to the held poll; give the blocking task a moment to store it.
+    h.wait_status(1, |progress| {
+        progress.phase == CopyOperationPhase::Verifying
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    poll_release.0.take().unwrap().send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(4), cleanup_entered.notified())
+        .await
+        .unwrap();
+    let events = fixture.control.events();
+    assert_eq!(
+        events.last(),
+        Some(&"sync"),
+        "a step began after the abort: {events:?}"
+    );
+    assert_eq!(fixture.control.staged_count(), 1);
+    cleanup_release.0.take().unwrap().send(()).unwrap();
+    wait_for_retired_copy_capacity(&h).await;
+    assert_eq!(fixture.control.cleanups.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.control.staged_count(), 0);
     h.close().await;
 }
 

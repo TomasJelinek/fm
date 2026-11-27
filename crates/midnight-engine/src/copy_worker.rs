@@ -192,15 +192,20 @@ thread_local! {
 }
 
 /// The copy actor's wait for its job's blocking calls (`Job::steps`). Dropped with the
-/// actor, or by its abort, it ends a running batch after the step in flight.
+/// actor, or by its abort, it ends a running batch after the step in flight; a batch
+/// that begins later runs no step, and the job starts none (`is_awaited`).
 pub(super) struct Awaited(Arc<std::sync::atomic::AtomicBool>);
 impl Awaited {
     pub(super) fn new() -> Self {
         Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
     }
-    /// The flag a blocking call checks between steps.
+    /// The flag a blocking call checks before each step.
     pub(super) fn flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
         self.0.clone()
+    }
+    /// False once either twin is dropped: the actor no longer awaits the job's calls.
+    pub(super) fn is_awaited(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
     }
     /// A second guard on the same flag; whichever is dropped first ends the batch. The
     /// copy actor keeps one for each job it runs: its abort drops the jobs' tasks only
@@ -318,7 +323,8 @@ impl Job {
     /// disk slot between calls, so a small file's 6-8 quick steps take one hop instead
     /// of one each (WIN-8). Returns at every boundary the actor acts on, as each step
     /// does, and after the step in flight once the actor no longer awaits the call
-    /// (`awaited` cleared when it is dropped or aborted), as a single step would.
+    /// (`awaited` cleared when it is dropped or aborted), as a single step would. A call
+    /// that begins after that runs no step at all.
     pub(super) fn steps(&mut self, awaited: &std::sync::atomic::AtomicBool) -> Step {
         self.steps_within(awaited, STEP_BUDGET)
     }
@@ -330,6 +336,11 @@ impl Job {
         budget: std::time::Duration,
     ) -> Step {
         let started = std::time::Instant::now();
+        let awaits = || awaited.load(std::sync::atomic::Ordering::Acquire);
+        // Checked before the first step too: nothing begins after the actor's abort.
+        if !awaits() {
+            return Step::Continue;
+        }
         loop {
             let step = self.step();
             if !matches!(step, Step::Continue)
@@ -338,7 +349,7 @@ impl Job {
                 || self.current.is_none()
                 || self.cancel.is_cancelled()
                 || self.cancel.pause_requested()
-                || !awaited.load(std::sync::atomic::Ordering::Acquire)
+                || !awaits()
                 || started.elapsed() >= budget
             {
                 return step;

@@ -34,8 +34,11 @@ without being drained delays the run by up to those five seconds, after which th
 remaining actors are aborted. An aborted Copy/Move actor ends each running job's
 batch of steps after the step in flight before its own abort completes: it holds a
 twin of each job's batch guard (`worker::Awaited` in `copy_operations.rs`), and
-whichever twin is dropped first ends the batch, so no further step starts after the
-abort (engine `copy_queue_tests`, `shutdown_during_blocked_link_sync_*`). The explorer's
+whichever twin is dropped first ends the batch. A batch checks the guard before every
+step, its first included, and a job whose task is still being polled when the abort
+comes starts no further batch, so no further step starts after the abort (engine
+`copy_queue_tests`, `shutdown_during_blocked_link_sync_*` and
+`a_poll_still_running_at_the_actor_abort_*`). The explorer's
 2.5-second exit grace (`EXIT_GRACE` in
 `midnight-explorer/src/main.rs`) can expire first; the dropped run then transfers its
 owners to the cleanup thread as described above.
