@@ -3,6 +3,7 @@
 #[cfg(test)]
 extern crate self as midnight_ui;
 mod about_licenses;
+mod about_logo;
 #[cfg(feature = "acceptance-seams")]
 pub mod acceptance_seams;
 mod action_icons;
@@ -1190,6 +1191,7 @@ pub fn install_with_owned(
     });
     dialog_focus::install(window);
     about_licenses::install(window, presenter.clone(), send.clone());
+    about_logo::install(window);
     information_windows::install(window, presenter.clone(), send.clone());
     installation_notice_bridge::install(window, presenter.clone(), send.clone());
     shortcut_bridge::install(window, presenter.clone(), send.clone());

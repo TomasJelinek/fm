@@ -36,6 +36,11 @@ export global AboutView {
     // Retires a shown hint before its control is destroyed: Slint 1.18.1 panics
     // when a popup's `if` drops a control whose tooltip is showing.
     callback retire-hints();
+    // The icon (an image) fitted into a square of whole device pixels (an int), once
+    // for each of the steps (an int) by which its fall is divided: the k-th copy moved
+    // down by k steps, each copy one pixel taller than the square, stacked top to
+    // bottom. Empty when the icon's pixels cannot be read (about_logo.rs).
+    pure callback logo-frames(image, int, int) -> image;
 }
 
 // A tab is a label with an accent underline. It takes keyboard focus: Enter or
@@ -289,6 +294,19 @@ component Sky inherits Rectangle {
     private property <bool> compact: root.height < 150px + root.pill-height;
     // Wide enough for the extra scenes to keep clear of the shooting stars.
     private property <bool> roomy: !root.compact && root.width >= 464px;
+    // The icon's 72 px box in whole device pixels, the copies of the icon (below), made
+    // from the chosen icon's full-size image, and how far it floats below its place, in
+    // sixteenths of a device pixel and in whole device pixels. Without copies the
+    // prefiltered image nearest the box's size stands in.
+    private property <int> logo-pixels: Math.round(72px / 1phx);
+    private property <int> logo-steps: 16;
+    private property <image> logo-frames: AboutView.logo-frames(
+        AppBranding.image-for(AppBranding.icon-index), root.logo-pixels, root.logo-steps);
+    private property <image> logo-fallback: AppBranding.display-image(72px / 1phx);
+    private property <bool> framed: root.logo-frames.width == root.logo-pixels
+        && root.logo-frames.height == root.logo-steps * (root.logo-pixels + 1);
+    private property <int> logo-fall: Math.round(2px / 1phx * Math.sin(root.phase * 3rad) * root.logo-steps);
+    private property <int> logo-whole: Math.floor(root.logo-fall / root.logo-steps);
     background: @linear-gradient(180deg, #050820 0%, #101645 50%, #3b2a72 100%);
     clip: true;
     // Aurora ribbons swaying behind everything.
@@ -345,10 +363,24 @@ component Sky inherits Rectangle {
     }
     // The application icon chosen in Options, shown as it is, with no glow of the sky's
     // own: in front of the stars, behind the clouds and the shooting stars, which are
-    // nearer. A short dialog keeps only the title.
+    // nearer. A short dialog keeps only the title. It floats 2 px up and down every 8 s.
+    // The renderers put an image on whole device pixels, so one image floated a whole
+    // pixel at a time, and they scale a bitmap without mipmaps. Instead it is drawn one
+    // to one from copies prepared for this display, each moved down by another
+    // sixteenth of a pixel: the float's whole device pixels move the image and its
+    // remainder picks the copy. The stand-in without copies holds still.
     Image {
-        source: AppBranding.display-image(self.width / 1phx); image-fit: contain; visible: !root.compact;
-        x: (parent.width - self.width) / 2; y: 28px + 2px * Math.sin(root.phase * 3rad); width: 72px; height: 72px;
+        source: root.framed ? root.logo-frames : root.logo-fallback;
+        image-fit: root.framed ? ImageFit.fill : ImageFit.contain;
+        visible: !root.compact;
+        x: (parent.width - self.width) / 2;
+        y: root.framed ? 28px + root.logo-whole * 1phx : 28px;
+        width: root.framed ? root.logo-pixels * 1phx : 72px;
+        height: root.framed ? (root.logo-pixels + 1) * 1phx : 72px;
+        source-clip-x: 0;
+        source-clip-y: root.framed ? (root.logo-fall - root.logo-whole * root.logo-steps) * (root.logo-pixels + 1) : 0;
+        source-clip-width: root.framed ? root.logo-pixels : root.logo-fallback.width;
+        source-clip-height: root.framed ? root.logo-pixels + 1 : root.logo-fallback.height;
         accessible-role: image; accessible-label: "Midnight Explorer icon";
     }
     // Saturn shows with the icon, in clear sky right of the shooting stars: the far

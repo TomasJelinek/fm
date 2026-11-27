@@ -13,7 +13,10 @@ and drive icons continue to come from the operating system.
   Linux release archives and `scripts/install-linux-desktop.py` install this file.
 - Each design's `ui/` folder holds transparent PNGs at 16, 20, 24, 32, 40, 48,
   64, 72, 96, 128 and 144 pixels. The exporter samples the full artwork at each size so
-  the toolbar, icon picker and About logo can display smooth edges at their own scale.
+  the toolbar and icon picker can display smooth edges at their own scale. The About
+  sky scales `midnight-explorer.png` itself to the display's exact size, in the
+  sub-pixel steps its floating icon needs, and shows the `ui/` image only when it
+  cannot.
 - `midnight-explorer.ico`: Windows executable icon with 16, 20, 24, 32, 40, 48, 64,
   128 and 256-pixel frames. Embedded at build time using the Windows SDK resource
   compiler; the application does not need to load an external icon file at runtime.

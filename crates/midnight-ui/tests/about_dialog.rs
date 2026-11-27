@@ -1,6 +1,7 @@
 //! The About dialog lives inside the main window, can be dragged by its sky and
 //! lists the third-party libraries; a library's notices come from the backend. Its
-//! night sky loops every 72 s and holds still while the system asks for less motion,
+//! night sky loops every 72 s and holds still while the system asks for less motion, its
+//! application icon is drawn one to one at every scale factor and floats without steps,
 //! Saturn and the other scenes keep clear of the title and of each other at every
 //! size, the version pill holds its text at every font size and Slint's pill sits under
 //! the sky beside the tabs or, in a narrow dialog, at the top right of the About tab.
@@ -29,6 +30,7 @@ use slint::{
 };
 use std::{
     cell::{Cell, RefCell},
+    ops::Range,
     rc::Rc,
     time::Duration,
 };
@@ -45,8 +47,18 @@ struct About {
 
 impl About {
     fn open(width: usize, height: usize) -> Self {
+        Self::open_scaled(1.0, width, height)
+    }
+
+    /// About in a window of `width` × `height` logical pixels on a display with this
+    /// scale factor; the frame buffer holds the window's device pixels.
+    fn open_scaled(scale: f32, width: usize, height: usize) -> Self {
         let (mut ui, clock) = ui::TestUi::with_virtual_clock();
-        ui.resize(width, height);
+        if scale == 1.0 {
+            ui.resize(width, height);
+        } else {
+            rescale(&mut ui, scale, width, height);
+        }
         let base = std::env::temp_dir().join("about dialog 文档");
         let presenter = Rc::new(RefCell::new(Presenter::new(
             base.clone(),
@@ -934,6 +946,264 @@ fn the_sky_loops_every_72_seconds() {
             "the sky {seconds} s on is where it was: its loop is shorter than 72 s"
         );
     }
+}
+
+/// Move the window to a display with this scale factor, keeping its size of `width` ×
+/// `height` logical pixels; the frame buffer holds its device pixels.
+fn rescale(test: &mut ui::TestUi, scale: f32, width: usize, height: usize) {
+    test.window
+        .window()
+        .dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+    test.width = (width as f32 * scale).round() as usize;
+    test.height = (height as f32 * scale).round() as usize;
+    test.native.set_size(slint::PhysicalSize::new(
+        test.width as u32,
+        test.height as u32,
+    ));
+    test.window.window().dispatch_event(WindowEvent::Resized {
+        size: slint::LogicalSize::new(width as f32, height as f32),
+    });
+    test.pixels
+        .resize(test.width * test.height, slint::Rgb8Pixel::default());
+    test.draw();
+}
+
+/// The middle of the application icon's art, in device pixels from the window's top:
+/// the centre of the brightness that the art adds to the dark sky in a box of device
+/// pixels around it. The midnight sky there stays below the threshold.
+fn art_middle(test: &ui::TestUi, columns: Range<usize>, rows: Range<usize>) -> f64 {
+    let (mut weight, mut moment) = (0.0, 0.0);
+    for y in rows {
+        for x in columns.clone() {
+            let pixel = test.pixels[y * test.width + x];
+            let light = 0.2126 * f64::from(pixel.r)
+                + 0.7152 * f64::from(pixel.g)
+                + 0.0722 * f64::from(pixel.b);
+            let added = (light - 60.0).max(0.0);
+            weight += added;
+            moment += added * (y as f64 + 0.5);
+        }
+    }
+    moment / weight
+}
+
+/// Six seconds of the icon's float at this display scale factor, a frame every 40 ms,
+/// measured from the drawn frames. A slow float drawn on whole device pixels stands
+/// still and then jumps a whole pixel; a smooth one follows its sine within a fraction
+/// of a pixel and moves a little every frame.
+fn the_icon_floats_smoothly(scale: f32) {
+    const FRAME: Duration = Duration::from_millis(40);
+    let mut about = About::open_scaled(scale, 1000, 800);
+    let s = f64::from(scale);
+    let icon = bounds(&ui::popup_item(
+        about.window(),
+        "Midnight Explorer icon",
+        AccessibleRole::Image,
+    ));
+    // The icon's 72 px box with room for its float either way, in device pixels.
+    let device = |logical: f32| f64::from(logical) * s;
+    let columns = device(icon.min_x()).floor() as usize..device(icon.max_x()).ceil() as usize;
+    let rows =
+        device(icon.min_y() - 4.0).floor() as usize..device(icon.min_y() + 76.0).ceil() as usize;
+    // From 15.4 s into the loop, when no cloud or shooting star passes the icon.
+    ui::advance(&about.clock, Duration::from_millis(15_400));
+    draw_afresh(&mut about.ui);
+    render::snapshot(
+        &about.ui,
+        &format!("about-icon-at-{}", (scale * 100.0) as u32),
+    );
+    let mut samples = Vec::new();
+    for frame in 0..=150 {
+        if frame > 0 {
+            ui::advance(&about.clock, FRAME);
+            about.ui.draw();
+        }
+        // As designed, the icon floats 2 px up and down once every 8 s.
+        let seconds = about.clock.get().as_secs_f64();
+        let float = 2.0 * s * (seconds * std::f64::consts::TAU / 8.0).sin();
+        samples.push((float, art_middle(&about.ui, columns.clone(), rows.clone())));
+    }
+    // How the art's middle follows the float: middle ≈ rest + gain × float.
+    let count = samples.len() as f64;
+    let mean_float = samples.iter().map(|(float, _)| float).sum::<f64>() / count;
+    let mean_middle = samples.iter().map(|(_, middle)| middle).sum::<f64>() / count;
+    let gain = samples
+        .iter()
+        .map(|(float, middle)| (float - mean_float) * (middle - mean_middle))
+        .sum::<f64>()
+        / samples
+            .iter()
+            .map(|(float, _)| (float - mean_float).powi(2))
+            .sum::<f64>();
+    let rest = mean_middle - gain * mean_float;
+    // What is left: the sky behind the icon's transparent edges drifts it slowly by a
+    // few tenths of a pixel; steps stay in the wobble around the mean of the 17
+    // frames about each one.
+    let left: Vec<f64> = samples
+        .iter()
+        .map(|(float, middle)| middle - rest - gain * float)
+        .collect();
+    let stray = left.iter().map(|value| value.abs()).fold(0.0, f64::max);
+    let wobble = (0..left.len())
+        .map(|at| {
+            let around = &left[at.saturating_sub(8)..(at + 9).min(left.len())];
+            (left[at] - around.iter().sum::<f64>() / around.len() as f64).abs()
+        })
+        .fold(0.0, f64::max);
+    let jump = samples
+        .windows(2)
+        .map(|pair| (pair[1].1 - pair[0].1).abs())
+        .fold(0.0, f64::max);
+    // The farthest the float moves between two frames.
+    let glide = 2.0 * s * std::f64::consts::TAU / 8.0 * FRAME.as_secs_f64();
+    let path = samples
+        .iter()
+        .map(|(_, middle)| format!("{middle:.3}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!(
+        "scale {scale}: device box {columns:?} × {rows:?}; gain {gain:.3}, largest stray \
+         {stray:.3} px, wobble {wobble:.3} px, largest step {jump:.3} px (the float glides at \
+         most {glide:.3} px per frame); middles: {path}"
+    );
+    let mut problems = Vec::new();
+    if !(0.85..=1.15).contains(&gain) {
+        problems.push(format!("the icon moves {gain:.3} times its float"));
+    }
+    // Whole-pixel steps stand still and then jump a whole device pixel, half a pixel
+    // off the path on either side.
+    if wobble >= 0.2 {
+        problems.push(format!(
+            "the icon wobbles {wobble:.3} device pixels about its path"
+        ));
+    }
+    if jump >= glide + 0.25 {
+        problems.push(format!(
+            "the icon jumps {jump:.3} device pixels in one frame"
+        ));
+    }
+    assert!(problems.is_empty(), "at {scale}×: {problems:#?}\n{path}");
+}
+
+/// The icon's image size, the part of it the sky draws (x, y, width, height in image
+/// pixels) and the item's size in device pixels.
+fn icon_drawing(about: &About, scale: f32) -> ((u32, u32), [i32; 4], (f32, f32)) {
+    let item = ui::popup_item(
+        about.window(),
+        "Midnight Explorer icon",
+        AccessibleRole::Image,
+    );
+    let image = item
+        .downcast::<ClippedImage>()
+        .expect("the icon draws a part of its image");
+    let image = image.as_pin_ref();
+    let size = image.source().size();
+    let size_in_device = item.geometry().size * scale;
+    (
+        (size.width, size.height),
+        [
+            image.source_clip_x(),
+            image.source_clip_y(),
+            image.source_clip_width(),
+            image.source_clip_height(),
+        ],
+        (size_in_device.width, size_in_device.height),
+    )
+}
+
+/// The pixels of the image the icon draws from.
+fn icon_pixels(about: &About) -> Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
+    let item = ui::popup_item(
+        about.window(),
+        "Midnight Explorer icon",
+        AccessibleRole::Image,
+    );
+    let image = item.downcast::<ClippedImage>()?;
+    image.as_pin_ref().source().to_rgba8_premultiplied()
+}
+
+#[test]
+fn the_application_icon_is_drawn_one_to_one_on_every_display() {
+    let mut about = About::open(1000, 800);
+    // Whole device pixels at the usual Windows scale factors, and at 110 %, where
+    // the 72 px box is 79.2 device pixels.
+    for scale in [1.0_f32, 1.25, 1.5, 1.75, 2.25, 1.1] {
+        rescale(&mut about.ui, scale, 1000, 800);
+        let ((width, height), clip, (drawn_width, drawn_height)) = icon_drawing(&about, scale);
+        // Sixteen copies of the icon at the display's size, each a pixel taller than
+        // the icon for its fraction of a pixel; one of them is drawn one to one.
+        let side = (72.0 * scale).round() as u32;
+        assert_eq!((width, height), (side, 16 * (side + 1)), "at {scale}×");
+        assert_eq!(clip[0], 0, "at {scale}×");
+        assert_eq!(clip[1] % (side as i32 + 1), 0, "at {scale}×: {clip:?}");
+        assert_eq!(
+            (clip[2], clip[3]),
+            (side as i32, side as i32 + 1),
+            "at {scale}×"
+        );
+        assert!(
+            (drawn_width - side as f32).abs() < 0.01
+                && (drawn_height - (side + 1) as f32).abs() < 0.01,
+            "at {scale}× the {} × {} part is drawn {drawn_width} × {drawn_height}",
+            clip[2],
+            clip[3]
+        );
+    }
+    // Another icon chosen in Options is prepared too.
+    let first = icon_pixels(&about).expect("the icon's pixels");
+    about.window().set_app_icon_index(1);
+    about.ui.layout();
+    let second = icon_pixels(&about).expect("the other icon's pixels");
+    assert_eq!(
+        (second.width(), second.height()),
+        (first.width(), first.height())
+    );
+    assert!(
+        second.as_slice() != first.as_slice(),
+        "the sky still shows the first icon"
+    );
+}
+
+#[test]
+fn without_copies_the_prefiltered_icon_stands_in_and_holds_still() {
+    // No presenter is installed, so nothing answers for the copies.
+    let (mut ui, clock) = ui::TestUi::with_virtual_clock();
+    ui.resize(1000, 800);
+    ui.window.invoke_show_about();
+    ui.draw();
+    let place = |ui: &ui::TestUi| {
+        let item = ui::popup_item(&ui.window, "Midnight Explorer icon", AccessibleRole::Image);
+        let image = item.downcast::<ClippedImage>().expect("a clipped image");
+        (image.as_pin_ref().source().size(), bounds(&item))
+    };
+    let (size, at) = place(&ui);
+    // The 72 px image of `assets/branding/ui` for the 72 px box at 100 %.
+    assert_eq!((size.width, size.height), (72, 72));
+    for second in [1_u64, 2, 3, 6] {
+        ui::advance(
+            &clock,
+            Duration::from_secs(second).saturating_sub(clock.get()),
+        );
+        ui.draw();
+        assert_eq!(place(&ui).1, at, "the stand-in moved at {second} s");
+    }
+}
+
+#[test]
+fn the_application_icon_floats_smoothly_at_100_percent() {
+    the_icon_floats_smoothly(1.0);
+}
+
+#[test]
+fn the_application_icon_floats_smoothly_at_125_percent() {
+    the_icon_floats_smoothly(1.25);
+}
+
+#[test]
+fn the_application_icon_floats_smoothly_at_225_percent() {
+    the_icon_floats_smoothly(2.25);
 }
 
 #[test]
