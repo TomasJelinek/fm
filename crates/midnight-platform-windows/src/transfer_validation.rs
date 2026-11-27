@@ -35,6 +35,7 @@ pub(super) fn rewind(
     file: &File,
     path: &Path,
     cancel: &Cancellation,
+    track_identity: bool,
 ) -> Result<Box<dyn TransferReadGuard>, FsError> {
     checked(cancel, path)?;
     // Cloning retains the exact object and file position; it never resolves its old
@@ -42,11 +43,16 @@ pub(super) fn rewind(
     let mut held = file.try_clone().map_err(|e| error(path, e))?;
     let revision = Revision::of(&held, path)?;
     held.seek(SeekFrom::Start(0)).map_err(|e| error(path, e))?;
-    let namespace_owner = super::namespace::try_owner_for(&held, path)?;
+    // A FAT stage has opaque namespace ownership and no rename-stable identity.
+    let owner = if track_identity {
+        super::namespace::try_owner_for(&held, path)?
+    } else {
+        Default::default()
+    };
     Ok(Box::new(ReadGuard {
         file: held,
         revision,
         path: path.to_owned(),
-        _namespace_owner: namespace_owner,
+        _namespace_owner: owner,
     }))
 }

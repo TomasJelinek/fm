@@ -53,7 +53,7 @@ impl TransferService for crate::WindowsFileSystem {
         let link = Native::of(&file, attributes)
             .map_err(|e| error(path, e))?
             .link();
-        // Advisory: the volume alone, also on filesystems that Copy/Move then refuse. A
+        // Advisory: the volume alone, before Copy or Move acquires its own authority. A
         // share is a volume of its own, as for the link facts: a drag from a drive to its
         // own share (`\\localhost\D$`, which reports the drive's serial number) proposes
         // Copy, as a Move there is refused.
@@ -117,7 +117,7 @@ impl TransferService for crate::WindowsFileSystem {
         }
         let file =
             file.ok_or_else(|| invalid(path, "checksum directory requires a native root"))?;
-        destination::Directory::from_file(file, path.to_owned())
+        destination::Directory::for_copy(file, path.to_owned())
             .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
     }
     fn link_destination(
@@ -132,7 +132,13 @@ impl TransferService for crate::WindowsFileSystem {
         path: &Path,
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        self.prepare_transfer_destination(path, cancel)
+        // Move can remove its source after verifying the publication. Its capture and
+        // namespace proofs still require identities that survive a rename.
+        checked(cancel, path)?;
+        validate_path(path, true)?;
+        let file = native::open_parent(path).map_err(|e| error(path, e))?;
+        destination::Directory::from_file(file, path.to_owned())
+            .map(|d| Arc::new(d) as Arc<dyn TransferDirectory>)
     }
     fn prepare_move_source(
         &self,
@@ -203,16 +209,20 @@ impl TransferService for crate::WindowsFileSystem {
         checked(cancel, path)?;
         validate_path(path, true)?;
         let file = native::open_parent(path).map_err(|e| error(path, e))?;
-        destination::Directory::from_file(file, path.to_owned())
+        destination::Directory::for_copy(file, path.to_owned())
             .map(|d| Arc::new(d) as Arc<dyn TransferDirectory>)
     }
 }
 fn identity(file: &File, path: &Path) -> Result<TransferIdentity, FsError> {
-    let id = native::identity(file).map_err(|e| error(path, e))?;
-    Ok(TransferIdentity {
+    native::identity(file)
+        .map(transfer_identity)
+        .map_err(|e| error(path, e))
+}
+fn transfer_identity(id: native::Identity) -> TransferIdentity {
+    TransferIdentity {
         device: id.volume,
         object: id.id,
-    })
+    }
 }
 fn entry(file: &File, path: &Path) -> Result<TransferEntry, FsError> {
     classified(file, path).map(|(entry, _)| entry)
@@ -227,11 +237,18 @@ fn classified_with_metadata(
     file: &File,
     path: &Path,
 ) -> Result<(TransferEntry, Native, std::fs::Metadata), FsError> {
+    classified_using(file, path, identity)
+}
+fn classified_using(
+    file: &File,
+    path: &Path,
+    get_identity: impl FnOnce(&File, &Path) -> Result<TransferIdentity, FsError>,
+) -> Result<(TransferEntry, Native, std::fs::Metadata), FsError> {
     let metadata = file.metadata().map_err(|e| error(path, e))?;
     let native = Native::of(file, metadata.file_attributes()).map_err(|e| error(path, e))?;
     let directory = native.directory();
     let entry = TransferEntry {
-        identity: identity(file, path)?,
+        identity: get_identity(file, path)?,
         item: MutationItem {
             path: path.to_owned(),
             kind: native.kind(),

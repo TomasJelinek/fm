@@ -7,6 +7,138 @@ fn directory(path: &Path) -> Directory {
 }
 
 #[test]
+fn fat_copy_stages_verifies_and_publishes_without_a_persistent_file_id() {
+    let temp = crate::test_fixtures::build_temp("fixture-");
+    let cancel = Cancellation::default();
+    let directory = Directory::from_copy_probe(
+        native::open_parent(temp.path()).unwrap(),
+        temp.path().to_owned(),
+        Err(io::Error::from_raw_os_error(87)),
+        |_| Ok(true),
+    )
+    .unwrap();
+    let name = OsStr::new("the published file has a much longer name.txt");
+    assert!(
+        directory
+            .native_child_namespace_scope(name, EntryKind::File, &cancel)
+            .unwrap()
+            .is_none()
+    );
+    let child = directory
+        .create_directory(OsStr::new("copies"), &cancel)
+        .unwrap();
+    let target = directory
+        .prepare_target(OsStr::new("copies"), &cancel)
+        .unwrap()
+        .unwrap();
+    let moved = temp.path().join("swapped folder");
+    assert!(fs::rename(child.path(), &moved).is_err());
+    target.revalidate(&cancel).unwrap();
+    let merged = directory
+        .open_merge_directory(OsStr::new("copies"), target.entry(), &cancel)
+        .unwrap();
+    assert_eq!(merged.identity(), child.identity());
+    drop(merged);
+    drop(target);
+    let mut stage = child.stage_job_file(&cancel).unwrap();
+    stage.write_all(b"copy from NTFS").unwrap();
+    stage.sync(&cancel).unwrap();
+    let guard = stage.rewind_for_validation(&cancel).unwrap();
+    let mut contents = Vec::new();
+    stage.read_to_end(&mut contents).unwrap();
+    guard.revalidate(&cancel).unwrap();
+    drop(guard);
+    assert_eq!(contents, b"copy from NTFS");
+    stage.publish_no_replace(name, &cancel).unwrap();
+    let published = stage.revalidate_publication(&cancel).unwrap();
+    assert_eq!(
+        child.inspect(name, &cancel).unwrap().unwrap().identity,
+        published
+    );
+    drop(stage);
+    let mut collision = child.stage_job_file(&cancel).unwrap();
+    collision.write_all(b"do not overwrite").unwrap();
+    assert_eq!(
+        collision
+            .publish_no_replace(name, &cancel)
+            .unwrap_err()
+            .kind,
+        io::ErrorKind::AlreadyExists
+    );
+    collision.cleanup().unwrap();
+    drop(collision);
+    assert_eq!(fs::read(child.path().join(name)).unwrap(), contents);
+    assert_eq!(fs::read_dir(child.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn fat_copy_fallback_requires_an_unsupported_id_class_and_a_known_local_fat_volume() {
+    let temp = crate::test_fixtures::build_temp("fixture-");
+    let path = temp.path();
+    let denied = Directory::from_copy_probe(
+        native::open_parent(path).unwrap(),
+        path.to_owned(),
+        Err(io::ErrorKind::PermissionDenied.into()),
+        |_| panic!("permission denial is final"),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(denied.kind, io::ErrorKind::PermissionDenied);
+    let unknown = Directory::from_copy_probe(
+        native::open_parent(path).unwrap(),
+        path.to_owned(),
+        Err(io::ErrorKind::Unsupported.into()),
+        |_| Ok(false),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(unknown.kind, io::ErrorKind::Unsupported);
+}
+
+#[test]
+fn fat_copy_requires_an_unknown_namespace_reservation_before_creating_a_stage() {
+    use midnight_core::{TransferNamespacePin, TransferNamespaceProbe};
+    use midnight_platform_common::transfer_namespace::{
+        TransferNamespaceChange, TransferNamespaceChanges, with_transfer_namespace_changes,
+    };
+    struct Refuse;
+    impl TransferNamespaceChanges for Refuse {
+        fn begin(&self, _: &Cancellation) -> Result<Box<dyn TransferNamespaceChange>, FsError> {
+            Ok(Box::new(Refuse))
+        }
+    }
+    impl TransferNamespaceChange for Refuse {
+        fn reserve_private_child(
+            &mut self,
+            pin: Option<Arc<dyn TransferNamespacePin>>,
+            cancel: &Cancellation,
+        ) -> Result<bool, FsError> {
+            assert!(matches!(
+                pin.unwrap().refresh(cancel)?,
+                TransferNamespaceProbe::Unknown
+            ));
+            Ok(false)
+        }
+        fn finish(self: Box<Self>) -> Result<(), FsError> {
+            Ok(())
+        }
+    }
+    let temp = crate::test_fixtures::build_temp("fixture-");
+    let directory = Directory::from_copy_probe(
+        native::open_parent(temp.path()).unwrap(),
+        temp.path().to_owned(),
+        Err(io::ErrorKind::Unsupported.into()),
+        |_| Ok(true),
+    )
+    .unwrap();
+    let result = with_transfer_namespace_changes(Arc::new(Refuse), || {
+        directory.stage_job_file(&Cancellation::default())
+    });
+    assert_eq!(result.err().unwrap().kind, io::ErrorKind::WouldBlock);
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn colliding_compact_names_retry_exclusively_and_preserve_the_existing_winner() {
     let temp = crate::test_fixtures::build_temp("fixture-");
     let directory = directory(temp.path());

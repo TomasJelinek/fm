@@ -315,15 +315,14 @@ fn the_classic_disposition_clears_read_only_and_puts_it_back_on_an_entry_that_st
 }
 
 #[test]
-fn copy_and_move_refuse_filesystems_without_stable_identities_with_an_actionable_error() {
-    // FAT file indices follow directory-record positions and change when a transfer
-    // renames its own stages, so Copy/Move never fall back to them.
+fn operations_requiring_stable_identities_explain_the_fat_copy_option() {
     for code in [1, 50, 87] {
         let error = without_stable_identity(os(code));
         assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{code}");
         let message = error.to_string();
         assert!(
-            message.contains("Copy and Move are not supported") && message.contains("FAT32"),
+            message.contains("requires stable file identities")
+                && message.contains("receive a copy"),
             "{message}"
         );
     }

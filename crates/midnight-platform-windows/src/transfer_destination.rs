@@ -31,6 +31,9 @@ pub(super) struct Directory {
     file: Arc<File>,
     path: PathBuf,
     identity: TransferIdentity,
+    /// A local FAT Copy destination pins names against deletion. Its directory-record
+    /// indices are valid only at the current name, never across a rename.
+    fat: bool,
     /// What planning links reads once per job, shared with the folders below this one.
     links: Arc<link_stage::LinkFacts>,
     /// This folder's private staging folder of the job (`stage_job_file`), shared by the
@@ -41,23 +44,103 @@ pub(super) struct Directory {
     _namespace_owner: super::namespace::NativeOwner,
 }
 impl Directory {
+    pub(super) fn for_copy(file: File, path: PathBuf) -> Result<Self, FsError> {
+        let id = native::identity(&file);
+        Self::from_copy_probe(file, path, id, |file| {
+            let actual = final_path(file, VOLUME_NAME_DOS)?;
+            if crate::storage_kind::network(&actual) {
+                return Ok(false);
+            }
+            let (_, _, filesystem) = super::link_destination::volume_facts(file)?;
+            Ok(matches!(filesystem.as_str(), "FAT" | "FAT32" | "exFAT"))
+        })
+    }
+
+    fn from_copy_probe(
+        file: File,
+        path: PathBuf,
+        id: io::Result<native::Identity>,
+        local_fat: impl FnOnce(&File) -> io::Result<bool>,
+    ) -> Result<Self, FsError> {
+        match id {
+            Ok(id) => Self::new(file, path, transfer_identity(id), false),
+            Err(failure)
+                if native::unsupported(&failure)
+                    && local_fat(&file).map_err(|e| error(&path, e))? =>
+            {
+                // The original open may share deletion. Pin the exact directory against
+                // renaming before recording its position-dependent index.
+                let held = native::reopen(
+                    &file,
+                    FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                )
+                .map_err(|e| error(&path, e))?;
+                let id = native::legacy_identity(&held).map_err(|e| error(&path, e))?;
+                Self::new(held, path, transfer_identity(id), true)
+            }
+            Err(failure) => Err(error(&path, failure)),
+        }
+    }
     pub(in crate::transfer) fn native_file(&self) -> &File {
         &self.file
     }
     /// A folder a job starts from: link facts are read anew for it.
     pub(super) fn from_file(file: File, path: PathBuf) -> Result<Self, FsError> {
+        let id = identity(&file, &path)?;
+        Self::new(file, path, id, false)
+    }
+    fn new(
+        file: File,
+        path: PathBuf,
+        identity: TransferIdentity,
+        fat: bool,
+    ) -> Result<Self, FsError> {
         if !file.metadata().map_err(|e| error(&path, e))?.is_dir() {
             return Err(invalid(&path, "destination is not a directory"));
         }
-        let identity = identity(&file, &path)?;
-        let namespace_owner = super::namespace::owner(&[identity]);
+        let namespace_owner = if fat {
+            Default::default()
+        } else {
+            super::namespace::owner(&[identity])
+        };
         Ok(Self {
             identity,
+            fat,
             file: Arc::new(file),
             path,
             links: Arc::default(),
             staging: Arc::default(),
             _namespace_owner: namespace_owner,
+        })
+    }
+    fn file_identity(&self, file: &File, path: &Path) -> Result<TransferIdentity, FsError> {
+        if self.fat {
+            native::legacy_identity(file)
+                .map(transfer_identity)
+                .map_err(|e| error(path, e))
+        } else {
+            identity(file, path)
+        }
+    }
+    fn entry(&self, file: &File, path: &Path) -> Result<TransferEntry, FsError> {
+        classified_using(file, path, |file, path| self.file_identity(file, path))
+            .map(|(entry, _, _)| entry)
+    }
+    fn child_directory(&self, file: File, path: PathBuf) -> Result<Self, FsError> {
+        let id = self.file_identity(&file, &path)?;
+        Self::new(file, path, id, self.fat).map(|child| child.below(self))
+    }
+    fn change<T>(
+        &self,
+        cancel: &Cancellation,
+        operation: impl FnOnce(&mut super::namespace::Mutation<'_>) -> Result<T, FsError>,
+    ) -> Result<T, FsError> {
+        super::namespace::change(cancel, |mutation| {
+            if self.fat {
+                mutation.reserve_opaque(&self.path, cancel)?;
+            }
+            operation(mutation)
         })
     }
     /// This folder as one of the same job as `parent` (created or merged into below it),
@@ -76,6 +159,9 @@ impl TransferDirectory for Directory {
         cancel: &Cancellation,
     ) -> Result<Option<Arc<dyn midnight_core::TransferNamespacePin>>, FsError> {
         self.revalidate(cancel)?;
+        if self.fat {
+            return Ok(None);
+        }
         super::namespace::child_pin(&self.file, &self.path, name, kind, cancel).map(Some)
     }
     fn open_read_child(
@@ -191,7 +277,7 @@ impl TransferDirectory for Directory {
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.path)?;
         let visible = native::open_parent(&self.path).map_err(|e| error(&self.path, e))?;
-        if identity(&visible, &self.path)? != self.identity {
+        if self.file_identity(&visible, &self.path)? != self.identity {
             return Err(invalid(&self.path, "destination directory changed"));
         }
         Ok(())
@@ -212,7 +298,7 @@ impl TransferDirectory for Directory {
             FILE_OPEN,
             0,
         ) {
-            Ok(file) => entry(&file, &path).map(Some),
+            Ok(file) => self.entry(&file, &path).map(Some),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(error(&path, e)),
         }
@@ -229,7 +315,7 @@ impl TransferDirectory for Directory {
         for ancestor in actual.ancestors().filter(|p| p.has_root()) {
             checked(cancel, &self.path)?;
             let file = native::open_parent(ancestor).map_err(|e| error(&self.path, e))?;
-            if identity(&file, ancestor)? == source {
+            if self.ancestor_identity(&file, ancestor)? == source {
                 return Err(invalid(
                     &self.path,
                     "destination is inside the source directory",
@@ -250,7 +336,7 @@ impl TransferDirectory for Directory {
         for ancestor in actual.ancestors().filter(|p| p.has_root()) {
             checked(cancel, &self.path)?;
             let file = native::open_parent(ancestor).map_err(|e| error(&self.path, e))?;
-            identities.push(identity(&file, ancestor)?);
+            identities.push(self.ancestor_identity(&file, ancestor)?);
         }
         self.revalidate(cancel)?;
         Ok(Some(identities))
@@ -263,7 +349,7 @@ impl TransferDirectory for Directory {
         self.revalidate(cancel)?;
         validate_name(name).map_err(|e| error(&self.path, e))?;
         let path = self.path.join(name);
-        let file = super::namespace::change(cancel, |mutation| {
+        let file = self.change(cancel, |mutation| {
             mutation
                 .create(
                     &self.file,
@@ -284,8 +370,8 @@ impl TransferDirectory for Directory {
                 )
                 .map_err(|e| error(&path, e))
         })?;
-        Self::from_file(file, path)
-            .map(|directory| Arc::new(directory.below(self)) as Arc<dyn TransferDirectory>)
+        self.child_directory(file, path)
+            .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
     }
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
         self.make_stage(false, cancel)
@@ -336,13 +422,24 @@ impl TransferDirectory for Directory {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         )
         .map_err(|e| error(&self.path, e))?;
-        if identity(&file, &self.path)? != self.identity {
+        if self.file_identity(&file, &self.path)? != self.identity {
             return Err(invalid(&self.path, "the copied folder changed"));
         }
         super::preserve::apply(&file, &self.path, metadata)
     }
 }
 impl Directory {
+    fn ancestor_identity(&self, file: &File, path: &Path) -> Result<TransferIdentity, FsError> {
+        if self.fat {
+            // A directory mount can lead from an NTFS ancestor to this FAT volume.
+            // Compare that ancestor using its native 128-bit identity.
+            native::local_identity(file)
+                .map(transfer_identity)
+                .map_err(|e| error(path, e))
+        } else {
+            identity(file, path)
+        }
+    }
     fn make_stage(
         &self,
         metadata: bool,
@@ -384,7 +481,7 @@ impl Directory {
             checked(cancel, &self.path)?;
             let name = next_name()?;
             let path = self.path.join(&name);
-            let created = super::namespace::change(cancel, |mutation| {
+            let created = self.change(cancel, |mutation| {
                 let file = mutation
                     .create(
                         &self.file,
@@ -417,7 +514,11 @@ impl Directory {
                         },
                     )
                     .map_err(|e| error(&path, e))?;
-                let namespace_owner = super::namespace::owner_for(&file, &path);
+                let namespace_owner = if self.fat {
+                    Default::default()
+                } else {
+                    super::namespace::owner_for(&file, &path)
+                };
                 Ok((file, namespace_owner))
             });
             match created {
@@ -574,14 +675,16 @@ impl StagedTransferFile for Stage {
         if self.cleaned {
             return Err(invalid(&self.path, "stage was cleaned up"));
         }
-        super::validation::rewind(&self.file, &self.path, cancel)
+        super::validation::rewind(&self.file, &self.path, cancel, !self.directory.fat)
     }
     fn revalidate_publication(&self, cancel: &Cancellation) -> Result<TransferIdentity, FsError> {
         let name = self
             .published_name
             .as_ref()
             .ok_or_else(|| invalid(&self.path, "the copy has not been put in place"))?;
-        let own = identity(&self.file, &self.path)?;
+        // FAT can move its directory record when the stage gets its final name.
+        // Read the index through the retained stage *after* that rename.
+        let own = self.directory.file_identity(&self.file, &self.path)?;
         let visible = self.directory.inspect(name, cancel)?.ok_or_else(|| {
             invalid(
                 &self.path,
@@ -641,7 +744,7 @@ impl StagedTransferFile for Stage {
         validate_name(name).map_err(|e| error(&self.path, e))?;
         let path = self.directory.path.join(name);
         checked(cancel, &path)?;
-        super::namespace::change(cancel, |mutation| {
+        self.directory.change(cancel, |mutation| {
             mutation
                 .rename(&self.file, &self.directory.file, name, cancel)
                 .map_err(|e| error(&path, e))
@@ -660,10 +763,12 @@ impl StagedTransferFile for Stage {
             // A stage that keeps a read-only original's attributes carries its read-only
             // attribute: this owned stage is removed whatever that attribute says.
             let read_only = self.preserved.as_ref().is_some_and(|kept| kept.read_only());
-            super::namespace::change(&cancel, |mutation| {
+            self.directory.change(&cancel, |mutation| {
                 mutation
                     .remove(&self.file, &cancel, || {
-                        if read_only {
+                        if self.directory.fat {
+                            native::classic_dispose(&self.file)
+                        } else if read_only {
                             native::remove_confirmed(&self.file)
                         } else {
                             native::remove(&self.file)

@@ -209,8 +209,8 @@ impl PreparedDirectory for WindowsDirectory {
         cancel: &Cancellation,
     ) -> Result<midnight_core::TransferIdentity, FsError> {
         checked(cancel, &self.path)?;
-        // Transfers identify the folder only by its stable FileIdInfo form; a volume
-        // without it (FAT) refuses here rather than compare a legacy index.
+        // The confirmed empty-file replacement that uses this identity requires a
+        // recoverable original. Only persistent identities qualify that operation.
         let identity = native::identity(&self.directory)
             .map_err(|e| failure("read base identity", &self.path, e))?;
         Ok(midnight_core::TransferIdentity {

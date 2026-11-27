@@ -182,7 +182,10 @@ impl TransferTarget for Target {
             0,
         )
         .map_err(|e| error(&self.entry.item.path, e))?;
-        if identity(&visible, &self.entry.item.path)? != self.entry.identity
+        if self
+            .directory
+            .file_identity(&visible, &self.entry.item.path)?
+            != self.entry.identity
             || !self.revision.matches(
                 Revision::of(&self.file, &self.entry.item.path)?,
                 self.policy,
@@ -217,11 +220,19 @@ pub(super) fn prepare_target_with(
     directory.revalidate(cancel)?;
     validate_name(name).map_err(|e| error(&directory.path, e))?;
     let path = directory.path.join(name);
+    // FAT directory-record indices can be reused after a rename. Keep this consent
+    // pin at its original name; FILE_READ_DATA/FILE_LIST_DIRECTORY participates in
+    // Windows share checks, while FILE_READ_ATTRIBUTES alone does not.
+    let (access, share) = if directory.fat {
+        (FILE_READ_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE)
+    } else {
+        (0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+    };
     let file = match native::open_relative(
         &directory.file,
         name,
-        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        access | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        share,
         FILE_OPEN,
         0,
     ) {
@@ -229,8 +240,18 @@ pub(super) fn prepare_target_with(
         Err(failure) if failure.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(failure) => return Err(error(&path, failure)),
     };
-    let (entry, revision) = target_snapshot(&file, &path, policy, || {})?;
-    let namespace_owner = super::super::namespace::owner(&[entry.identity]);
+    let (entry, revision) = target_snapshot(
+        &file,
+        &path,
+        policy,
+        || directory.entry(&file, &path),
+        || {},
+    )?;
+    let namespace_owner = if directory.fat {
+        Default::default()
+    } else {
+        super::super::namespace::owner(&[entry.identity])
+    };
     Ok(Some(Arc::new(Target {
         entry,
         revision,
@@ -248,10 +269,11 @@ fn target_snapshot(
     file: &File,
     path: &Path,
     policy: TransferRevisionPolicy,
+    read_entry: impl FnOnce() -> Result<TransferEntry, FsError>,
     after_display_read: impl FnOnce(),
 ) -> Result<(TransferEntry, Revision), FsError> {
     let before = Revision::of(file, path)?;
-    let display = entry(file, path)?;
+    let display = read_entry()?;
     after_display_read();
     let revision = Revision::of(file, path)?;
     if !before.matches(revision, policy) {
@@ -287,16 +309,15 @@ pub(super) fn open_merge(
         FILE_DIRECTORY_FILE,
     )
     .map_err(|e| error(&path, e))?;
-    if identity(&file, &path)? != expected.identity
-        || entry(&file, &path)?.item.kind != EntryKind::Directory
-    {
+    let entry = directory.entry(&file, &path)?;
+    if entry.identity != expected.identity || entry.item.kind != EntryKind::Directory {
         return Err(invalid(&path, "merge destination identity or type changed"));
     }
-    Ok(Arc::new(Directory::from_file(file, path)?.below(directory)))
+    Ok(Arc::new(directory.child_directory(file, path)?))
 }
 
 pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
-    supported_volume(&directory.file)
+    !directory.fat && supported_volume(&directory.file)
 }
 
 /// Whether the volume that holds `folder` keeps a replaced file recoverable, as Replace

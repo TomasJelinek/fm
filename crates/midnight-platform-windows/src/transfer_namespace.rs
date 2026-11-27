@@ -96,6 +96,7 @@ struct OwnerState {
 /// This field MUST be last in each native owner: Rust drops its File/Arc/guard fields
 /// first. It retains metadata only. Clones count separately, so a surviving directory
 /// clone or returned readback guard cannot certify another owner's final close.
+#[derive(Default)]
 pub(super) struct NativeOwner {
     _job: Option<Arc<Job>>,
     state: Option<Arc<OwnerState>>,
@@ -1073,7 +1074,35 @@ pub(super) fn change<T>(
 fn as_io(error: FsError) -> io::Error {
     io::Error::new(error.kind, error)
 }
+/// All FAT writes have the same unknown geometry. Reusing this witness lets the host
+/// reserve it on every turn without retaining another private alias for every file.
+struct OpaqueWrite;
+impl TransferNamespacePin for OpaqueWrite {
+    fn refresh(&self, _: &Cancellation) -> Result<TransferNamespaceProbe, FsError> {
+        Ok(TransferNamespaceProbe::Unknown)
+    }
+}
+
 impl Mutation<'_> {
+    /// A FAT Copy destination has no rename-stable pins. Reserve the unknown write in
+    /// this turn before touching any name. The job uses the host's opaque exclusion and
+    /// full refresh; none of the following native operations may register exact bindings.
+    pub(super) fn reserve_opaque(
+        &mut self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        if self.job.is_some() {
+            static WRITE: OnceLock<Arc<OpaqueWrite>> = OnceLock::new();
+            let pin = WRITE.get_or_init(|| Arc::new(OpaqueWrite)).clone();
+            if !self.reserve(Some(pin), cancel)? {
+                return Err(error(path, io::ErrorKind::WouldBlock.into()));
+            }
+            self.job = None;
+        }
+        Ok(())
+    }
+
     fn ready(&self) -> Result<(), FsError> {
         self.failure.clone().map_or(Ok(()), Err)
     }

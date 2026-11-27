@@ -546,9 +546,13 @@ fn displayed_target_metadata_and_revision_cannot_straddle_a_concurrent_edit() {
         FILE_NON_DIRECTORY_FILE,
     )
     .unwrap();
-    let result = target_snapshot(&file, &target, TransferRevisionPolicy::Exact, || {
-        fs::write(&target, b"updated longer contents").unwrap()
-    });
+    let result = target_snapshot(
+        &file,
+        &target,
+        TransferRevisionPolicy::Exact,
+        || entry(&file, &target),
+        || fs::write(&target, b"updated longer contents").unwrap(),
+    );
     assert!(
         result.is_err(),
         "conflict display and consent revision describe different versions"

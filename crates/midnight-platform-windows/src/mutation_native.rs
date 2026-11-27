@@ -48,9 +48,8 @@ pub(crate) struct Identity {
 }
 
 /// The volume serial number and 128-bit `FileIdInfo` identifier. It survives renames
-/// and moves within its volume (NTFS, ReFS). Copy and Move compare identities across
-/// their own renames (stage publication, Move capture, namespace pins), so they use only
-/// this form and refuse a filesystem without it.
+/// and moves within its volume (NTFS, ReFS). Move capture and precise namespace pins
+/// compare identities across their own renames and require this form.
 pub(crate) fn identity(file: &File) -> io::Result<Identity> {
     file_id(file).map_err(without_stable_identity)
 }
@@ -62,9 +61,8 @@ fn without_stable_identity(error: io::Error) -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "Copy and Move are not supported on this filesystem: it has no stable file \
-             identities (FAT32 and exFAT media do not). Use an NTFS or ReFS volume, or \
-             transfer these files with another tool. ({error})"
+            "This operation requires stable file identities, which this filesystem does not \
+             provide. FAT32 and exFAT drives can receive a copy from NTFS. ({error})"
         ),
     )
 }
@@ -112,7 +110,7 @@ pub(crate) fn unsupported(error: &io::Error) -> bool {
 
 /// The 64-bit file index and 32-bit volume serial number, for filesystems without
 /// `FileIdInfo` (see [`local_identity`]).
-fn legacy_identity(file: &File) -> io::Result<Identity> {
+pub(crate) fn legacy_identity(file: &File) -> io::Result<Identity> {
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: file retains the live handle and information is an exact writable native
     // structure for this synchronous metadata-only query.
@@ -468,7 +466,7 @@ pub(crate) fn remove_confirmed(source: &File) -> io::Result<()> {
 
 /// The handle-bound disposition of filesystems without POSIX disposition: the name is
 /// removed once every handle to the entry is closed. It refuses a read-only entry.
-fn classic_dispose(source: &File) -> io::Result<()> {
+pub(crate) fn classic_dispose(source: &File) -> io::Result<()> {
     let information = FILE_DISPOSITION_INFO { DeleteFile: true };
     // SAFETY: source has DELETE access; the fixed-size structure is valid during this call.
     native_result(unsafe {

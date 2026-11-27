@@ -1190,11 +1190,11 @@ source it could not restore (see [bounded ordinary Move](#bounded-ordinary-move)
 a native replacement or publication keeps the displaced original in recovery and
 reports it.
 
-Windows Copy and Move require 128-bit `FileIdInfo` identities, because they compare
-identities across their own stage publications, Move captures and namespace pins.
-Volumes without them (FAT32, exFAT, some redirectors), whose 64-bit file indices
-change when an entry is renamed, are refused as sources and destinations with an
-explicit `Unsupported` error.
+On Windows, Copy can publish a new file to a local FAT32 or exFAT destination even when
+the volume does not provide a 128-bit `FileIdInfo`. The job runs in the exclusive
+namespace lane and keeps the staging file open through verification and publication.
+Publication by handle refuses an occupied name. Directory merges keep existing entries.
+Move and transfer sources still require stable IDs. [Windows mutation notes](../../crates/midnight-platform-windows/MUTATION_SAFETY.md#fat32-and-exfat)
 
 The namespace unit tests take their qualified (incremental) branches on a volume
 whose persistent 8.3-name creation is disabled and their unqualified (full-refresh)
@@ -1377,10 +1377,10 @@ default differs from the choice shown, while the user has not chosen, holds the
 confirmation once and shows that folder's default and reason. A confirmation before the
 answer arrives starts with the choice shown, which keeps links.
 
-Copy and Move to FAT32 and exFAT are refused on both platforms by other requirements
-(Linux stages need `O_TMPFILE`; Windows transfers need 128-bit file IDs), so
-there the choice only decides what the dialog shows and says; on a removable NTFS, ext4
-or other link-capable drive it decides what is written.
+Windows can copy ordinary files to a local FAT32 or exFAT destination. On those
+filesystems a link can be copied as its target under **Copy the files links point to**.
+Choosing **Keep links as links** leaves it out. Windows Move still requires stable
+file IDs, and Linux file staging requires `O_TMPFILE`.
 
 ### Keep links as links (`Preserve`)
 

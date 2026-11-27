@@ -58,6 +58,115 @@ async fn real_directory_corpus_matches_independent_sha256_for_both_policies() {
     harness.close().await;
 }
 
+/// Run with MIDNIGHT_TEST_FAT_DIRECTORY pointing to a writable FAT32/exFAT folder.
+/// Only the uniquely named temporary subdirectory on that volume receives any writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "opt-in: needs MIDNIGHT_TEST_FAT_DIRECTORY on FAT32/exFAT media"]
+async fn verified_copy_to_fat_preserves_tree_and_existing_file() {
+    let base = std::path::PathBuf::from(
+        std::env::var_os("MIDNIGHT_TEST_FAT_DIRECTORY").expect("set MIDNIGHT_TEST_FAT_DIRECTORY"),
+    );
+    let facts = LocalFileSystem::new(None)
+        .link_destination(&base, &Cancellation::default())
+        .unwrap();
+    assert!(
+        matches!(facts.filesystem.as_deref(), Some("FAT32" | "exFAT")),
+        "expected FAT32/exFAT media, got {facts:?}"
+    );
+    let target = tempfile::Builder::new()
+        .prefix("midnight-copy-")
+        .tempdir_in(base)
+        .unwrap();
+    let fixture = Fixture::new("copy-to-fat");
+    verified_copy_and_conflict(&fixture, target.path()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn verified_copy_to_native_directory_preserves_tree_and_existing_file() {
+    let fixture = Fixture::new("copy-to-native");
+    verified_copy_and_conflict(&fixture, &fixture.directory("target")).await;
+}
+
+async fn verified_copy_and_conflict(fixture: &Fixture, target: &std::path::Path) {
+    use midnight_core::{
+        CopyLinkPolicy, CopyOptionsInput, CopyOptionsRequest, CopyRequest, FileClipboard,
+        FileClipboardIntent, MetadataTransferInput, MetadataTransferRequest, TransferIntent,
+        TransferMetadataPolicy,
+    };
+    let source = fixture.directory("source");
+    fs::create_dir_all(source.join("nested/empty")).unwrap();
+    let name = "a long filename — červená.bin";
+    let file = source.join("nested").join(name);
+    let bytes = vec![0x75; 180_123];
+    fs::write(&file, &bytes).unwrap();
+    // An even second is representable exactly on both NTFS and FAT32.
+    let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let expected = manifest(&source);
+    let verify = TransferVerification::FullSha256;
+    let mut harness = Harness::new();
+    let request = CopyRequest {
+        id: OperationId(1),
+        start_policy: Default::default(),
+        verification: verify,
+        clipboard: FileClipboard {
+            paths: vec![source.clone()].into(),
+            intent: FileClipboardIntent::Copy,
+        },
+        destination: target.into(),
+    };
+    harness
+        .commands
+        .send(Command::EnqueueCopyWithOptions(Box::new(
+            CopyOptionsRequest {
+                input: CopyOptionsInput::Native(MetadataTransferRequest {
+                    input: MetadataTransferInput::Paths(request),
+                    intent: TransferIntent::Copy,
+                    metadata: TransferMetadataPolicy::PreserveTimesAndAttributes,
+                }),
+                links: CopyLinkPolicy::FollowLinks,
+            },
+        )))
+        .await
+        .unwrap();
+    let copied = harness.completed(1).await;
+    assert_eq!(copied.verified_bytes, bytes.len() as u64);
+    assert_eq!(manifest(&target.join("source")), expected);
+    assert_eq!(
+        fs::metadata(target.join("source/nested").join(name))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        modified
+    );
+
+    fs::write(target.join(name), b"original destination").unwrap();
+    harness.enqueue(2, &[file], target, verify, false).await;
+    let conflict = harness.conflict(2).await;
+    harness
+        .decide(
+            2,
+            conflict.version,
+            CopyChoice::Rename("kept copy.bin".into()),
+        )
+        .await;
+    let renamed = harness.completed(2).await;
+    assert_eq!(renamed.verified_bytes, bytes.len() as u64);
+    harness.close().await;
+    assert_eq!(
+        fs::read(target.join(name)).unwrap(),
+        b"original destination"
+    );
+    assert_eq!(fs::read(target.join("kept copy.bin")).unwrap(), bytes);
+    assert_eq!(fs::read_dir(target).unwrap().count(), 3);
+    assert_eq!(manifest(&source), expected);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_same_volume_directory_move_preserves_identity_and_reads_zero_content() {
     let fixture = Fixture::new("native-move");

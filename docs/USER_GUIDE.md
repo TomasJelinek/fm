@@ -103,6 +103,9 @@ which is not a warning. Where a drive records when folders are read (Windows doe
 smaller drives), a folder's access time is when Copy read it. Paste and drag and drop
 copy content only.
 See [the transfer capabilities and implementation limits](developer/TRANSFERS.md).
+On Windows, you can copy files and folders from NTFS to a local FAT32 or exFAT
+drive. If a file already exists there, choose another name or skip it. Move still
+requires a filesystem with stable file identifiers.
 On Linux, Copy writes only to filesystems with anonymous `O_TMPFILE` files (ext4,
 XFS, Btrfs, tmpfs): FAT/exFAT/NTFS media and NFS/SMB, sshfs or GVfs shares are
 refused as destinations. Rename and permanent Delete on vfat, exFAT, ntfs3 and CIFS
@@ -1572,8 +1575,7 @@ reported as a failure, never deleted permanently instead.
 The Windows Shell's Recycle Bin can refuse long paths that native Rename,
 F7 and permanent deletion handle; such an item is kept, and the Delete reports it as a
 failure. On Windows, removable FAT32/exFAT media have no Recycle Bin (Delete/F8 there
-asks for a permanent deletion at once) and have no stable file identities, so Copy and
-Move refuse them with an explicit error. Permanent deletion there uses the classic delete disposition
+asks for a permanent deletion at once). Permanent deletion there uses the classic delete disposition
 and refuses read-only entries; that is not yet verified on real FAT media (see the
 [Windows mutation notes](../crates/midnight-platform-windows/MUTATION_SAFETY.md#fat32-and-exfat)).
 The dated [operation design](superpowers/specs/2026-11-05-rename-delete-scroll-design.md)

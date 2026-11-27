@@ -734,7 +734,7 @@ impl TransferSource for Source {
         }
         checked(cancel, &self.entry.item.path)?;
         self.ensure_readable()?;
-        super::validation::rewind(self.read_file(), &self.entry.item.path, cancel)
+        super::validation::rewind(self.read_file(), &self.entry.item.path, cancel, true)
     }
     fn seek_for_validation(&mut self, offset: u64, cancel: &Cancellation) -> Result<u64, FsError> {
         checked(cancel, &self.entry.item.path)?;

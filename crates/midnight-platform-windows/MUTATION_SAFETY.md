@@ -124,17 +124,25 @@ renaming an entry to a longer name, moving it or defragmenting the volume change
 and a new entry can reuse a freed value. On such volumes these operations compare
 identities only before they rename an entry. (Metadata editing compares again after
 its case-only rename solely to change compression, which these filesystems do not
-offer, so that edit is refused there first.) Copy and Move compare identities across
-their own stage publication, Move
-capture and namespace pins, so they require the 128-bit `FileIdInfo` and refuse such
-volumes as sources and destinations with an actionable `Unsupported` error.
+offer, so that edit is refused there first.)
 
-This FAT behaviour follows the driver's documented responses; it has not yet run on
-real FAT32/exFAT media (the test host has none and cannot create one without
-administrator rights). The opt-in
-`tests/mutations.rs::removable_media_creation_discovery_and_permanent_deletion`
-qualifies it: set `MIDNIGHT_TEST_FAT_DIRECTORY` to a writable directory on such media
-and run it with `--ignored`. On any other filesystem it checks the ordinary path.
+A Copy to a local FAT32 or exFAT directory uses the exclusive namespace lane. It
+creates a new stage in the destination and holds the file handle through readback
+and the no-replace rename. A FAT directory index may change during that rename. A
+collision leaves the existing file intact, and cleanup operates on the held stage.
+Transfer sources and Move destinations still require the 128-bit `FileIdInfo`.
+
+On 2026-11-27 the Windows engine test
+`operations_real_windows::verified_copy_to_fat_preserves_tree_and_existing_file`
+passed with an NTFS source and a removable FAT32 drive. It verified nested folders,
+a Unicode filename, SHA-256 readback, a preserved modification time and a
+conflict resolved by renaming. The platform test
+`removable_media_verified_copy_preserves_existing_files_and_the_source` also
+verified the drive root as a destination and cleanup after a collision.
+To repeat the checks, set `MIDNIGHT_TEST_FAT_DIRECTORY` to a writable FAT32
+or exFAT directory. The engine test requires `--ignored`. Permanent deletion
+has a separate opt-in qualification in
+`tests/mutations.rs::removable_media_creation_discovery_and_permanent_deletion`.
 
 F7 retains one base-directory handle and revalidates its visible identity. It
 validates the entire explicit request before creation, then uses handle-relative

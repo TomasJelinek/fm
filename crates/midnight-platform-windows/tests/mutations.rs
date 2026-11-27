@@ -369,13 +369,12 @@ fn filesystem_name(path: &Path) -> String {
 /// mutations removable_media -- --ignored --nocapture`. The test works in a fresh
 /// subdirectory it removes again. FAT has no reparse-tag, file-ID or POSIX disposition
 /// classes: classification falls back to basic attributes, deletion to the classic
-/// disposition (refusing Read-only entries) and Copy/Move refuse the volume. On any
+/// disposition. On any
 /// other filesystem the test checks the ordinary behaviour instead, so a dry run on NTFS
 /// exercises the same steps.
 #[test]
 #[ignore = "opt-in: needs MIDNIGHT_TEST_FAT_DIRECTORY on FAT32/exFAT media"]
 fn removable_media_creation_discovery_and_permanent_deletion() {
-    use midnight_core::TransferService;
     let base = std::env::var_os("MIDNIGHT_TEST_FAT_DIRECTORY")
         .expect("set MIDNIGHT_TEST_FAT_DIRECTORY to a writable directory on FAT32/exFAT media");
     let filesystem = filesystem_name(Path::new(&base));
@@ -421,14 +420,6 @@ fn removable_media_creation_discovery_and_permanent_deletion() {
     );
     deleted_cleanly(prepare(&renamed).delete(DeleteMode::Permanent, &cancel, &mut |_| {}));
     assert!(!renamed.exists());
-    // Copy and Move need stable identities.
-    let transfer = filesystem_service.prepare_transfer_destination(temp.path(), &cancel);
-    if fat {
-        let error = transfer.err().expect("FAT has no stable file identities");
-        assert_eq!(error.kind, io::ErrorKind::Unsupported, "{error:?}");
-    } else {
-        transfer.unwrap();
-    }
     // Recursive permanent deletion: FAT refuses the Read-only entry and keeps it.
     let deleted = prepare(&tree).delete(DeleteMode::Permanent, &cancel, &mut |_| {});
     if fat {
@@ -441,6 +432,69 @@ fn removable_media_creation_discovery_and_permanent_deletion() {
         deleted_cleanly(deleted);
     }
     assert!(!tree.exists());
+}
+
+/// Set MIDNIGHT_TEST_FAT_DIRECTORY to exercise the Windows FAT driver; the default
+/// run exercises the same verified copy on the checkout's filesystem.
+#[test]
+fn removable_media_verified_copy_preserves_existing_files_and_the_source() {
+    use midnight_core::TransferService;
+    use midnight_platform_common::transfer::{CopyPhase, VerifiedFileCopy};
+
+    let local = fixture();
+    let media = std::env::var_os("MIDNIGHT_TEST_FAT_DIRECTORY");
+    let base = media.as_deref().map(Path::new).unwrap_or(local.path());
+    let provider = WindowsFileSystem::new(None);
+    let cancel = Cancellation::default();
+    if media.is_some() {
+        assert_eq!(filesystem_name(local.path()), "NTFS");
+        assert!(matches!(
+            filesystem_name(base).as_str(),
+            "FAT" | "FAT32" | "exFAT"
+        ));
+        // A drive root is also a valid destination in the opposite panel.
+        let planned = provider.prepare_checksum_directory(base, &cancel).unwrap();
+        let writable = provider
+            .prepare_transfer_destination(base, &cancel)
+            .unwrap();
+        planned.revalidate(&cancel).unwrap();
+        writable.revalidate(&cancel).unwrap();
+        assert_eq!(planned.identity(), writable.identity());
+    }
+    let target = tempfile::Builder::new()
+        .prefix("midnight-copy-")
+        .tempdir_in(base)
+        .unwrap();
+    let source = local.path().join("original.bin");
+    let bytes: Vec<_> = (0..=255).cycle().take(700_003).collect();
+    fs::write(&source, &bytes).unwrap();
+    let destination = provider
+        .prepare_transfer_destination(target.path(), &cancel)
+        .unwrap();
+    let folder = destination
+        .create_directory(OsStr::new("Copied folder"), &cancel)
+        .unwrap();
+    let existing = folder.path().join("existing.txt");
+    fs::write(&existing, b"keep this file").unwrap();
+    let mut copy = VerifiedFileCopy::new(
+        provider.prepare_transfer_source(&source, &cancel).unwrap(),
+        folder.stage_job_file(&cancel).unwrap(),
+    )
+    .unwrap();
+    while copy.phase() != CopyPhase::ReadyToPublish {
+        copy.step(&cancel).unwrap();
+    }
+    assert_eq!(copy.verified_bytes(), bytes.len() as u64);
+    assert!(copy.publish(OsStr::new("existing.txt"), &cancel).is_err());
+    let name = OsStr::new("A much longer published filename 文档.bin");
+    copy.publish(name, &cancel).unwrap();
+    drop(copy);
+    folder.finish_staging().unwrap();
+    destination.finish_staging().unwrap();
+    assert_eq!(fs::read(folder.path().join(name)).unwrap(), bytes);
+    assert_eq!(fs::read(&source).unwrap(), bytes);
+    assert_eq!(fs::read(&existing).unwrap(), b"keep this file");
+    assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 2);
 }
 
 #[test]
