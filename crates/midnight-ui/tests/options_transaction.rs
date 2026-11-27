@@ -636,7 +636,8 @@ fn reset_defaults_says_what_it_did_even_when_nothing_changes() {
         Some("Reset to defaults changed nothing: every page already showed its defaults.")
     );
     // A preview edit retires the report; Reset then applies the defaults and says so.
-    h.ui.window.invoke_preferences_changed(1, 0, 0);
+    // Blue (index 0) is a dark palette other than the default Dark.
+    h.ui.window.invoke_preferences_changed(0, 0, 0);
     h.ui.draw();
     assert_eq!(reset_status(&h), None);
     ui::click_popup(&h.ui.window, "Reset to defaults", AccessibleRole::Button);
