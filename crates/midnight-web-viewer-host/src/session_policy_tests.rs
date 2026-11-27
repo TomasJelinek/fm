@@ -32,6 +32,7 @@ fn endpoint(ceiling: PolicyCeiling) -> Session {
         document: Arc::new(AtomicU64::new(1)),
         ceiling,
         terminal: Arc::new(Mutex::new(None)),
+        browser: Arc::default(),
         wake: Arc::new(|| true),
         exited: Arc::default(),
         thread: None,

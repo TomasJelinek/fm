@@ -12,6 +12,7 @@ use midnight_plugin_host::{
     api::{messages, viewer},
 };
 use midnight_viewer_render::{TextOptions, TextPage, TextRenderer, Viewport};
+use midnight_work_budget::resident;
 use std::{
     collections::VecDeque,
     path::PathBuf,
@@ -373,6 +374,8 @@ pub(crate) fn run(
         audio_volume,
     } = services;
     output.put(ViewerOutput::Status(PREPARING.into()));
+    let window = crate::window_worker::label(&launch);
+    resident::note(format!("{window}: capturing its file"));
     let link_capture = capture.clone();
     let order = crate::capture::prepare_with(&launch, closed, capture)?;
     crate::open_trace::mark("capture_prepared");
@@ -512,6 +515,7 @@ pub(crate) fn run(
         whole: Default::default(),
     };
     drop(launch);
+    resident::note(format!("{window}: open"));
     worker.open(output);
     while !closed.load(Ordering::Acquire) {
         // Sessions, the image actor, the browser, file captures and settings changes wake
@@ -579,8 +583,20 @@ pub(crate) fn run(
     if let Some(session) = worker.session.take() {
         session.close();
     }
+    resident::note(format!("{window}: closing, releasing its video"));
     let video_cleanup = worker.finish_video();
+    resident::note(match worker.web_process_ids().as_slice() {
+        [] => format!("{window}: closing, releasing its browser"),
+        ids => format!(
+            "{window}: closing, releasing its browser (PID {})",
+            ids.iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    });
     let web_cleanup = worker.finish_web();
+    resident::note(format!("{window}: closing, releasing its other state"));
     let raster_budget = worker.raster_budget.clone();
     drop(worker);
     publish_closed(output, &raster_budget);

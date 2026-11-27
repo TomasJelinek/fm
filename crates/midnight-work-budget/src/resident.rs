@@ -2,7 +2,7 @@
 
 use std::{
     any::Any,
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::VecDeque,
     fmt,
     future::{Future, poll_fn},
@@ -16,7 +16,7 @@ use std::{
     },
     task::{Context, Poll, Wake, Waker},
     thread::{Builder, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{runtime::Handle, sync::oneshot};
 
@@ -99,6 +99,79 @@ struct Worker {
 thread_local! {
     // The worker retains the Arc throughout its loop, so this identity is stable.
     static CURRENT_POOL: Cell<*const Shared> = const { Cell::new(std::ptr::null()) };
+    /// The calling worker's activity slot, which [`note`] updates.
+    static CURRENT_SLOT: RefCell<Option<Slot>> = const { RefCell::new(None) };
+}
+
+/// What one worker's current job is doing, as its body last [`note`]d it.
+struct Activity {
+    phase: String,
+    started: Instant,
+    phase_started: Instant,
+}
+
+/// A worker's current activity: `None` while it runs no job.
+type Slot = Arc<Mutex<Option<Activity>>>;
+
+/// A job still running on a worker of the pool, as [`Shutdown::running`] reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Running {
+    /// The worker thread's name (`<pool>-<index>`).
+    pub thread: String,
+    /// What the job last noted with [`note`]; empty when it noted nothing.
+    pub phase: String,
+    /// How long the job has been running.
+    pub running: Duration,
+    /// How long ago it noted `phase`.
+    pub in_phase: Duration,
+}
+
+impl fmt::Display for Running {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let phase = if self.phase.is_empty() {
+            "a job that noted nothing"
+        } else {
+            &self.phase
+        };
+        write!(
+            f,
+            "{} ({phase}) for {:.1} s, its job for {:.1} s",
+            self.thread,
+            self.in_phase.as_secs_f64(),
+            self.running.as_secs_f64()
+        )
+    }
+}
+
+/// Record what the calling resident job is doing now, so that a shutdown that outlives
+/// its grace can name it ([`Shutdown::running`]). Outside a resident job it does nothing.
+/// Cheap (one uncontended lock); meant for phase changes, not for every step of a loop.
+pub fn note(phase: impl Into<String>) {
+    let phase = phase.into();
+    CURRENT_SLOT.with(|slot| {
+        if let Ok(slot) = slot.try_borrow()
+            && let Some(slot) = slot.as_ref()
+            && let Some(activity) = slot.lock().unwrap_or_else(PoisonError::into_inner).as_mut()
+        {
+            activity.phase = phase;
+            activity.phase_started = Instant::now();
+        }
+    });
+}
+
+/// Start (`Some`) or end (`None`) the calling worker's activity.
+fn set_activity(activity: Option<Activity>) {
+    CURRENT_SLOT.with(|slot| {
+        if let Ok(slot) = slot.try_borrow()
+            && let Some(slot) = slot.as_ref()
+        {
+            let previous = mem::replace(
+                &mut *slot.lock().unwrap_or_else(PoisonError::into_inner),
+                activity,
+            );
+            drop(previous);
+        }
+    });
 }
 
 struct Shared {
@@ -109,6 +182,8 @@ struct Shared {
     name: String,
     queue: Mutex<Queue>,
     changed: Condvar,
+    /// Each live worker's thread name and activity slot.
+    slots: Mutex<Vec<(String, Slot)>>,
 }
 
 struct Queue {
@@ -195,6 +270,7 @@ impl Owner {
                 next_index: threads,
             }),
             changed: Condvar::new(),
+            slots: Mutex::new(Vec::new()),
         });
         let mut owner = Self {
             shared: Arc::clone(&shared),
@@ -331,6 +407,32 @@ impl Future for Ticket {
         Pin::new(&mut self.done)
             .poll(cx)
             .map(|result| result.unwrap_or(Err(TaskError::WorkerFailed)))
+    }
+}
+
+impl Shutdown {
+    /// The jobs still running on the pool's workers, in the order the workers started:
+    /// what each last [`note`]d and for how long. Empty once every job has ended. For
+    /// naming what a shutdown that outlived its grace still waits for; it does not wait.
+    pub fn running(&self) -> Vec<Running> {
+        let now = Instant::now();
+        let slots = self
+            .shared
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        slots
+            .iter()
+            .filter_map(|(thread, slot)| {
+                let activity = slot.lock().unwrap_or_else(PoisonError::into_inner);
+                activity.as_ref().map(|activity| Running {
+                    thread: thread.clone(),
+                    phase: activity.phase.clone(),
+                    running: now.saturating_duration_since(activity.started),
+                    in_phase: now.saturating_duration_since(activity.phase_started),
+                })
+            })
+            .collect()
     }
 }
 
@@ -481,13 +583,23 @@ impl Job {
                 .0
                 .take()
                 .expect("a queued job carries one work envelope");
-            match catch_unwind(AssertUnwindSafe(move || {
+            if execute {
+                let now = Instant::now();
+                set_activity(Some(Activity {
+                    phase: String::new(),
+                    started: now,
+                    phase_started: now,
+                }));
+            }
+            let ran = catch_unwind(AssertUnwindSafe(move || {
                 if execute {
                     work();
                 } else {
                     drop(work);
                 }
-            })) {
+            }));
+            set_activity(None);
+            match ran {
                 Ok(()) if execute => (Ok(()), true),
                 Ok(()) => (Err(TaskError::Cancelled), true),
                 Err(payload) => (Err(TaskError::Panicked), dispose_panic(payload)),
@@ -596,6 +708,21 @@ fn worker_main(
     resident: bool,
 ) {
     CURRENT_POOL.with(|pool| pool.set(Arc::as_ptr(&shared)));
+    let slot: Slot = Arc::new(Mutex::new(None));
+    let thread = std::thread::current()
+        .name()
+        .unwrap_or(&shared.name)
+        .to_owned();
+    shared
+        .slots
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((thread, Arc::clone(&slot)));
+    CURRENT_SLOT.with(|current| {
+        if let Ok(mut current) = current.try_borrow_mut() {
+            *current = Some(Arc::clone(&slot));
+        }
+    });
     if let Some(ready) = ready {
         let _ = ready.send(());
     }
@@ -616,6 +743,12 @@ fn worker_main(
     for job in shared.worker_exited(healthy) {
         job.quarantine(&shared);
     }
+    // An elastic pool's extra workers come and go: forget this one's slot.
+    shared
+        .slots
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|(_, other)| !Arc::ptr_eq(other, &slot));
     if let Err(payload) = notify(on_exit, ()) {
         shared.mark_failed();
         dispose_panic(payload);

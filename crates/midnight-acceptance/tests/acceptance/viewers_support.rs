@@ -654,11 +654,13 @@ impl Plugins {
             .into_iter()
             .map(|(name, owner)| (name, owner.shutdown(runtime.handle())))
             .collect();
-        for (name, shutdown) in waits {
-            match runtime.block_on(async { tokio::time::timeout(CONTENT_GRACE, shutdown).await }) {
+        for (name, mut shutdown) in waits {
+            match runtime
+                .block_on(async { tokio::time::timeout(CONTENT_GRACE, &mut shutdown).await })
+            {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => errors.push(format!("{name} worker cleanup: {error}")),
-                Err(_) => errors.push(format!("{name} workers exceeded the content exit grace")),
+                Err(_) => errors.push(overrun(name, runtime, shutdown)),
             }
         }
         if errors.is_empty() {
@@ -667,6 +669,81 @@ impl Plugins {
             Err(errors.join("; "))
         }
     }
+}
+
+/// How long a shutdown past [`CONTENT_GRACE`] is still watched, so that the failure says by
+/// how much it overran (or that it did not end at all).
+const OVERRUN_WATCH: Duration = Duration::from_secs(30);
+
+/// The failure of a resident pool whose shutdown outlived [`CONTENT_GRACE`]: the jobs still
+/// running then (thread, what the job last noted and for how long), each later change of
+/// what runs, and when the pool retired, watched for up to [`OVERRUN_WATCH`] more.
+fn overrun(
+    name: &str,
+    runtime: &tokio::runtime::Runtime,
+    mut shutdown: resident::Shutdown,
+) -> String {
+    let phases = |running: &[resident::Running]| -> Vec<(String, String)> {
+        running
+            .iter()
+            .map(|job| (job.thread.clone(), job.phase.clone()))
+            .collect()
+    };
+    let listed = |running: &[resident::Running]| -> String {
+        if running.is_empty() {
+            "no job (the threads had not yet returned)".to_owned()
+        } else {
+            running
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+    let at_grace = shutdown.running();
+    let mut message = format!(
+        "{name} workers exceeded the content exit grace ({:.1} s); still running then: {}",
+        CONTENT_GRACE.as_secs_f64(),
+        listed(&at_grace)
+    );
+    let mut last = phases(&at_grace);
+    let watched = Instant::now();
+    let ended = runtime.block_on(async {
+        loop {
+            match tokio::time::timeout(Duration::from_millis(20), &mut shutdown).await {
+                Ok(result) => break Some(result),
+                Err(_) if watched.elapsed() >= OVERRUN_WATCH => break None,
+                Err(_) => {
+                    let running = shutdown.running();
+                    let now = phases(&running);
+                    if now != last {
+                        message.push_str(&format!(
+                            "; +{:.2} s: {}",
+                            watched.elapsed().as_secs_f64(),
+                            listed(&running)
+                        ));
+                        last = now;
+                    }
+                }
+            }
+        }
+    });
+    match ended {
+        Some(Ok(())) => message.push_str(&format!(
+            "; all retired {:.2} s after the grace",
+            watched.elapsed().as_secs_f64()
+        )),
+        Some(Err(error)) => message.push_str(&format!(
+            "; retirement failed {:.2} s after the grace: {error}",
+            watched.elapsed().as_secs_f64()
+        )),
+        None => message.push_str(&format!(
+            "; still running {} s after the grace: {}",
+            OVERRUN_WATCH.as_secs(),
+            listed(&shutdown.running())
+        )),
+    }
+    message
 }
 
 /// The viewer's content authority: the main file through the native plugin, local

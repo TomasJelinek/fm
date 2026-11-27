@@ -26,6 +26,10 @@ pub struct Process {
     executable: PathBuf,
 }
 impl Process {
+    /// The broker's process ID, for diagnostics.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
     pub fn kill(&mut self) -> io::Result<()> {
         self.cgroup.kill()
     }

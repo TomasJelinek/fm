@@ -136,6 +136,10 @@ impl Startup {
             manager: Manager::new(Native, move |run| {
                 // This owner retains Shared, not the external Control whose Drop requests shutdown.
                 // No UI-held last Arc can consequently destroy a ready process synchronously.
+                let run: midnight_work_budget::resident::Work = Box::new(move || {
+                    midnight_work_budget::resident::note("image spare manager");
+                    run();
+                });
                 if let Err(rejected) = resident.spawn(&handle, run) {
                     // Application shutdown retains this transient runtime until
                     // resident/refusal disposal completes; no new runtime is made.

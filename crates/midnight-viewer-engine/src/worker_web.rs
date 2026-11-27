@@ -64,6 +64,10 @@ pub(super) trait Browser: Send {
     fn sandbox_refusal(&self) -> Option<midnight_web_viewer_host::SandboxRefusal> {
         None
     }
+    /// The browser's process ID once it started, for naming a slow release only.
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
 }
 
 impl Browser for midnight_web_viewer_host::Session {
@@ -87,6 +91,9 @@ impl Browser for midnight_web_viewer_host::Session {
     }
     fn sandbox_refusal(&self) -> Option<midnight_web_viewer_host::SandboxRefusal> {
         midnight_web_viewer_host::Session::sandbox_refusal(self)
+    }
+    fn process_id(&self) -> Option<u32> {
+        midnight_web_viewer_host::Session::browser_process_id(self)
     }
 }
 
@@ -516,6 +523,16 @@ impl Worker {
             record_web_retirement(&mut self.web_retirement_error, release_web(session))?;
         }
         Ok(true)
+    }
+
+    /// The browser processes of this window's sessions, for naming a slow release.
+    pub(super) fn web_process_ids(&self) -> Vec<u32> {
+        self.web
+            .iter()
+            .map(|web| &web.session)
+            .chain(self.closing_web.iter())
+            .filter_map(|session| session.process_id())
+            .collect()
     }
 
     pub(super) fn finish_web(&mut self) -> Result<(), String> {

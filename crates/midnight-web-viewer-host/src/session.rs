@@ -6,7 +6,7 @@ use std::{
     panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     thread::JoinHandle,
 };
@@ -261,6 +261,8 @@ struct Shared {
     policy: api::Policy,
     cleanup: CleanupStatus,
     terminal: Arc<Mutex<Option<Result<(), String>>>>,
+    /// The browser broker's process ID once it started, 0 before (diagnostics only).
+    browser: Arc<AtomicU32>,
 }
 
 /// Publishes the actor thread's exit, then wakes the consumer. Created first on that
@@ -292,6 +294,7 @@ pub struct Session {
     generation: Arc<Generation>,
     ceiling: PolicyCeiling,
     terminal: Arc<Mutex<Option<Result<(), String>>>>,
+    browser: Arc<AtomicU32>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -429,6 +432,7 @@ impl Session {
             policy: options.policy,
             cleanup,
             terminal: Arc::new(Mutex::new(None)),
+            browser: Arc::default(),
         };
         let exited = Arc::new(AtomicBool::new(false));
         let exit = (exited.clone(), shared.wake.clone());
@@ -455,6 +459,7 @@ impl Session {
             generation: shared.generation,
             ceiling: shared.ceiling,
             terminal: shared.terminal,
+            browser: shared.browser,
             thread: Some(thread),
         })
     }
@@ -598,6 +603,12 @@ impl Session {
         self.thread.is_none() || self.exited.load(Ordering::Acquire)
     }
 
+    /// The browser broker's process ID, once the session started it: for naming a browser
+    /// whose cleanup is slow, never for acting on the process.
+    pub fn browser_process_id(&self) -> Option<u32> {
+        Some(self.browser.load(Ordering::Acquire)).filter(|id| *id != 0)
+    }
+
     pub fn policy_change_allowed(&self) -> bool {
         self.ceiling == PolicyCeiling::UserChoice
     }
@@ -708,6 +719,7 @@ mod tests {
             generation: Arc::default(),
             ceiling: PolicyCeiling::UserChoice,
             terminal: Arc::new(Mutex::new(None)),
+            browser: Arc::default(),
             thread: None,
         }
     }

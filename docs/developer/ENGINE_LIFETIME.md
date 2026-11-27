@@ -507,7 +507,21 @@ inside the engine's exit deadline: the explorer's 2.5-second exit grace
 (`EXIT_GRACE`), which settings reconciliation shares but cannot shorten below the
 engine's 500 ms minimum (`ENGINE_MINIMUM_GRACE`). Viewer and
 comparison workers are sealed together after the engine and image-spare waits and
-get a 2.5-second grace of their own.
+get a 2.5-second grace of their own. An HTML viewer window's browser tree gets two
+seconds from its termination (`TREE_EXIT`, [web viewer API](WEB_VIEWER_API.md)), below
+that grace, and viewer windows close with the main window (`RetryPass`), so their workers
+start that termination before the engine and image-spare waits. A video window's helper
+retirement waits up to 4 s (`RETIRE` in `video_actor.rs`), longer than the grace; an exit
+that closes a video whose helper does not end promptly can still exceed it.
+
+A resident job can say what it is doing with `resident::note(phase)` (one uncontended
+lock, at phase changes only), and `Shutdown::running()` lists the jobs a shutdown still
+waits for: the worker thread, the phase its job last noted and for how long. Viewer
+windows note their file and phase (starting, capturing its file, open, closing and
+releasing its video, its browser or its other state) and the image-spare manager names
+itself, so an exit past the grace names what it waited for (`ContentWorkers::finish`
+and the acceptance harness's `viewers_support::overrun`, which also watches 30 s more to
+say by how much it overran).
 
 ## Scope of these guarantees
 

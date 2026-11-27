@@ -504,6 +504,9 @@ pub(super) fn run(
         launch_extensions(shared.links),
     )
     .map_err(|error| launch_failed(shared, &error))?;
+    shared
+        .browser
+        .store(browser.process.id(), Ordering::Release);
     let transport = Transport {
         input: Box::new(browser.input),
         output: Box::new(browser.output),

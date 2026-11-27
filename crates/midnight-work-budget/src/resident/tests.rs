@@ -1145,3 +1145,86 @@ fn elastic_pool_refuses_as_thread_unavailable_when_a_thread_cannot_start() {
     assert_eq!(wait(&runtime, busy), Ok(()));
     assert!(wait(&runtime, owner.shutdown(runtime.handle())).is_ok());
 }
+
+/// A shutdown that outlives its grace can name what it still waits for: the worker, the
+/// phase its job last noted and for how long. Idle workers and finished jobs are not
+/// listed, a job that noted nothing is listed without a phase, `note` outside a job does
+/// nothing, and an elastic pool forgets the slots of its extra workers once they end.
+#[test]
+fn shutdown_names_the_jobs_still_running_and_their_last_phase() {
+    note("outside any resident job");
+    let (owner, spawner) = Owner::start_elastic("activity", 2).unwrap();
+    let runtime = runtime();
+    // Both resident workers wait first, so the first two jobs start no extra worker.
+    let deadline = std::time::Instant::now() + LIMIT;
+    while spawner.shared.lock().idle < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the resident workers never waited"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+    let (noted, observed) = mpsc::channel();
+    let (release, hold) = mpsc::channel::<()>();
+    let quiet = start_blocked(&spawner, &runtime);
+    let busy = spawner
+        .spawn(
+            runtime.handle(),
+            Box::new(move || {
+                note("first phase");
+                note("closing, releasing its browser");
+                noted.send(()).unwrap();
+                let _ = hold.recv();
+            }),
+        )
+        .unwrap();
+    observed.recv_timeout(LIMIT).unwrap();
+    // A third job on an elastic pool of two starts an extra worker, which ends with it.
+    let (extra, _, extra_release) = start_blocked(&spawner, &runtime);
+    drop(extra_release);
+    assert_eq!(wait(&runtime, extra), Ok(()));
+    let deadline = std::time::Instant::now() + LIMIT;
+    while spawner.shared.slots.lock().unwrap().len() > 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ended extra worker kept its slot"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    let mut shutdown = owner.shutdown(runtime.handle());
+    let pending = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_millis(50), &mut shutdown).await });
+    assert!(pending.is_err(), "both jobs still run");
+    let running = shutdown.running();
+    assert_eq!(running.len(), 2, "{running:?}");
+    assert!(
+        running
+            .iter()
+            .all(|job| job.thread.starts_with("activity-"))
+    );
+    let phases: Vec<&str> = running.iter().map(|job| job.phase.as_str()).collect();
+    assert!(phases.contains(&""), "{phases:?}");
+    assert!(
+        phases.contains(&"closing, releasing its browser"),
+        "{phases:?}"
+    );
+    let browser = running.iter().find(|job| !job.phase.is_empty()).unwrap();
+    assert!(browser.in_phase <= browser.running);
+    assert!(
+        browser
+            .to_string()
+            .contains("(closing, releasing its browser) for "),
+        "{browser}"
+    );
+
+    drop(quiet.2);
+    assert_eq!(wait(&runtime, quiet.0), Ok(()));
+    let running = shutdown.running();
+    assert_eq!(running.len(), 1, "a finished job is no longer listed");
+    assert_eq!(running[0].phase, "closing, releasing its browser");
+    drop(release);
+    assert_eq!(wait(&runtime, busy), Ok(()));
+    assert!(wait(&runtime, &mut shutdown).is_ok());
+    assert!(shutdown.running().is_empty());
+}

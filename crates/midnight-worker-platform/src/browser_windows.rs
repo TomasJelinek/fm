@@ -19,30 +19,54 @@ use windows_sys::Win32::{
     System::{JobObjects::*, Threading::*},
 };
 
-/// Bound for the remaining Chromium processes to exit after their job is terminated.
+/// Bound for the whole Chromium tree, the broker included, to exit after the first
+/// termination of its job. Termination is asynchronous: on a loaded machine
+/// (`viewers_controls` beside three other acceptance scenarios) a terminated broker's
+/// handle was signalled after up to 8 s, and once not within 34 s, while its job already
+/// reported no active process.
 const TREE_EXIT: Duration = Duration::from_secs(2);
 
 /// The broker and its whole process tree, which share one kill-on-close job.
 pub struct Process {
     process: OwnedHandle,
     job: OwnedHandle,
+    /// When the job was first terminated: every later wait shares the one `TREE_EXIT`
+    /// bound from then, so a wait after a kill, repeated by the drop, never waits longer.
+    terminated: Option<Instant>,
 }
 
 impl Process {
+    /// The broker's process ID, for diagnostics.
+    pub fn id(&self) -> u32 {
+        // SAFETY: the owned process handle stays live for this owner's lifetime.
+        unsafe { GetProcessId(self.process.as_raw_handle()) }
+    }
+
     /// Terminate every process of the browser job. Termination completes asynchronously.
     pub fn kill(&mut self) -> io::Result<()> {
+        // Before the call: even a failed termination request bounds the waits after it.
+        self.terminated.get_or_insert_with(Instant::now);
         // SAFETY: the owned job remains live; only the browser tree belongs to it.
         check(unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) })
     }
 
     /// Wait for the broker, then end and await every remaining process of its job, so the
     /// session profile is no longer in use when this returns (as Linux awaits its cgroup).
-    /// `Ok(false)` reports a nonzero broker exit status.
+    /// `Ok(false)` reports a nonzero broker exit status. After a [`kill`](Self::kill), the
+    /// broker and the rest of its tree get `TREE_EXIT` from that first termination
+    /// together: a tree still exiting then is reported as `TimedOut` instead of holding the
+    /// viewer's worker. Its processes run no more code; the kill-on-close job is closed
+    /// with this owner, and the profile they still hold is removed by a later session's
+    /// sweep. A broker that was never killed is awaited without a bound.
     pub fn wait(&mut self) -> io::Result<bool> {
-        let code = wait_process(&self.process)?;
+        let code = match self.terminated {
+            Some(terminated) => wait_process_until(&self.process, terminated + TREE_EXIT)?,
+            None => wait_process(&self.process)?,
+        };
         // A broker may exit before its GPU, renderer and utility descendants.
         self.kill()?;
-        wait_job_empty(&self.job, Instant::now() + TREE_EXIT)?;
+        let deadline = self.terminated.unwrap_or_else(Instant::now) + TREE_EXIT;
+        wait_job_empty(&self.job, deadline)?;
         Ok(code == 0)
     }
 
@@ -58,6 +82,27 @@ impl Drop for Process {
         // A dropped supervisor cannot leave browser processes running in the background.
         let _ = self.kill();
         let _ = self.wait();
+    }
+}
+
+/// Wait for a terminated broker to exit, until `deadline`, and return its exit code.
+fn wait_process_until(process: &OwnedHandle, deadline: Instant) -> io::Result<u32> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    // Whole milliseconds, rounded up, so a wait never ends before the deadline.
+    let milliseconds = u32::try_from(left.as_micros().div_ceil(1000)).unwrap_or(INFINITE - 1);
+    // SAFETY: an owned live process handle; the wait is bounded.
+    match unsafe { WaitForSingleObject(process.as_raw_handle(), milliseconds) } {
+        WAIT_OBJECT_0 => {
+            let mut code = 1;
+            // SAFETY: the same live handle; `code` is a valid output location.
+            check(unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) })?;
+            Ok(code)
+        }
+        WAIT_TIMEOUT => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Chromium broker still running after tree termination",
+        )),
+        _ => Err(io::Error::last_os_error()),
     }
 }
 
@@ -245,7 +290,11 @@ pub(super) fn spawn(
         }
         return Err(error);
     }
-    let process = Process { process, job };
+    let process = Process {
+        process,
+        job,
+        terminated: None,
+    };
     // Like the workers: a broker that cannot start ends with the loader's status, and CEF's
     // own processes inherit the broker's error mode. The guard kills the suspended broker.
     suppress_error_dialogs(&process.process)?;
@@ -309,6 +358,79 @@ mod tests {
         // SAFETY: terminate only this test's job; then the bounded wait observes it empty.
         check(unsafe { TerminateJobObject(job.as_raw_handle(), 1) }).unwrap();
         wait_job_empty(&job, Instant::now() + Duration::from_secs(10)).unwrap();
+    }
+
+    /// A broker that has not exited `TREE_EXIT` after its tree was terminated no longer
+    /// holds the caller: the wait reports `TimedOut`, and the drop's repeated kill and wait
+    /// share that first deadline instead of waiting again. The broker here sits outside the
+    /// job, so terminating the job leaves it running, as termination that does not complete
+    /// (a loaded machine kept a real broker alive for more than 34 s) leaves the waiter.
+    #[test]
+    fn waits_after_a_termination_share_one_bound() {
+        use std::os::windows::{io::AsHandle, process::CommandExt};
+        let broker = Fixture(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "no-such-test"])
+                .creation_flags(CREATE_SUSPENDED)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut process = Process {
+            process: broker.0.as_handle().try_clone_to_owned().unwrap(),
+            job: job(),
+            terminated: None,
+        };
+        let killed = Instant::now();
+        process.kill().unwrap();
+        let error = process.wait().unwrap_err();
+        let waited = killed.elapsed();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
+        // Windows may end a timed wait up to a timer tick early.
+        assert!(
+            waited >= TREE_EXIT - Duration::from_millis(50),
+            "{waited:?}"
+        );
+        assert!(waited < TREE_EXIT + Duration::from_secs(3), "{waited:?}");
+        // The drop's kill and wait: the deadline has passed, so it returns at once.
+        let dropped = Instant::now();
+        drop(process);
+        assert!(
+            dropped.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            dropped.elapsed()
+        );
+        // Still running: only the waits ended. The fixture ends it.
+        assert!(process_alive(broker.0.id()));
+    }
+
+    /// A broker in its job exits on termination, and the wait confirms the whole tree.
+    #[test]
+    fn a_terminated_broker_in_its_job_is_confirmed_well_within_the_bound() {
+        use std::os::windows::{io::AsHandle, process::CommandExt};
+        let broker = Fixture(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "no-such-test"])
+                .creation_flags(CREATE_SUSPENDED)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let job = job();
+        // SAFETY: the live owned job and child process handles.
+        check(unsafe { AssignProcessToJobObject(job.as_raw_handle(), broker.0.as_raw_handle()) })
+            .unwrap();
+        let mut process = Process {
+            process: broker.0.as_handle().try_clone_to_owned().unwrap(),
+            job,
+            terminated: None,
+        };
+        process.kill().unwrap();
+        // Terminated with exit code 1, so `Ok(false)`.
+        assert!(!process.wait().unwrap());
+        assert!(!process_alive(broker.0.id()));
     }
 
     #[test]

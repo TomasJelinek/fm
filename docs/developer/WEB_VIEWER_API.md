@@ -131,9 +131,16 @@ DLL and the exact five-argument `RunWinMain` sandbox ABI. It passes the sandbox
 state to subprocess dispatch and initialization. A host kill-on-close job owns
 up to 32 processes and 2 GiB aggregate committed memory. Browser profile files live
 in a fresh private session directory. After the browser tree is terminated, the host
-waits up to two seconds for every browser process to exit (Windows until the job
-reports no active process, Linux until the session's cgroup is empty) and then removes
-the directory. A directory that could not be removed then, or one left by a crashed
+waits up to two seconds for every browser process to exit (Windows until the broker has
+exited and the job reports no active process, both within two seconds of the first
+termination, `TREE_EXIT` in `midnight-worker-platform`'s `browser_windows.rs`; Linux
+until the session's cgroup is empty) and then removes the directory. Termination is
+asynchronous: on a loaded Windows machine a terminated broker often took more than two
+seconds to exit, up to 8 s and once more than 34 s, while its job already reported no
+active process; a tree still exiting after the bound is reported as timed out rather than
+awaited further. The viewer's worker (and an application exit, which waits
+2.5 s for viewer workers) is then not held; the terminated processes run no more code.
+A directory that could not be removed then, or one left by a crashed
 session, is removed when a later application process starts its first browser. The
 user's normal browser profile is never used. Linux has its own launcher and
 requires Linux 5.14+ with cgroup v2 and an existing writable user delegation with

@@ -35,8 +35,18 @@ impl Job {
     }
 }
 
+/// How a viewer window's resident job names itself while it runs (`resident::note`): the
+/// file it was opened on, so that an exit that outlives its grace names the window.
+pub(super) fn label(launch: &ViewerLaunch) -> String {
+    match launch.focused.file_name() {
+        Some(name) => format!("viewer window {:?}", name.to_string_lossy()),
+        None => "viewer window".to_owned(),
+    }
+}
+
 impl Work {
     fn run(self) {
+        midnight_work_budget::resident::note(format!("{}: starting", label(&self.launch)));
         crate::open_trace::mark("worker_start");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if self.service.fonts.get().is_none()

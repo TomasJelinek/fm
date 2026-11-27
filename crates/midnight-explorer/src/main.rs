@@ -391,16 +391,30 @@ impl ContentWorkers {
 
 async fn wait_content_workers(
     name: &str,
-    shutdown: resident::Shutdown,
+    mut shutdown: resident::Shutdown,
     deadline: tokio::time::Instant,
 ) -> Result<(), String> {
-    match tokio::time::timeout_at(deadline, shutdown).await {
+    match tokio::time::timeout_at(deadline, &mut shutdown).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(format!("{name} worker cleanup is unconfirmed: {error}")),
-        Err(_) => Err(format!(
-            "{name} worker cleanup exceeded the content exit grace."
-        )),
+        Err(_) => Err(content_overrun(name, &shutdown.running())),
     }
+}
+
+/// What a content pool whose shutdown outlived its grace was still doing: each worker, the
+/// phase its job last noted (`resident::note`) and for how long.
+fn content_overrun(name: &str, running: &[resident::Running]) -> String {
+    if running.is_empty() {
+        return format!(
+            "{name} worker cleanup exceeded the content exit grace; no job was running, \
+             the threads had not yet returned."
+        );
+    }
+    let running: Vec<String> = running.iter().map(ToString::to_string).collect();
+    format!(
+        "{name} worker cleanup exceeded the content exit grace; still running: {}.",
+        running.join(", ")
+    )
 }
 
 fn combine_cleanup(first: Result<(), String>, next: Result<(), String>) -> Result<(), String> {
@@ -1246,6 +1260,52 @@ mod content_worker_tests {
         drop(release);
         workers.finish(&runtime).unwrap();
         assert_eq!(runtime.block_on(async { 43 }), 43);
+        runtime.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    /// An exit past the content grace says which worker it still waited for, what its
+    /// job was doing and for how long, not only that the grace expired.
+    #[test]
+    fn an_exit_past_the_content_grace_names_the_job_still_running() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let workers = ContentWorkers::start(&runtime).unwrap();
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let (noted, observed) = std::sync::mpsc::channel();
+        assert!(
+            workers
+                .viewer
+                .resident
+                .spawn(
+                    &workers.viewer.transient,
+                    Box::new(move || {
+                        resident::note(
+                            "viewer window \"page.html\": closing, releasing its browser",
+                        );
+                        noted.send(()).unwrap();
+                        let _ = stopped.recv();
+                    }),
+                )
+                .is_ok()
+        );
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        let error = workers.finish(&runtime).unwrap_err();
+        assert!(
+            error.starts_with(
+                "Viewer worker cleanup exceeded the content exit grace; still running: \
+                 midnight-viewer-"
+            ),
+            "{error}"
+        );
+        assert!(
+            error.contains("(viewer window \"page.html\": closing, releasing its browser) for "),
+            "{error}"
+        );
+        assert!(!error.contains("Comparison"), "{error}");
+        drop(stop);
         runtime.shutdown_timeout(Duration::from_secs(1));
     }
 }
