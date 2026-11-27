@@ -1687,17 +1687,18 @@ check, download or open the release page.
 
 **Which copies update themselves:** an extracted release folder that your account can
 change, and a copy installed with the release's MSI, Just for me or For all users (from
-the first release after 0.6.2; see below). A copy that an administrator extracted (for
+0.6.3; see below). A copy that an administrator extracted (for
 example below `C:\Program Files` or `/opt`), a development build and a copy from another
 package manager show the reason and offer the release page instead. Midnight Explorer
 itself never runs with administrator rights to update: only Windows Installer does, for
 an all-users MSI copy, after Windows asks you. Builds made without the project's release
 key install no updates.
 
-**MSI copies of 0.6.2 and earlier** cannot install updates themselves; their update
-dialog offers the release page. Install the next release's MSI once by hand, choosing
-the same scope as before (Just for me upgrades a just-for-you copy in place, For all
-users an all-users copy); from then on the update dialog installs new versions.
+**MSI copies before 0.6.3** (0.6.1; 0.6.2's MSI does not install) cannot install
+updates themselves; their update dialog offers the release page. Install a newer MSI
+once by hand, choosing the same scope as before (Just for me upgrades a just-for-you
+copy in place, For all users an all-users copy); from 0.6.3 on the update dialog
+installs new versions.
 The details, including the signature checks, are in
 [Updates](developer/UPDATES.md).
 

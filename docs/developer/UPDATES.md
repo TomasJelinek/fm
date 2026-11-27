@@ -272,7 +272,7 @@ resolving both paths, so case and a trailing separator do not matter), the execu
 `midnight-explorer.exe`, no `BUILD-INFO.json` lies beside it and the recorded version is
 the running one; the context is its scope. More than one match or another version shows
 the reason and the release page. The MSI's `SetInstallLocation` action records
-`InstallLocation`, so copies installed by 0.6.1 and 0.6.2 are found too; no marker file
+`InstallLocation`, so a copy installed by 0.6.1 is found too; no marker file
 is needed, and none in the folder could make a copy count as installed.
 
 **Download:** with an MSI copy the controller fetches and verifies `SHA256SUMS` exactly
@@ -336,8 +336,10 @@ the hand-off waits for `msiexec`'s status anyway, to tell the next start what ha
 Windows Installer's to recover; the hand-off's own state is only the result file,
 written after `msiexec` exits.
 
-Copies of 0.6.2 and earlier contain no hand-off: they offer the release page, and their
-users install the next release's MSI once by hand in the same scope.
+Copies before 0.6.3 contain no hand-off (0.6.2's MSI does not install at all): they
+offer the release page, and their users install a newer MSI once by hand in the same
+scope. The first update through the hand-off is from an installed 0.6.3 to the release
+after it.
 
 ## Keys
 

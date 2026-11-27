@@ -353,7 +353,8 @@ refuses an existing MSI.
   only a folder with that file ([Updates](developer/UPDATES.md#staging)), and a folder
   that Windows Installer manages must be updated by a newer MSI instead.
 - **Installation:** one dual-purpose package (Windows Installer's single package
-  authoring: `ALLUSERS=2` with `MSIINSTALLPERUSER=1`; from 0.6.2, whose tag contains it;
+  authoring: `ALLUSERS=2` with `MSIINSTALLPERUSER=1`; built from 0.6.2, whose MSI stops
+  with error 2228 for lack of a `Signature` table, so 0.6.3's is the first that installs;
   0.6.1's MSI was per user only). Its first dialog, **ScopeDlg**, asks who can use the
   application:
   - **Just for me** (default): per user, without administrator rights or a UAC prompt,
@@ -412,7 +413,7 @@ refuses an existing MSI.
   Settings, caches and update downloads in `%LOCALAPPDATA%\Midnight Explorer` are never
   touched.
 - **Updates:** the application swaps in place only a folder with `BUILD-INFO.json`,
-  which the MSI leaves out. From the first release after 0.6.2, an installed copy finds
+  which the MSI leaves out. From 0.6.3, an installed copy finds
   its installation through Windows Installer (the product of this `UpgradeCode` whose
   `InstallLocation`, set from `INSTALLDIR` by `SetInstallLocation`, is its folder, in
   the per-user or the per-machine context) and updates with the next release's MSI: the
@@ -425,8 +426,9 @@ refuses an existing MSI.
   property and its major upgrade, and its line must be in the signed `SHA256SUMS`
   ([signing](#signing-the-release)); a release without it offers MSI copies the release
   page. No marker file is added: Windows Installer's own records identify the copy,
-  also for copies installed by 0.6.1 and 0.6.2. Those versions cannot run the hand-off
-  themselves; their users run the next MSI once by hand.
+  also for a copy installed by 0.6.1. That version cannot run the hand-off itself; its
+  users run a newer MSI once by hand. The first update through the hand-off is from an
+  installed 0.6.3 to the release after it.
 - **Not included:** the Visual C++ runtime (as for the ZIP), code signing (REL-03) and
   permissions of its own. **Retry with authorization** works from either scope's copy
   when its executable records the helper's digest

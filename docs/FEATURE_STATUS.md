@@ -29,10 +29,12 @@ How to read it:
   thumbnailer package.
 - **Windows installer:** from 0.6.1 an MSI made from the release ZIP's files, with a
   Start menu shortcut and an Add/Remove Programs entry; a newer MSI replaces an older
-  one. 0.6.1 installs per user only; from 0.6.2 the installer asks: **Just for me** (the
+  one. 0.6.1 installs per user only; 0.6.2's MSI, the first that asks, stops with
+  Windows Installer error 2228 (no `Signature` table; fixed in 0.6.3). From 0.6.3 the
+  installer asks: **Just for me** (the
   default, no administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`)
   or **For all users** (UAC, `C:\Program Files\Midnight Explorer (MSI)`). Copies of
-  0.6.2 and earlier update through a newer MSI run by hand; later copies also from the
+  0.6.1 update through a newer MSI run by hand; copies of 0.6.3 and later also from the
   update dialog ([Updates](#updates)). Only the built package is checked so far: CI's
   release job now installs, upgrades, repairs and removes it in both scopes on a
   disposable runner and runs ICE validation, but no run of those steps has passed yet
@@ -69,7 +71,7 @@ How to read it:
   startup (on; at most once every 20 hours) and Include preview releases (on); settings
   schema 40. Releases from 0.5.1 on are signed with the owner's release key, whose
   public half is built in; the published 0.5.1 carries `SHA256SUMS.minisig`.
-- **Windows Installer copies (implemented after 0.6.2, not yet released):** a copy that
+- **Windows Installer copies (from 0.6.3, not yet released):** a copy that
   Windows Installer records in its folder (per user or per machine) downloads the
   release's MSI, verifies it against the signed `SHA256SUMS`, and on Install now hands
   it to `msiexec` from a copy of the executable in the private update folder, which
@@ -78,9 +80,9 @@ How to read it:
   failures, and starts the application again. Detection, the command line, the exit
   statuses and the hand-off order are tested with fakes; `msiexec` opening a pinned
   package was checked with an administrative extraction. An update through
-  `msiexec /i` of a real installation, in either scope, has not been run yet; the first
-  release that contains this change is the first that can do it (0.6.2 copies offer
-  the release page).
+  `msiexec /i` of a real installation, in either scope, has not been run yet; it is
+  first possible from an installed 0.6.3 to the release after it (earlier MSI copies
+  offer the release page).
 - **Open:** extracted copies that only administrators can change are not updated in
   place; the release-build check of the test endpoint is not run by CI (REL-04); an
   end-to-end MSI update of an installed copy in both scopes (REL-05).
