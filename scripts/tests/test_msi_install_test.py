@@ -201,6 +201,10 @@ class Plan(unittest.TestCase):
             package, scope = details.get("package"), details.get("scope")
             if operation in ("install", "ui-install"):
                 scope = scope or "user"  # the published MSIs are per user
+                # One version cannot be in both scopes: Windows Installer would maintain
+                # the copy that is installed instead (exit 0, nothing added).
+                self.assertNotIn(package, {item[0] for item in installed if item[1] != scope},
+                                 f"{package} is already installed in the other scope")
                 replaced = {item for item in installed if item[1] == scope}
                 self.assertTrue(all(item[0] != "new" for item in replaced) or package == "new",
                                 f"{package} would be a downgrade, not an install")
@@ -210,11 +214,8 @@ class Plan(unittest.TestCase):
                 self.assertEqual(len(scopes), 1, f"{operation} of {package} is ambiguous: {installed}")
                 if operation == "uninstall":
                     installed = {item for item in installed if item[0] != package}
-            elif operation == "uninstall-one":
-                self.assertTrue(installed)
-                installed.discard(sorted(item for item in installed if item[0] == package)[0])
             elif operation in ("check-installed", "check-side-by-side"):
-                wanted = [(package, scope)] if operation == "check-installed" else [("new", "user"), ("new", "machine")]
+                wanted = [(package, scope)] if operation == "check-installed" else [("older", "user"), ("new", "machine")]
                 for item in wanted:
                     self.assertIn(item, installed, f"{operation} {item} after {installed}")
             elif operation == "check-removed":
@@ -239,9 +240,12 @@ class Plan(unittest.TestCase):
                 self.assertIn((operation, scope), [(o, d.get("scope")) for o, d in steps])
         self.assertIn(("smoke", {"scope": "machine", "ui": True}), steps)
         self.assertEqual(operations.count("check-permissions"), 1)
-        self.assertEqual(operations.count("uninstall-one"), 2)
-        self.assertLess(operations.index("check-side-by-side"), operations.index("uninstall-one"))
-        self.assertIn("check-marker", operations[operations.index("uninstall-one"):])
+        # An older copy just for you beside the all-users one, then each removed on its own.
+        side = operations.index("check-side-by-side")
+        self.assertEqual(steps[side - 1], ("install", {"package": "older", "scope": "user"}))
+        self.assertEqual([(o, d.get("scope")) for o, d in steps[side + 1:] if o == "uninstall"],
+                         [("uninstall", "user"), ("uninstall", "machine")])
+        self.assertIn("check-marker", operations[side:])
         # Every installation and repair is checked before the next step changes anything.
         for index, (operation, details) in enumerate(steps):
             if operation in ("install", "repair") and details.get("package") != "older":

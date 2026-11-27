@@ -2193,9 +2193,11 @@ in `%LOCALAPPDATA%\Midnight Explorer`. Running the installed version's MSI again
 **Repair** or **Remove**.
 
 - **Both kinds side by side:** the two are separate installations. Choosing For all users
-  while a copy is installed just for you (or the other way round) installs a second copy;
-  the installer says so, and Installed apps then lists Midnight Explorer twice, as does
-  the Start menu. Remove the one you no longer need there. When only an all-users copy is
+  while an earlier version is installed just for you (or the other way round) installs a
+  second copy; the installer says so, and Installed apps then lists Midnight Explorer
+  twice, as does the Start menu. Remove the one you no longer need there. The same
+  version cannot be installed both ways: running its MSI again offers Repair or Remove
+  of the installed copy. When only an all-users copy is
   installed, the installer preselects For all users so that it updates that copy.
 - **Without the dialog:** `msiexec /i <file>.msi /qn` installs just for you. From a
   PowerShell started with **Run as administrator**, `msiexec /i <file>.msi /qn ALLUSERS=1`

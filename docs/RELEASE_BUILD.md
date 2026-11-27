@@ -493,7 +493,9 @@ refuses an existing MSI.
   installations of one product apart, and an upgrade finds only the installation of
   its own scope. A per-user installation therefore upgrades the 0.6.1/0.6.2 per-user
   MSI in place (same `UpgradeCode`), while choosing For all users installs a second,
-  separate copy, and Add/Remove Programs lists both. The dialog reads both scopes'
+  separate copy, and Add/Remove Programs lists both. One version (one product code) is
+  never installed in both scopes: Windows Installer treats a second install of it as
+  maintenance of the installed copy. The dialog reads both scopes'
   registry key (`AppSearch`/`RegLocator`, `Software\Midnight Explorer Installer` in HKCU
   and HKLM) and then says that the other copy stays installed; with only an all-users
   copy present it preselects For all users. An extracted ZIP, the Move to my profile
@@ -631,9 +633,11 @@ and this run's plugin packages. Its commands, in order:
    6. It deletes the executable, `README.txt` and the deepest file and repairs the
       installation (`/fomus`).
    7. It removes Just for me before For all users is installed.
-   8. It installs Just for me again beside For all users: both are listed, and each
-      `msiexec /x` removes exactly one scope, leaving no files, folders, shortcut, key
-      or entry.
+   8. It installs 0.0.1 Just for me beside the release For all users, as a per-user
+      0.6.1 beside an all-users 0.6.3: both are listed, and each `msiexec /x` removes
+      exactly its own scope, leaving no files, folders, shortcut, key or entry. (One
+      version cannot be installed in both scopes; Windows Installer maintains the
+      installed copy instead.)
    9. It installs each published MSI, upgrades it in place with the release (per user)
       and removes it.
    10. It checks that the marker survived every removal and that nothing stays

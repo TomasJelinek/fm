@@ -383,11 +383,17 @@ def plan(scenarios, version, previous, ui=False, ui_smoke=False):
                 # One scope at a time, so that repair and removal cannot pick the other.
                 steps += [("uninstall", {"package": "new", "scope": scope}),
                           ("check-removed", {"scope": scope})]
-        # Just for me beside the all-users copy: both stay, each is removed on its own.
-        steps += [("install", {"package": "new", "scope": "user"}),
+        # An older copy just for you beside the all-users copy, as a per-user 0.6.1 beside
+        # an all-users 0.6.3: an upgrade finds only its own scope, so both stay and each
+        # is removed on its own. One version cannot be installed in both scopes: Windows
+        # Installer then maintains the copy that is installed (exit 0, nothing added).
+        steps += [("install", {"package": "older", "scope": "user"}),
                   ("check-side-by-side", {}),
-                  ("uninstall-one", {"package": "new"}),
-                  ("uninstall-one", {"package": "new"}),
+                  ("uninstall", {"package": "older", "scope": "user"}),
+                  ("check-removed", {"scope": "user"}),
+                  ("check-installed", {"package": "new", "scope": "machine"}),
+                  ("uninstall", {"package": "new", "scope": "machine"}),
+                  ("check-removed", {"scope": "machine"}),
                   ("check-marker", {})]
     if "previous" in scenarios:
         for published in previous:
@@ -693,9 +699,6 @@ class Run:
 
     # Checks.
 
-    def installed_scopes(self, package):
-        return [scope for scope in SCOPES if product_version(self.code(package), scope)]
-
     def check_installed(self, package, scope):
         version = self.versions[package]
         problems = []
@@ -807,22 +810,10 @@ class Run:
         self.say(f"    {len(paths)} folders and files: only administrators may change them, as in Program Files")
 
     def check_side_by_side(self):
-        for scope in SCOPES:
-            self.check_installed("new", scope)
-        self.say("    both scopes are installed side by side with two Add/Remove Programs entries")
-
-    def uninstall_one(self, package):
-        before = self.installed_scopes(package) if not self.dry_run else []
-        self.succeed("uninstall", package)
-        if self.dry_run:
-            return
-        after = self.installed_scopes(package)
-        removed = [scope for scope in before if scope not in after]
-        if len(removed) != 1 or len(after) != len(before) - 1:
-            raise Failure(f"One uninstall removed {removed} (installed before: {before}, after: {after})")
-        self.check_removed(removed[0])
-        for scope in after:
-            self.check_installed(package, scope)
+        self.check_installed("older", "user")
+        self.check_installed("new", "machine")
+        self.say("    the older copy just for you and the all-users copy are installed side by side, "
+                 "with two Add/Remove Programs entries")
 
     def preflight(self):
         if self.dry_run:
@@ -890,8 +881,6 @@ class Run:
                     raise Failure(f"Installing {package} over a newer version was not refused (exit {code})")
             elif operation == "uninstall":
                 self.succeed("uninstall", package)
-            elif operation == "uninstall-one":
-                self.uninstall_one(package)
             elif operation == "repair":
                 self.repair(package, scope)
             elif operation == "smoke":
