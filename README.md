@@ -55,13 +55,16 @@ and filesystem notes are in [system requirements](docs/SYSTEM_REQUIREMENTS.md).
 
 ## Download
 
-Preview builds for Windows x64 (`.zip`) and Linux x86-64 (`.tar.gz`) are published on
-the [GitHub Releases page](https://github.com/TomasJelinek/fm/releases), each with a
-`SHA256SUMS` file to verify the download. Extract the complete archive and run
-`midnight-explorer.exe` (Windows) or `./midnight-explorer` (Linux); its `README.txt`
-has the details. Releases up to 0.5.0 named the executable `me.exe` and `me`. The
-Windows executable is unsigned and there is no installer; from 0.5.1 on the application
-checks for, verifies and installs signed updates itself. The archives include every
+Preview builds for Windows x64 (an `.msi` installer and a `.zip`) and Linux x86-64
+(`.tar.gz`) are published on the
+[GitHub Releases page](https://github.com/TomasJelinek/fm/releases), each with a
+`SHA256SUMS` file to verify the download. The MSI asks whether to install just for you
+or for all users ([Windows installer](docs/USER_GUIDE.md#windows-installer)); otherwise
+extract the complete archive and run `midnight-explorer.exe` (Windows) or
+`./midnight-explorer` (Linux); its `README.txt` has the details. Releases up to 0.5.0
+named the executable `me.exe` and `me`. The Windows executable and installer are
+unsigned; from 0.5.1 on the application checks for, verifies and installs signed
+updates itself. The archives include every
 plugin, the dependency notices and the license; the release notes say what each
 preview contains ([0.5.0](docs/releases/0.5.0.md), [0.5.1](docs/releases/0.5.1.md),
 [0.5.2](docs/releases/0.5.2.md), [0.5.3](docs/releases/0.5.3.md), [0.5.4](docs/releases/0.5.4.md), [0.6.0](docs/releases/0.6.0.md), [0.6.1](docs/releases/0.6.1.md), [0.6.2](docs/releases/0.6.2.md)).

@@ -58,7 +58,7 @@ slint::slint! {
             x: 0px; y: 0px; width: root.width; height: root.height;
             title: "Cannot open folder"; error: true;
             body: root.body;
-            folder-path: "C:\\Users\\CodexSandboxOnline";
+            folder-path: "C:\\Users\\Example";
             details: root.has-details ? "Observed issues: 1\nStored details: 1" : "";
             can-authorize: root.can-authorize;
             details-expanded <=> root.expanded;
