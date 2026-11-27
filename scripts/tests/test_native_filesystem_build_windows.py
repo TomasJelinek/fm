@@ -82,7 +82,12 @@ class NativeFilesystemBuildWindows(unittest.TestCase):
             self.assertIn("--release", call)
         self.assertEqual(self.library.read_bytes(), b"new DLL")
         self.assertEqual((self.package / "unrelated-user-file").read_bytes(), b"retain")
-        self.assertEqual(len(list(self.package.iterdir())), 5)
+        # Markdown names in a package are lowercase; they replace the earlier uppercase files.
+        self.assertEqual(sorted(path.name for path in self.package.iterdir()),
+                         sorted([self.library.name, "plugin.toml", "readme.md", "third-party.md",
+                                 "unrelated-user-file"]))
+        self.assertEqual((self.package / "readme.md").read_text(), "new README.md")
+        self.assertEqual((self.package / "third-party.md").read_text(), "new THIRD-PARTY.md")
 
     def test_missing_notice_preserves_previous_package_before_publication(self):
         (self.plugin / "README.md").unlink()
@@ -147,7 +152,12 @@ class NativeFilesystemBuildWindows(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.library.read_bytes(), b"new DLL")
         self.assertEqual((self.package / "unrelated-user-file").read_bytes(), b"retain")
-        self.assertEqual(len(list(self.package.iterdir())), 5)
+        # Markdown names in a package are lowercase; they replace the earlier uppercase files.
+        self.assertEqual(sorted(path.name for path in self.package.iterdir()),
+                         sorted([self.library.name, "plugin.toml", "readme.md", "third-party.md",
+                                 "unrelated-user-file"]))
+        self.assertEqual((self.package / "readme.md").read_text(), "new README.md")
+        self.assertEqual((self.package / "third-party.md").read_text(), "new THIRD-PARTY.md")
 
     def test_locked_installed_library_keeps_previous_package(self):
         before = self.snapshot()

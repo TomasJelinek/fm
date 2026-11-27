@@ -5,5 +5,10 @@ target-dir = "_build"
 [registries.midnight]
 index = "https://midnight-explorer.invalid/api-index"
 
+# The C runtime is linked statically (crt-static), so no Windows binary needs the Visual
+# C++ runtime (VCRUNTIME140.dll) on the computer; cc and cmake build scripts follow it
+# with /MT. A RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS environment variable replaces these
+# flags, so Windows builds must not set one. The plugin workspaces under plugins/ carry
+# the same setting for builds outside this checkout.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/STACK:8388608"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/STACK:8388608"]

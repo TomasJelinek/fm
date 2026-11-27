@@ -169,6 +169,11 @@ try {
     New-Item -ItemType Directory -Force $notices | Out-Null
     Get-ChildItem -LiteralPath (Join-Path $FfmpegPrefix 'share/midnight-ffmpeg') | Copy-Item -Destination $notices -Recurse -Force
     Copy-Item -LiteralPath $FfmpegSourceArchive -Destination (Join-Path $notices 'ffmpeg-9.0.2.tar.xz')
+    # Markdown names in a package are lowercase, with '-' for '_' (README.md is readme.md).
+    foreach ($file in @(Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object Extension -eq '.md')) {
+        $name=$file.Name.ToLowerInvariant().Replace('_', '-')
+        if ($name -cne $file.Name) { [IO.File]::Move($file.FullName, (Join-Path $file.DirectoryName $name)) }
+    }
     $previous=Join-Path $staging 'previous'
     # Directory.Move is one rename that leaves nothing behind when it is refused; Move-Item
     # would then move item by item and leave a created destination that a retry or the

@@ -89,4 +89,10 @@ else
 fi
 printf '%s\n' "$marker_text" > "$notices/.midnight-generated"
 cp -R -- "$plugin_root/notices/." "$notices/"
+# Markdown names in a package are lowercase, with '-' for '_' (README.md is readme.md);
+# the fresh copy replaces an earlier build's.
+while IFS= read -r -d '' file; do
+    name=${file##*/}; name=${name,,}; name=${name//_/-}
+    [[ $name == "${file##*/}" ]] || mv -f -- "$file" "${file%/*}/$name"
+done < <(find "$output" -type f -iname '*.md' -print0)
 echo "Basic viewer package: $output"

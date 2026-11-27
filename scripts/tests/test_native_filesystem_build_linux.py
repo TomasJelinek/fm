@@ -76,6 +76,11 @@ class NativeFilesystemBuildLinux(unittest.TestCase):
         self.assertEqual((self.package / "plugin.toml").read_text(), "new plugin.toml")
         self.assertEqual(self.unrelated.read_bytes(), b"retain unrelated entry")
         self.assertEqual(len(list(self.package.iterdir())), 5, "No owned staging entries remain")
+        # Markdown names in a package are lowercase; the earlier uppercase files are gone.
+        self.assertEqual(sorted(path.name for path in self.package.iterdir()),
+                         sorted([self.library.name, "plugin.toml", "readme.md", "third-party.md",
+                                 "unrelated-user-file"]))
+        self.assertEqual((self.package / "readme.md").read_text(), "new README.md")
 
     def test_staging_failure_preserves_previous_package_and_only_cleans_owned_temp(self):
         # Failure after the library could already have copied, before publication.

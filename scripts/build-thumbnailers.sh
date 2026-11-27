@@ -94,6 +94,12 @@ done
 mkdir -p "$package/notices/ffmpeg-9.0.2"
 cp -R "$FFMPEG_DIR/share/midnight-ffmpeg/." "$package/notices/ffmpeg-9.0.2/"
 cp "$source_archive" "$package/notices/ffmpeg-9.0.2/ffmpeg-9.0.2.tar.xz"
+# Markdown names in a package are lowercase, with '-' for '_' (README.md is readme.md).
+while IFS= read -r -d '' file; do
+    name=${file##*/}; name=${name,,}; name=${name//_/-}
+    [[ $name == "${file##*/}" ]] || mv -n -- "$file" "${file%/*}/$name"
+    [[ ! -e $file ]] || { echo "Two notices share the packaged name ${file%/*}/$name" >&2; exit 2; }
+done < <(find "$package" -type f -iname '*.md' -print0)
 if [[ -e $destination ]]; then mv -T -- "$destination" "$staging/previous"; fi
 if ! mv -T -- "$package" "$destination"; then
     if [[ -e $staging/previous ]] && ! mv -T -- "$staging/previous" "$destination"; then

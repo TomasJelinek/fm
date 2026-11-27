@@ -50,7 +50,10 @@ try {
         if (($package -split '[\\/]') -notcontains '_build') { throw 'Package staging must be under _build' }
         New-Item -ItemType Directory -Force -Path $package | Out-Null
         Copy-Item -LiteralPath (Join-Path $buildDirectory "$Profile/midnight-fs-archive.exe") -Destination $package
-        Copy-Item -LiteralPath (Join-Path $pluginRoot 'THIRD-PARTY.md') -Destination $package
+        # Markdown names in a package are lowercase. NTFS would keep the case of an earlier
+        # build's file that the copy replaces, so that file is removed first.
+        Remove-Item -LiteralPath (Join-Path $package 'third-party.md') -Force -ErrorAction Ignore
+        Copy-Item -LiteralPath (Join-Path $pluginRoot 'THIRD-PARTY.md') -Destination (Join-Path $package 'third-party.md')
         $target = ((& rustc -vV | Select-String '^host: ').ToString() -replace '^host: ', '').Trim()
         if (-not $target) { throw 'Cannot determine plugin target' }
         $manifest = @"

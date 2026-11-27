@@ -28,9 +28,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Pinned dav1d source preparation failed' }
 $source = $source.Trim()
 $build = Join-Path $BuildRoot 'msvc-x64'
 $prefix = Join-Path $BuildRoot 'prefix-msvc-x64'
+# The static C runtime (/MT), as the Rust code that links dav1d uses (crt-static in the
+# plugins' .cargo/config.toml): a /MD library would make the plugin import VCRUNTIME140.dll.
+# An existing build directory is reconfigured with it below.
 $setup = @('-3', '-I', '-S', '-B', (Join-Path $PSScriptRoot 'private-meson.py'), 'setup', $build, $source,
     '--prefix', $prefix, '--libdir', 'lib', '--buildtype', 'release', '--default-library', 'static',
-    '--wrap-mode=nodownload', '-Db_vscrt=md', '-Denable_tools=false', '-Denable_tests=false',
+    '--wrap-mode=nodownload', '-Db_vscrt=mt', '-Denable_tools=false', '-Denable_tests=false',
     '-Denable_examples=false', '-Denable_docs=false')
 # A build configured before prepare-source.py made vcs_version.h a configure-time file lists
 # the header as a ninja output, and reconfiguring it lets ninja delete the regenerated

@@ -95,4 +95,10 @@ if (Test-Path -LiteralPath $notices) {
 Get-ChildItem -LiteralPath (Join-Path $pluginRoot 'notices') | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $notices -Recurse -Force
 }
+# Markdown names in a package are lowercase, with '-' for '_' (README.md is readme.md). A
+# file that replaced an earlier build's copy keeps that copy's name, already lowercase.
+foreach ($file in @(Get-ChildItem -LiteralPath $OutputDirectory -Recurse -File | Where-Object Extension -eq '.md')) {
+    $name = $file.Name.ToLowerInvariant().Replace('_', '-')
+    if ($name -cne $file.Name) { [IO.File]::Move($file.FullName, (Join-Path $file.DirectoryName $name)) }
+}
 Write-Output "Basic viewer package: $OutputDirectory"

@@ -354,7 +354,8 @@ filesystem_step() {
     mkdir -p -- "$package"
     cp -- "$build/release/$library" "$package/"
     cp -- "$plugin_root/$manifest" "$package/plugin.toml"
-    for name in README.md THIRD-PARTY.md; do cp -- "$plugin_root/$name" "$package/"; done
+    # Markdown names in a package are lowercase (README.md is readme.md).
+    for name in README.md THIRD-PARTY.md; do cp -- "$plugin_root/$name" "$package/${name,,}"; done
 }
 # Mirrors .github/actions/private-test-installation and plugin-packages with the
 # packages this run built.

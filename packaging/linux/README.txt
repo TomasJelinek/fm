@@ -96,12 +96,12 @@ and install accepts only an archive whose checksums are signed with the project'
 release key, installs it on restart and restores this version if the new one does
 not start. It updates only a folder you can change, such as the extracted folder;
 for a folder that only root can change it offers the release page instead. See
-SECURITY.md (Update check).
+security.md (Update check).
 
 Releases up to 0.5.0 named the executable me. Settings stay where they were;
 install the desktop entry again as above and delete an earlier per-user copy,
 such as "$HOME/.local/bin/me".
-See feature-status.md, keyboard-shortcuts.md and SECURITY.md for capabilities/limits.
+See feature-status.md, keyboard-shortcuts.md and security.md for capabilities/limits.
 The complete distribution includes all six viewers (text/hex, source, Markdown,
 image, PDF and Chromium HTML), native/network/archive filesystems and both
 image/video thumbnailers. Keep their complete runtimes, sources and notices.

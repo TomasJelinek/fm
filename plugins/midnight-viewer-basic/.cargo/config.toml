@@ -1,0 +1,5 @@
+# The C runtime is linked statically, so the plugin needs no Visual C++ runtime
+# (VCRUNTIME140.dll) on the computer; cc and cmake build scripts follow it with /MT.
+# A RUSTFLAGS environment variable would replace this setting.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -133,7 +133,8 @@ if sys.argv[1] == 'build':
         self.assertIn('protocol = 4', manifest)
         self.assertIn(f'version = "{plugin_version()}"', manifest)
         self.assertEqual((package / "licenses/LICENSE").read_text(), "Exact archive dependency license\n")
-        self.assertEqual((package / "THIRD-PARTY.md").read_text(), "Pinned archive dependencies\n")
+        self.assertEqual((package / "third-party.md").read_text(), "Pinned archive dependencies\n")
+        self.assertNotIn("THIRD-PARTY.md", {path.name for path in package.iterdir()})
 
     def test_explicit_profile_sdk_destination_and_offline_are_forwarded(self):
         self.environment["MIDNIGHT_ARCHIVE_OFFLINE"] = "1"

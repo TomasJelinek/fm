@@ -449,7 +449,10 @@ try {
         New-Item -ItemType Directory -Force $package | Out-Null
         Copy-Item -LiteralPath (Join-Path $build "release/$Library") -Destination $package
         Copy-Item -LiteralPath "$pluginRoot/$Manifest" -Destination (Join-Path $package 'plugin.toml')
-        foreach ($name in @('README.md', 'THIRD-PARTY.md')) { Copy-Item -LiteralPath "$pluginRoot/$name" -Destination $package }
+        # Markdown names in a package are lowercase (README.md is readme.md).
+        foreach ($name in @('README.md', 'THIRD-PARTY.md')) {
+            Copy-Item -LiteralPath "$pluginRoot/$name" -Destination (Join-Path $package $name.ToLowerInvariant())
+        }
     }
     $ignoredBody = {
         & $Python -B scripts/ci-workspace-tests.py run @Selection

@@ -80,7 +80,8 @@ try {
     $package = Join-Path $AppDirectory "filesystems/$Provider.windows"
     [IO.Directory]::CreateDirectory($package) | Out-Null
     $library = Join-Path $env:CARGO_TARGET_DIR "$Profile/$libraryName"
-    $packageFiles = @($libraryName, 'plugin.toml', 'README.md', 'THIRD-PARTY.md')
+    # Markdown names in a package are lowercase (README.md is readme.md).
+    $packageFiles = @($libraryName, 'plugin.toml', 'readme.md', 'third-party.md')
     $stage = Join-Path $package ('.' + $Provider + '-stage.' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $stage | Out-Null
     try {
@@ -89,7 +90,7 @@ try {
         Copy-Item -LiteralPath $library -Destination (Join-Path $stage $libraryName)
         Copy-Item -LiteralPath (Join-Path $pluginRoot $sourceManifest) -Destination (Join-Path $stage 'plugin.toml')
         foreach ($name in @('README.md', 'THIRD-PARTY.md')) {
-            Copy-Item -LiteralPath (Join-Path $pluginRoot $name) -Destination $stage
+            Copy-Item -LiteralPath (Join-Path $pluginRoot $name) -Destination (Join-Path $stage $name.ToLowerInvariant())
         }
         foreach ($name in $packageFiles) {
             # Retried: endpoint protection may still hold the file just staged.

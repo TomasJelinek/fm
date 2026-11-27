@@ -25,7 +25,7 @@ try {
     foreach ($name in @('basic', 'source', 'markdown')) {
         $package = Join-Path $source "viewers/midnight-viewer-$name"
         New-Item -ItemType Directory -Path "$package/notices" -Force | Out-Null
-        foreach ($file in @('plugin.toml', "midnight_viewer_$name.dll", 'LICENSE', 'THIRD-PARTY.md', 'notices/LICENSE')) {
+        foreach ($file in @('plugin.toml', "midnight_viewer_$name.dll", 'LICENSE', 'third-party.md', 'notices/LICENSE')) {
             [IO.File]::WriteAllText((Join-Path $package $file), "fixture $name $file")
         }
     }

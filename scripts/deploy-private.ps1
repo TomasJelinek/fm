@@ -658,7 +658,7 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf) -or
     throw 'Build input must contain midnight-explorer.exe and independently built viewers/'
 }
 foreach ($name in @('basic', 'source', 'markdown')) {
-    foreach ($file in @('plugin.toml', "midnight_viewer_$name.dll", 'LICENSE', 'THIRD-PARTY.md')) {
+    foreach ($file in @('plugin.toml', "midnight_viewer_$name.dll", 'LICENSE', 'third-party.md')) {
         if (-not (Test-Path -LiteralPath "$viewers/midnight-viewer-$name/$file" -PathType Leaf)) {
             throw "Incomplete viewer package: midnight-viewer-$name/$file"
         }

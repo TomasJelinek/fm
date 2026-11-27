@@ -34,7 +34,7 @@ class ImageViewerPackages(unittest.TestCase):
         (package / "image-viewer.json").write_text(json.dumps(manifest), encoding="utf-8")
         (package / "image-worker").write_bytes(b"independent sandbox worker fixture")
         (package / "LICENSE").write_text("Plugin license", encoding="utf-8")
-        (package / "THIRD-PARTY.md").write_text("Pinned dependency attribution", encoding="utf-8")
+        (package / "third-party.md").write_text("Pinned dependency attribution", encoding="utf-8")
         (package / "notices").mkdir()
         (package / "notices/image-LICENSE").write_text("Codec license", encoding="utf-8")
         return package, manifest

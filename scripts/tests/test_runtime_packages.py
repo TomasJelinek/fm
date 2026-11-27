@@ -60,8 +60,8 @@ def html_package(viewers, target):
     windows = target.endswith('windows-msvc')
     package = viewers / 'midnight-viewer-html'
     executable = 'midnight-viewer-html.exe' if windows else 'midnight-viewer-html'
-    required = ['LICENSE', 'LICENSE.txt', 'CREDITS.html', 'THIRD_PARTY.md', 'dependency-metadata.json',
-                'README.md', 'resources.pak', 'chrome_100_percent.pak', 'chrome_200_percent.pak',
+    required = ['LICENSE', 'LICENSE.txt', 'CREDITS.html', 'third-party.md', 'dependency-metadata.json',
+                'readme.md', 'resources.pak', 'chrome_100_percent.pak', 'chrome_200_percent.pak',
                 'icudtl.dat', 'v8_context_snapshot.bin', 'vk_swiftshader_icd.json',
                 'locales/en-US.pak', 'notices/cef/LICENSE-MIT', executable]
     required += (['libcef.dll', 'chrome_elf.dll', 'dxcompiler.dll', 'vk_swiftshader.dll',
@@ -93,7 +93,7 @@ def complete_runtime(source, target):
             'minimum_host_minor=0\nmodels=["text-page.v1"]\nrequired_host_services=[]\n'
             f'id="midnight.viewer.{name}"\ntarget="{target}"\nentry_library="{library}"\n'
         ).encode())
-        for notice in ('LICENSE', 'THIRD-PARTY.md', 'notices/LICENSE-MIT'):
+        for notice in ('LICENSE', 'third-party.md', 'notices/LICENSE-MIT'):
             write_file(package, notice)
     for name in ('image', 'pdf'):
         package = viewers / ('midnight-viewer-' + name)
@@ -104,7 +104,7 @@ def complete_runtime(source, target):
             'id': 'midnight.viewer.' + name, 'name': name, 'version': '0.1.0',
             'target': target, 'executable': executable, 'extensions': ['pdf' if name == 'pdf' else 'png'],
         }).encode())
-        for notice in ('LICENSE', 'THIRD-PARTY.md', 'notices/LICENSE-MIT'):
+        for notice in ('LICENSE', 'third-party.md', 'notices/LICENSE-MIT'):
             write_file(package, notice)
     html_package(viewers, target)
     for kind in ('native', 'network'):
@@ -115,7 +115,7 @@ def complete_runtime(source, target):
                         if network else ['native-address'])
         encoding = 'opaque' if network else 'windows-utf16le' if windows else 'unix-bytes'
         write_file(package, library)
-        write_file(package, 'THIRD-PARTY.md')
+        write_file(package, 'third-party.md')
         write_file(package, 'plugin.toml', (
             f'schema_version=1\nid="{kind}"\nkind="filesystem-{kind}"\nversion="0.1.0"\n'
             f'entry_library="{library}"\ntarget="{target}"\nprotocol=1\nabi_major=1\n'
@@ -124,7 +124,7 @@ def complete_runtime(source, target):
         ).encode())
     archive = source / 'filesystems' / 'archive'
     write_file(archive, 'archive-worker' + suffix)
-    write_file(archive, 'THIRD-PARTY.md')
+    write_file(archive, 'third-party.md')
     write_file(archive, 'licenses/LICENSE-MIT')
     write_file(archive, 'plugin.toml', (
         'schema_version=1\nid="midnight.fs.archive"\nkind="filesystem-worker"\nversion="0.1.0"\n'

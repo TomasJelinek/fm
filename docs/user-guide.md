@@ -2266,7 +2266,7 @@ in `%LOCALAPPDATA%\Midnight Explorer`. Running the installed version's MSI again
   **Move to my profile…** copies to or the one this guide names for an administrator's
   copy of a build, so the copies never overwrite each other. Neither installation shows
   the shared-installation notice: only you, or only administrators, can change them.
-  Install the Visual C++ runtime yourself if `VCRUNTIME140.dll` is missing, as for the ZIP.
+  As with the ZIP, no Visual C++ runtime is needed from 0.6.4 on.
 
 ### Shared installations
 

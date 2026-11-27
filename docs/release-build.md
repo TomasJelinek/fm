@@ -33,12 +33,26 @@ The workspace release profile (`[profile.release]` in `Cargo.toml`):
   application crates keep level 3. Build-time host tools keep Cargo's normal build
   overrides.
 
+On Windows every binary links the C runtime statically: `-C target-feature=+crt-static`
+under `[target.x86_64-pc-windows-msvc]` in the root `.cargo/config.toml` and in the
+`.cargo/config.toml` of each plugin workspace that ships a Windows binary (also for a
+plugin built on its own), `/MT` for the C and C++ code that `cc` and `cmake` build
+scripts compile with it, and `-Db_vscrt=mt` for the image decoder's native dav1d
+library. No executable or plugin then imports `VCRUNTIME140.dll` or another Visual C++
+Redistributable DLL, so a clean Windows 10 or 11 computer runs them without that
+redistributable; the Universal CRT they still use is part of Windows. The bundled FFmpeg
+libraries and the HTML viewer's CEF files import no Visual C++ runtime either. A
+`RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` environment variable would replace the
+configured flags, so no Windows build sets one; the release check below refuses a
+package that imports the runtime.
+
 Each independently built viewer, thumbnailer and filesystem plugin also strips its
 release binaries. The Linux HTML packager verifies the pinned [CEF](glossary.md#cef)
 (Chromium Embedded Framework) SDK and runs GNU `strip --strip-unneeded` on staged
 copies of its four ELF binaries before writing the runtime inventory. The final ZIP
 and tarball check rejects debug sidecars, embedded debug information and full symbol
-tables across the application and its [workers](glossary.md#worker). Dynamic exports,
+tables across the application and its [workers](glossary.md#worker) (see also
+[Release file checks](#release-file-checks)). Dynamic exports,
 unwind data, build IDs and references to external PDBs support loading and
 diagnostics and may be present in a release image.
 The [0.6.0 payload checks](verification/2026-11-25-release-payload.md) record
@@ -209,8 +223,8 @@ Python 3.11 or later and its standard library. It neither builds nor publishes.
 - `--license-overrides packaging/licenses` supplies license files that a crate omits
   from its published source, from a `NAME-VERSION/` subfolder copied from the crate's
   recorded upstream Git commit with its source URLs and hashes (each subfolder's
-  `SOURCE.md` records them). Missing notices fail packaging; never substitute another
-  version's license.
+  `SOURCE.md` records them; the package names it `source.md`). Missing notices fail
+  packaging; never substitute another version's license.
 
 The packager's tests run with `python -B -m unittest discover -s scripts/tests -v`, and
 CI's `scripts-and-lint` job runs them on Windows and Linux.
@@ -251,9 +265,10 @@ An archive contains:
   `LICENSE`: `LICENSE.txt` in the Windows ZIP, so that it opens on a double-click, and
   `LICENSE` in the Linux tar.gz;
 - `README.txt` (run instructions, which must name the version and its source,
-  `https://github.com/TomasJelinek/fm/tree/v<version>`), the project's `README.md`,
-  `SECURITY.md`, `system-requirements.md`, `keyboard-shortcuts.md`, `feature-status.md`,
-  `asset-provenance.md`, `theme-provenance.md` and the application icon;
+  `https://github.com/TomasJelinek/fm/tree/v<version>`), the project's `README.md`
+  and `SECURITY.md` as `readme.md` and `security.md`, `system-requirements.md`,
+  `keyboard-shortcuts.md`, `feature-status.md`, `asset-provenance.md`,
+  `theme-provenance.md` and the application icon;
 - `BUILD-INFO.json` with the version, target, source revision, Rust version and the
   executable's SHA-256, and the manifests, file sizes and SHA-256 values of the
   authorization helper and every module ([BUILD-INFO.json](#build-infojson));
@@ -323,6 +338,7 @@ The packager validates every module before copying it:
   libraries and their corresponding source and build notices. The two platform decoder
   helpers (`midnight-thumbnail-video-system`, `midnight-video-playback-system`) are
   required on Windows; on Linux they are optional but must come as a pair.
+  Viewer and filesystem packages carry their notices as `third-party.md`.
 - The authorization helper must be a regular file beside the executable.
 
 It rejects links (symbolic links, junctions and other reparse points), `..` and other
@@ -343,6 +359,34 @@ message offers no retry and says why. Packages built before these checks used
 the shipped helper from any folder; see
 [the authorization helper](../SECURITY.md#directory-authorization-helper) for what
 their users must replace or delete.
+
+### Release file checks
+
+Every file of a package passes two more checks: first the executable, the
+authorization helper and every file of the module folders, before the staging folder
+is created, and then every staged file, when the archive is written.
+
+- **No Visual C++ runtime.** A PE file (`.exe`, `.dll` or any other file that starts
+  with `MZ`) whose import or delay-load table names a Visual C++ runtime DLL is refused,
+  with the file and the DLLs in the message: `vcruntime*`, `msvcp*` (`msvcp140_1.dll`,
+  `msvcp140_atomic_wait.dll` and the other `msvcp140_*` libraries too), `msvcr*`,
+  `concrt*`, `vccorlib*`, `vcomp*` and `vcamp*` with a version number, their debug
+  builds, and `ucrtbased.dll`. Windows does not include them, so such a package would
+  not start on a computer without the Visual C++ Redistributable. The Universal CRT
+  (`ucrtbase.dll` and the `api-ms-win-crt-*` contracts) stays allowed: it is part of
+  Windows 10 and later, the oldest Windows that a release supports. The statically linked
+  build ([Release profile](#release-profile)) imports none of these DLLs.
+- **Lowercase Markdown names.** A `.md` file whose name has an uppercase letter is
+  refused. The packager copies the project's `README.md` and `SECURITY.md` as
+  `readme.md` and `security.md` and every Markdown license or notice file under
+  `licenses/` in lowercase with `-` for `_` (`LICENSE-APACHE.md` becomes
+  `license-apache.md`), and the plugin package builders do the same for the plugins'
+  `readme.md`, `third-party.md` and their `notices/` and `licenses/` folders. Other
+  names keep their case (`README.txt`, `LICENSE`, `LICENSE.txt`, `THIRD-PARTY.txt`,
+  `THIRD-PARTY.json`).
+
+`scripts/package-msi.py` builds the MSI from the checked ZIP, so the MSI carries the
+same files.
 
 ### Authorization helper digest
 
@@ -555,7 +599,7 @@ refuses an existing MSI.
   also for a copy installed by 0.6.1. That version cannot run the hand-off itself; its
   users run a newer MSI once by hand. The first update through the hand-off is from an
   installed 0.6.3 to the release after it.
-- **Not included:** the Visual C++ runtime (as for the ZIP), code signing (REL-03) and
+- **Not included:** code signing (REL-03) and
   permissions of its own. **Retry with authorization** works from either scope's copy
   when its executable records the helper's digest
   ([Authorization helper digest](#authorization-helper-digest)).

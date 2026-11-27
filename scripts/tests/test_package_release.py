@@ -4,13 +4,18 @@ import io
 import hashlib
 import json
 import os
+import re
 import struct
 import tarfile
 import tempfile
 import tomllib
 import unittest
+import sys
 import zipfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pe_image import importing_pe, unsigned_pe  # noqa: E402
 
 spec = importlib.util.spec_from_file_location(
     "package_release", Path(__file__).resolve().parents[1] / "package-release.py")
@@ -130,6 +135,128 @@ class ReleaseSymbolsTests(unittest.TestCase):
                 self.assertFalse(archive.exists())
 
 
+class VisualCppRuntimeTests(unittest.TestCase):
+    """No Windows file of a release may need the Visual C++ runtime, which Windows lacks."""
+
+    def imports(self, image):
+        return packaging.pe_imported_libraries(io.BytesIO(image))
+
+    def test_import_and_delay_load_tables_are_read_in_both_pe_formats(self):
+        # Visual C++ 6 delay-load descriptors (addresses, not RVAs) exist only in PE32.
+        for pe32, legacy in ((False, False), (True, False), (True, True)):
+            with self.subTest(pe32=pe32, legacy_delay=legacy):
+                image = importing_pe(("KERNEL32.dll", "VCRUNTIME140.dll"), ("msvcp140.dll",),
+                                     pe32=pe32, legacy_delay=legacy)
+                self.assertEqual(self.imports(image), ["kernel32.dll", "vcruntime140.dll", "msvcp140.dll"])
+        self.assertEqual(self.imports(importing_pe()), [])
+        self.assertEqual(self.imports(unsigned_pe()), [])
+        self.assertIsNone(self.imports(b"\x7fELF fixture"))
+
+    def test_visual_cpp_runtime_dlls_are_refused_but_windows_components_are_not(self):
+        refused = ("vcruntime140.dll", "VCRUNTIME140_1.dll", "vcruntime140d.dll", "msvcp140.dll",
+                   "msvcp140_1.dll", "msvcp140_2.dll", "msvcp140_atomic_wait.dll",
+                   "msvcp140_codecvt_ids.dll", "concrt140.dll", "vccorlib140.dll", "vcomp140.dll",
+                   "msvcr120.dll", "msvcp100.dll", "ucrtbased.dll")
+        allowed = ("kernel32.dll", "ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll",
+                   "api-ms-win-crt-heap-l1-1-0.dll", "msvcrt.dll", "msvcp_win.dll", "user32.dll",
+                   "libcef.dll", "avcodec-63.dll")
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            for name in refused:
+                for delayed in (False, True):
+                    with self.subTest(name=name, delayed=delayed):
+                        image = folder / "module.dll"
+                        image.write_bytes(importing_pe(() if delayed else ("kernel32.dll", name),
+                                                       (name,) if delayed else ()))
+                        expected = r"imports the Visual C\+\+ runtime \(" + re.escape(name.lower()) + r"\)"
+                        with self.assertRaisesRegex(ValueError, expected):
+                            packaging.check_release_file(image, "viewers/module.dll")
+            for name in allowed:
+                with self.subTest(allowed=name):
+                    image = folder / "allowed.exe"
+                    image.write_bytes(importing_pe((name,)))
+                    packaging.check_release_file(image, "allowed.exe")
+
+    def test_malformed_import_tables_are_refused(self):
+        image = bytearray(importing_pe(("kernel32.dll",)))
+        struct.pack_into("<I", image, 0x200 + 12, 0x9000)  # A name outside every section.
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "broken.exe"
+            path.write_bytes(bytes(image))
+            with self.assertRaisesRegex(ValueError, "broken.exe: PE import data lies outside every section"):
+                packaging.check_release_file(path, "broken.exe")
+            path.write_bytes(bytes(image[:0x200]))
+            with self.assertRaisesRegex(ValueError, "Truncated PE import data"):
+                packaging.check_release_file(path, "broken.exe")
+
+    def test_archive_refuses_a_module_that_imports_the_visual_cpp_runtime(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp) / "stage"
+            library = stage / "viewers/midnight-viewer-basic/midnight_viewer_basic.dll"
+            library.parent.mkdir(parents=True)
+            (stage / "midnight-explorer.exe").write_bytes(importing_pe(("kernel32.dll", "ucrtbase.dll")))
+            library.write_bytes(importing_pe(("kernel32.dll",), ("VCRUNTIME140.dll",)))
+            archive = Path(temp) / "release.zip"
+            with self.assertRaisesRegex(ValueError, r"midnight_viewer_basic.dll imports the Visual C\+\+ runtime"):
+                packaging.write_archive(stage, archive, "midnight-explorer.exe", "zip")
+            self.assertFalse(archive.exists())
+            library.write_bytes(importing_pe(("kernel32.dll", "api-ms-win-crt-runtime-l1-1-0.dll")))
+            packaging.write_archive(stage, archive, "midnight-explorer.exe", "zip")
+            self.assertTrue(archive.is_file())
+
+
+class MarkdownNameTests(unittest.TestCase):
+    """Markdown files in a release have lowercase names, with '-' for '_'."""
+
+    def test_packaged_names(self):
+        for name, packaged in (("README.md", "readme.md"), ("SECURITY.md", "security.md"),
+                               ("THIRD-PARTY.md", "third-party.md"), ("THIRD_PARTY.md", "third-party.md"),
+                               ("LICENSE-APACHE.md", "license-apache.md"),
+                               ("MIDNIGHT_PATCH.md", "midnight-patch.md"),
+                               ("LicenseRef-Slint-Software-3.0.md", "licenseref-slint-software-3.0.md"),
+                               ("NOTES.MD", "notes.md"), ("feature-status.md", "feature-status.md"),
+                               ("README.txt", "README.txt"), ("LICENSE", "LICENSE"),
+                               ("THIRD-PARTY.json", "THIRD-PARTY.json"), ("LICENSE_MIT", "LICENSE_MIT")):
+            with self.subTest(name=name):
+                self.assertEqual(packaging.packaged_name(name), packaged)
+
+    def test_archive_refuses_an_uppercase_markdown_name(self):
+        for relative in ("README.md", "viewers/midnight-viewer-basic/THIRD-PARTY.md",
+                         "licenses/serde-1.0.0/LICENSE-MIT.md", "thumbnailers/notices/x/notes.MD"):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as temp:
+                stage = Path(temp) / "stage"
+                file = stage / relative
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text("notice", encoding="utf-8")
+                (stage / "midnight-explorer").write_text("fixture", encoding="utf-8")
+                archive = Path(temp) / "release.tar.gz"
+                with self.assertRaisesRegex(ValueError, "Markdown names in a release are lowercase"):
+                    packaging.write_archive(stage, archive, "midnight-explorer", "tar.gz")
+                self.assertFalse(archive.exists())
+                file.rename(file.with_name(packaging.packaged_name(file.name)))
+                packaging.write_archive(stage, archive, "midnight-explorer", "tar.gz")
+
+    def test_crate_notices_are_copied_under_lowercase_markdown_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            crate = Path(temp) / "registry/crate-0.1.0"
+            (crate / "licenses").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+            (crate / "LICENSE-APACHE.md").write_text("Apache", encoding="utf-8")
+            (crate / "LICENSE_MIT").write_text("MIT", encoding="utf-8")
+            (crate / "licenses/UPSTREAM_NOTICE.md").write_text("Upstream", encoding="utf-8")
+            rust_docs = Path(temp) / "rust"
+            rust_docs.mkdir()
+            (rust_docs / "COPYRIGHT-library.html").write_text("Rust", encoding="utf-8")
+            stage = Path(temp) / "stage"
+            stage.mkdir()
+            entry = dict(package("crate"), manifest_path=str(crate / "Cargo.toml"), license="MIT")
+            packaging.add_notices(stage, {"packages": [package("midnight-explorer", None), entry]},
+                                  "midnight-explorer v0.1.0\ncrate v0.1.0\n", rust_docs, None)
+            folder = stage / "licenses/crate-0.1.0"
+            copied = sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file())
+            self.assertEqual(copied, ["LICENSE_MIT", "license-apache.md", "licenses/upstream-notice.md"])
+
+
 class ArchivePermissionsTests(unittest.TestCase):
     def test_distribution_keeps_palette_licenses_and_attribution(self):
         root = Path(__file__).resolve().parents[2]
@@ -240,7 +367,7 @@ class ViewerPackageTests(unittest.TestCase):
         (package / "plugin.toml").write_text(manifest, encoding="utf-8")
         (package / "viewer.dll").write_bytes(b"independent native fixture")
         (package / "LICENSE").write_text("Plugin license", encoding="utf-8")
-        (package / "THIRD-PARTY.md").write_text("Dependency notices", encoding="utf-8")
+        (package / "third-party.md").write_text("Dependency notices", encoding="utf-8")
         notices = package / "notices"
         notices.mkdir()
         (notices / "upstream-LICENSE").write_text("Upstream terms", encoding="utf-8")
@@ -592,9 +719,12 @@ class ProjectLicenseTests(unittest.TestCase):
                 self.assertEqual(packaging.project_license_name(target), name)
                 self.assertEqual((stage / name).read_bytes(), (self.root / "LICENSE").read_bytes())
                 self.assertFalse((stage / absent).exists())
-                self.assertEqual((stage / "README.md").read_bytes(), (self.root / "README.md").read_bytes())
+                staged = {path.name for path in stage.iterdir()}
+                self.assertTrue({"readme.md", "security.md"} <= staged, staged)
+                self.assertEqual((stage / "readme.md").read_bytes(), (self.root / "README.md").read_bytes())
+                self.assertEqual((stage / "security.md").read_bytes(), (self.root / "SECURITY.md").read_bytes())
                 for relative in packaging.PROJECT_DOCUMENTS:
-                    self.assertTrue((stage / Path(relative).name).is_file(), relative)
+                    self.assertIn(packaging.packaged_name(Path(relative).name), staged)
                 archive_format = "zip" if name == "LICENSE.txt" else "tar.gz"
                 (stage / "midnight-explorer").write_text("fixture", encoding="utf-8")
                 archive = Path(self.temporary.name) / f"{target}.{archive_format}"
@@ -606,7 +736,9 @@ class ProjectLicenseTests(unittest.TestCase):
                     with tarfile.open(archive) as bundle:
                         names = set(bundle.getnames())
                 self.assertIn(f"{target}/{name}", names)
-                self.assertIn(f"{target}/README.md", names)
+                self.assertIn(f"{target}/readme.md", names)
+                self.assertIn(f"{target}/security.md", names)
+                self.assertFalse({name for name in names if name.endswith(".md") and name != name.lower()})
                 self.assertNotIn(f"{target}/{absent}", names)
 
     def test_release_readmes_name_the_license_and_the_tagged_source(self):

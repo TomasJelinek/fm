@@ -77,8 +77,16 @@ if ($bootstrap.Status -ne 'NotSigned' -or $client.Status -ne 'NotSigned') {
 Copy-Item -LiteralPath (Join-Path $project 'web-viewer.json') -Destination $package -Force
 # The provider's own licence (GPL-3.0-or-later); CEF's LICENSE.txt below covers only CEF.
 Copy-Item -LiteralPath (Join-Path $project 'LICENSE') -Destination $package -Force
-Copy-Item -LiteralPath (Join-Path $project 'THIRD_PARTY.md') -Destination $package -Force
-Copy-Item -LiteralPath (Join-Path $project 'README.md') -Destination $package -Force
+# Markdown names in a package are lowercase, with '-' for '_' (THIRD_PARTY.md is
+# third-party.md). A reused package's copies go first: NTFS keeps the case of a file that
+# a copy replaces.
+foreach ($name in @('THIRD_PARTY.md', 'README.md')) {
+    $packaged = $name.ToLowerInvariant().Replace('_', '-')
+    foreach ($earlier in @($name, $packaged)) {
+        Remove-Item -LiteralPath (Join-Path $package $earlier) -Force -ErrorAction Ignore
+    }
+    Copy-Item -LiteralPath (Join-Path $project $name) -Destination (Join-Path $package $packaged)
+}
 foreach ($file in @('LICENSE.txt','CREDITS.html')) {
     Copy-Item -LiteralPath (Join-Path $cefStage $file) -Destination $package -Force
     $cefSources[$file] = $file
@@ -126,6 +134,11 @@ foreach ($dependency in $metadata.packages) {
     if (-not $files) { throw "No pinned license text found for $($dependency.name)" }
     foreach ($file in $files) {
         $outputFile = Join-Path $destination (Get-RelativePath $source $file.FullName)
+        if ($file.Extension -eq '.md') {
+            # Lowercase, as third-party.md above.
+            $outputFile = Join-Path (Split-Path $outputFile -Parent) $file.Name.ToLowerInvariant().Replace('_', '-')
+            Remove-Item -LiteralPath $outputFile -Force -ErrorAction Ignore
+        }
         New-Item -ItemType Directory -Force (Split-Path $outputFile -Parent) | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $outputFile -Force
     }

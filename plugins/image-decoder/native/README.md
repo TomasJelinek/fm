@@ -2,7 +2,8 @@
 
 AVIF uses [dav1d 1.5.4](https://download.videolan.org/pub/videolan/dav1d/1.5.4/),
 licensed BSD-2-Clause. Its source archive is checked against the pinned SHA-256
-before extraction. The native wrappers build a release static library with
+before extraction. The native wrappers build a release static library (on Windows
+with the static C runtime, `/MT`, matching the plugins' `crt-static` Rust code) with
 assembly enabled, tools/examples/tests/docs disabled, and no Meson dependency
 downloads. The following Cargo build stays offline and must not use dav1d-sys's
 Git fallback. Retain dav1d's `COPYING` in both plugin distribution notices.

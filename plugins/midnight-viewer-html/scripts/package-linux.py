@@ -94,6 +94,12 @@ def validate_native(manifest):
             raise ValueError(f'native runtime SHA-256 mismatch: {name}')
 
 
+def packaged_name(name):
+    """Markdown names in a package are lowercase, with '-' for '_' (THIRD_PARTY.md is
+    third-party.md); other names are kept."""
+    return name.lower().replace('_', '-') if name.lower().endswith('.md') else name
+
+
 def package(sdk, destination, launcher, metadata, pin, native, profile='debug'):
     # A fresh package prevents stale files from surviving a previous runtime version.
     destination.mkdir()
@@ -111,7 +117,7 @@ def package(sdk, destination, launcher, metadata, pin, native, profile='debug'):
     shutil.copy2(sdk / 'locales/en-US.pak', destination / 'locales/en-US.pak')
     # LICENSE is the provider's own licence (GPL-3.0-or-later); CEF's LICENSE.txt covers only CEF.
     for name in ['LICENSE', 'README.md', 'THIRD_PARTY.md']:
-        shutil.copy2(PROJECT / name, destination / name)
+        shutil.copy2(PROJECT / name, destination / packaged_name(name))
     if native:
         for entry in native['files']:
             output = destination / entry['path']
@@ -145,6 +151,9 @@ def package(sdk, destination, launcher, metadata, pin, native, profile='debug'):
         for relative, content in notices.items():
             output = destination / 'notices' / (
                 dependency['name'] + '-' + dependency['version']) / relative
+            output = output.with_name(packaged_name(output.name))
+            if output.exists():
+                raise ValueError(f'Two notices share the packaged name {output}')
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(content)
     shutil.copy2(metadata, destination / 'dependency-metadata.json')

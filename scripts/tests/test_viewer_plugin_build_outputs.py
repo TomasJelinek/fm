@@ -78,12 +78,14 @@ class ViewerPluginBuildOutputs(unittest.TestCase):
             if name != "image":
                 (plugin / "notices").mkdir()
                 (plugin / "notices/dependency-LICENSE").write_text(f"{name} dependency notice\n")
+                (plugin / "notices/UPSTREAM_NOTICE.md").write_text(f"{name} upstream notice\n")
         decoder = self.real / "plugins/image-decoder"
         (decoder / "native").mkdir(parents=True)
         (decoder / "native/bootstrap-windows.ps1").write_text("param($BuildRoot, [switch]$Offline)\n")
         (decoder / "native/build-windows.ps1").write_text("param($BuildRoot, $Jobs, [switch]$Offline)\n")
         (decoder / "notices").mkdir()
         (decoder / "notices/dependency-LICENSE").write_text("decoder dependency notice\n")
+        (decoder / "notices/UPSTREAM_NOTICE.md").write_text("decoder upstream notice\n")
         registry = self.owner / "sdk/registry"
         registry.mkdir(parents=True)
         self.sdk = self.owner / "sdk/.cargo/config.toml"
@@ -97,6 +99,12 @@ class ViewerPluginBuildOutputs(unittest.TestCase):
         directory_link(self.real / "_build/redirect", self.outside)
         directory_link(self.real / "_build/loop", self.real)
         self.custom = directory_link(self.owner / "custom target", self.outside)
+
+    def assert_lowercase_markdown(self, package):
+        """Markdown names in a package are lowercase, with '-' for '_' (README.md is readme.md)."""
+        names = {path.relative_to(package).as_posix() for path in package.rglob("*.md")}
+        self.assertTrue({"readme.md", "third-party.md", "notices/upstream-notice.md"} <= names, names)
+        self.assertEqual({name for name in names if name != name.lower() or "_" in name}, set())
 
     def run_cases(self, cases):
         """Run (name, build root, output) cases through the linked checkout's scripts."""
@@ -145,6 +153,7 @@ class ViewerPluginBuildOutputs(unittest.TestCase):
             self.assertEqual((package / f"midnight-viewer-{name}.exe").read_text(),
                              f"built midnight-viewer-{name}.exe")
             self.assertTrue((package / "notices/dependency-LICENSE").is_file())
+            self.assert_lowercase_markdown(package)
             self.assertTrue((self.real / "plugins" / f"midnight-viewer-{name}/_build/build/package"
                              / f"midnight-viewer-{name}/image-viewer.json").is_file())
         self.assertEqual(list(self.outside.iterdir()), [])
@@ -175,7 +184,8 @@ class ViewerPluginBuildOutputs(unittest.TestCase):
         for name in MARKED_NOTICES:
             replaced = self.real / f"_build/debug/viewers/midnight-viewer-{name}/notices"
             self.assertEqual(sorted(path.name for path in replaced.iterdir()),
-                             [".midnight-generated", "dependency-LICENSE"])
+                             [".midnight-generated", "dependency-LICENSE", "upstream-notice.md"])
+            self.assert_lowercase_markdown(replaced.parent)
             self.assertEqual((self.outside / name / "notices/unmarked-LICENSE").read_text(),
                              "not written by this script\n")
             self.assertEqual((self.real / f"installed/{name}/notices/unmarked-LICENSE").read_text(),

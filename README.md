@@ -87,9 +87,9 @@ Preview builds are published on the
   `filesystems` and `thumbnailers` folders beside the executable. Its `README.txt`
   has the details.
 
-On Windows, install Microsoft's
-[Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
-if `VCRUNTIME140.dll` is missing. On Linux, install the runtime packages that
+On Windows nothing else is needed: from 0.6.4 on, the application and its plugins
+include the C runtime they use, so the Visual C++ Redistributable is not required. On
+Linux, install the runtime packages that
 [system requirements](docs/system-requirements.md#runtime-software) list. Each release
 also has `SHA256SUMS` and its signature `SHA256SUMS.minisig` to
 [check a download by hand](docs/troubleshooting.md#check-a-download-by-hand).

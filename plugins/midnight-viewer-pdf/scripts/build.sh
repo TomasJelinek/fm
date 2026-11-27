@@ -70,4 +70,10 @@ cp -- "$plugin_root/LICENSE" "$plugin_root/README.md" "$plugin_root/THIRD-PARTY.
 rm -rf -- "$output/notices"
 mkdir -- "$output/notices"
 cp -R -- "$plugin_root/notices/." "$output/notices/"
+# Markdown names in a package are lowercase, with '-' for '_' (README.md is readme.md);
+# the fresh copy replaces an earlier build's.
+while IFS= read -r -d '' file; do
+    name=${file##*/}; name=${name,,}; name=${name//_/-}
+    [[ $name == "${file##*/}" ]] || mv -f -- "$file" "${file%/*}/$name"
+done < <(find "$output" -type f -iname '*.md' -print0)
 echo "PDF viewer package: $output"

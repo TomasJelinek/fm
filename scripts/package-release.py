@@ -230,7 +230,7 @@ def copy_viewer_packages(stage, viewers, target, required_ids=(), *, validate_on
                 or not isinstance(services, list) or len(services) > 16
                 or any(service not in ("content.read.v1", "work.schedule.v1") for service in services)):
             raise ValueError(f"Unsupported viewer models/services: {package}")
-        for required in ("plugin.toml", library, "LICENSE", "THIRD-PARTY.md"):
+        for required in ("plugin.toml", library, "LICENSE", "third-party.md"):
             if package / required not in files:
                 raise ValueError(f"Viewer package missing required file {required}: {package}")
         packages.append((package, manifest, files, None))
@@ -286,15 +286,15 @@ def image_viewer_manifest(package, files, target, *, web=False):
         raise ValueError("Incompatible image viewer manifest")
     executable = worker_executable(manifest.get("executable"), target)
     # The HTML provider's own licence is LICENSE; its LICENSE.txt is CEF's.
-    for required in (filename, executable, *(('LICENSE', 'LICENSE.txt', 'THIRD_PARTY.md') if web else
-                                           ('LICENSE', 'THIRD-PARTY.md'))):
+    for required in (filename, executable, *(('LICENSE', 'LICENSE.txt', 'third-party.md') if web else
+                                           ('LICENSE', 'third-party.md'))):
         if package / required not in files:
             raise ValueError(f"Image viewer package missing required file {required}: {package}")
     return manifest
 
 
 def validate_web_runtime(package, files, manifest, target):
-    required = {"runtime-files.json", "LICENSE.txt", "CREDITS.html", "THIRD_PARTY.md",
+    required = {"runtime-files.json", "LICENSE.txt", "CREDITS.html", "third-party.md",
                 "dependency-metadata.json", "icudtl.dat", "resources.pak",
                 "chrome_100_percent.pak", "chrome_200_percent.pak", "v8_context_snapshot.bin",
                 "vk_swiftshader_icd.json"}
@@ -438,7 +438,7 @@ def copy_filesystem_packages(stage, source, target, require_native=False, requir
                                      "bzip2", "tar-bzip2", "zstd", "tar-zstd") for value in formats)):
             raise ValueError("Incompatible filesystem worker manifest")
         executable = worker_executable(manifest.get("entry_executable"), target)
-        if (package / executable not in files or package / "THIRD-PARTY.md" not in files
+        if (package / executable not in files or package / "third-party.md" not in files
                 or not any(file.is_relative_to(package / "licenses") for file in files)):
             raise ValueError("Filesystem package is missing its executable or attribution")
         packages.append((package, manifest, files, executable))
@@ -499,7 +499,7 @@ def library_filesystem_manifest(manifest, package, files, target):
     portable_component(library)
     suffix = ".dll" if "windows" in target else ".so"
     if (not library.endswith(suffix) or package / library not in files
-            or package / "THIRD-PARTY.md" not in files):
+            or package / "third-party.md" not in files):
         raise ValueError("Filesystem package lacks its library or embedded notices")
     return library
 
@@ -648,10 +648,24 @@ def license_files(package):
     return source, sorted(files)
 
 
+def packaged_name(name):
+    """A file's name in a release: Markdown names are lowercase, with '-' for '_'.
+
+    THIRD_PARTY.md becomes third-party.md and LICENSE-APACHE.md license-apache.md;
+    other names are kept (README.txt, LICENSE, THIRD-PARTY.json).
+    """
+    return name.lower().replace("_", "-") if name.lower().endswith(".md") else name
+
+
 def copy_package_file(source, destination, *, root):
-    """Copy a package input below its root to the same relative path below destination."""
+    """Copy a package input below its root to the same relative path below destination.
+
+    A Markdown name is lowercased (packaged_name); two inputs that would share the
+    copied name are refused, not merged.
+    """
     path = package_path(source, root=root)
-    target = Path(destination) / package_member(root, source)
+    member = package_member(root, source)
+    target = Path(destination) / member.with_name(packaged_name(member.name))
     target.parent.mkdir(parents=True, exist_ok=True)
     with plain_file(path) as original, target.open("xb") as output:
         shutil.copyfileobj(original, output)
@@ -714,9 +728,8 @@ def project_license_name(target):
 def copy_project_documents(stage, root, target):
     """The license, the project README and the user documents every archive carries."""
     shutil.copyfile(root / "LICENSE", stage / project_license_name(target))
-    shutil.copyfile(root / "README.md", stage / "README.md")
-    for relative in PROJECT_DOCUMENTS:
-        shutil.copyfile(root / relative, stage / Path(relative).name)
+    for relative in ("README.md", *PROJECT_DOCUMENTS):
+        shutil.copyfile(root / relative, stage / packaged_name(Path(relative).name))
 
 
 def check_release_readme(readme, version):
@@ -802,6 +815,104 @@ def release_debug_data(stream):
     return None
 
 
+# Visual C++ runtime DLLs (the Visual C++ Redistributable's, older versions' and debug
+# builds') are not part of Windows: an image that imports one does not start where the
+# redistributable is missing ("VCRUNTIME140.dll was not found"). Windows builds link the
+# C runtime statically (crt-static in .cargo/config.toml, /MT for C code). The Universal
+# CRT (ucrtbase.dll and its api-ms-win-crt-* contracts) is part of Windows 10 and later
+# and stays allowed, apart from its debug build, ucrtbased.dll, which only the SDK has.
+VISUAL_CPP_RUNTIME = re.compile(r"(?:vcruntime|msvcp|msvcr|concrt|vccorlib|vcomp|vcamp)\d+[a-z0-9_]*\.dll"
+                                r"|ucrtbased\.dll")
+
+
+def pe_imported_libraries(stream):
+    """The DLLs that a PE image imports or delay-loads, read from its import tables only.
+
+    None for a file that is not a PE image (no MZ signature).
+    """
+    def read_at(offset, size):
+        stream.seek(offset)
+        result = stream.read(size)
+        if len(result) != size:
+            raise ValueError("Truncated PE import data")
+        return result
+
+    stream.seek(0)
+    if stream.read(2) != b"MZ":
+        return None
+    pe, = struct.unpack("<I", read_at(60, 4))
+    if read_at(pe, 4) != b"PE\0\0":
+        raise ValueError("Invalid PE signature")
+    sections, = struct.unpack("<H", read_at(pe + 6, 2))
+    optional_size, = struct.unpack("<H", read_at(pe + 20, 2))
+    optional = read_at(pe + 24, optional_size)
+    wide = optional[:2] == b"\x0b\x02"
+    directories = 112 if wide else 96
+    if optional[:2] not in (b"\x0b\x01", b"\x0b\x02") or optional_size < directories:
+        raise ValueError("Invalid PE optional header")
+    image_base, = struct.unpack_from("<Q" if wide else "<I", optional, 24 if wide else 28)
+    headers, = struct.unpack_from("<I", optional, 60)
+    count = min(struct.unpack_from("<I", optional, directories - 4)[0], (optional_size - directories) // 8)
+    table = [struct.unpack("<IIII", read_at(pe + 24 + optional_size + 40 * index + 8, 16))
+             for index in range(sections)]
+
+    def offset(rva):
+        if rva < headers:
+            return rva
+        for virtual_size, address, raw_size, raw in table:
+            if address <= rva < address + max(virtual_size, raw_size):
+                if rva - address >= raw_size:
+                    raise ValueError("PE import data lies outside the file")
+                return raw + rva - address
+        raise ValueError("PE import data lies outside every section")
+
+    libraries = []
+    # Import descriptors (20 bytes, the name's RVA at 12) and delay-load descriptors
+    # (32 bytes: attributes, then the name), each table ending with one without a name.
+    for index, size in ((1, 20), (13, 32)):
+        rva = struct.unpack_from("<I", optional, directories + 8 * index)[0] if index < count else 0
+        if not rva:
+            continue
+        position = offset(rva)
+        for _ in range(4096):
+            entry = read_at(position, size)
+            if size == 20:
+                name = struct.unpack_from("<I", entry, 12)[0]
+            else:
+                attributes, name = struct.unpack_from("<II", entry)
+                # Visual C++ 6 delay-load descriptors hold addresses instead of RVAs.
+                if name and not attributes & 1:
+                    if name < image_base:
+                        raise ValueError("Invalid PE delay-load descriptor")
+                    name -= image_base
+            if not name:
+                break
+            stream.seek(offset(name))
+            text = stream.read(256).split(b"\0", 1)
+            if len(text) != 2 or not text[0] or not text[0].isascii():
+                raise ValueError("Invalid PE import name")
+            libraries.append(text[0].decode("ascii").lower())
+            position += size
+        else:
+            raise ValueError("Unterminated PE import table")
+    return libraries
+
+
+def check_release_file(path, label):
+    """A release file's own checks: a lowercase Markdown name, and no Visual C++ runtime."""
+    if path.name.lower().endswith(".md") and path.name != path.name.lower():
+        raise ValueError(f"{label}: Markdown names in a release are lowercase ({packaged_name(path.name)})")
+    with plain_file(path) as stream:
+        try:
+            runtime = sorted({name for name in pe_imported_libraries(stream) or ()
+                              if VISUAL_CPP_RUNTIME.fullmatch(name)})
+        except ValueError as error:
+            raise ValueError(f"{label}: {error}") from error
+    if runtime:
+        raise ValueError(f"{label} imports the Visual C++ runtime ({', '.join(runtime)}), which Windows "
+                         "does not include: link the C runtime statically (crt-static, /MT)")
+
+
 def check_release_payload(stage, files):
     for path in files:
         relative = path.relative_to(stage)
@@ -821,6 +932,7 @@ def check_release_payload(stage, files):
                 raise ValueError(f"{relative}: {error}") from error
         if debug:
             raise ValueError(f"{relative}: {debug} in release")
+        check_release_file(path, relative)
 
 
 def write_archive(stage, archive, binary_name, archive_format, executables=()):
@@ -1001,6 +1113,11 @@ def main():
     copy_filesystem_packages(stage, filesystem_root, args.target, require_native=True, require_network=True,
                              require_archive=True, validate_only=True)
     copy_thumbnail_packages(stage, thumbnail_root, args.target, require_media=True, validate_only=True)
+    # The executables and every module file, as write_archive checks the staged copies.
+    for path in (args.binary, authorization_helper(args.binary, args.target)[1],
+                 *(file for folder in (viewers_root, filesystem_root, thumbnail_root)
+                   for file in plain_tree(folder, maximum=65536))):
+        check_release_file(path, path)
     stage.mkdir(parents=True, exist_ok=False)
     binary = stage / args.binary.name
     shutil.copyfile(args.binary, binary)

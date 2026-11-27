@@ -26,9 +26,8 @@ that does not hold, the message for a denied folder says why instead of offering
 the retry. Earlier packages' application (then named me.exe) started the included
 helper without checking it: replace an earlier extracted package with this one,
 or at least delete its midnight-elevated-listing.exe.
-Rust and Visual Studio are not needed to run the application.
-Install Microsoft's Visual C++ x64 Redistributable if VCRUNTIME140.dll is missing:
-https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist
+Rust, Visual Studio and the Visual C++ runtime are not needed to run the
+application: every program and plugin includes the C runtime it uses.
 
 Targets Windows 10 22H2 / Windows 11 x64; tested on Windows 11 25H2.
 The executable is unsigned. This ZIP has no installer; each release also
@@ -42,7 +41,7 @@ hours; Options > General > Updates turns it off). Download and install accepts o
 an archive whose checksums are signed with the project's release key, installs it
 on restart and restores this version if the new one does not start. It updates
 only a folder you can change; for an extracted folder that only administrators can
-change it offers the release page instead. See SECURITY.md (Update check).
+change it offers the release page instead. See security.md (Update check).
 Graphics use the GPU through Vulkan or Direct3D 12 (WGPU_BACKEND selects one).
 --software is a diagnostic fallback with known
 bitmap-emoji limitations, not equivalent to the GPU renderer's Unicode coverage.
@@ -55,7 +54,7 @@ Releases up to 0.5.0 named the executable me.exe. Settings stay where they were;
 point shortcuts, pinned taskbar items, "Open with" choices and firewall rules
 that named me.exe at midnight-explorer.exe instead.
 See feature-status.md for implemented and pending functionality, and
-system-requirements.md, keyboard-shortcuts.md and SECURITY.md for details.
+system-requirements.md, keyboard-shortcuts.md and security.md for details.
 F1 opens keyboard help; Options allows changing shortcuts and appearance.
 The complete distribution includes all six viewers (text/hex, source, Markdown,
 image, PDF and Chromium HTML), native/network/archive filesystems and both

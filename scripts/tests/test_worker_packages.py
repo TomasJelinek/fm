@@ -52,7 +52,7 @@ class WorkerPackages(unittest.TestCase):
         return source
 
     def notices(self, directory):
-        (directory / "THIRD-PARTY.md").write_text("Pinned attribution")
+        (directory / "third-party.md").write_text("Pinned attribution")
         (directory / "licenses").mkdir()
         (directory / "licenses/upstream-MIT").write_text("Actual upstream terms")
 
@@ -259,7 +259,7 @@ class WorkerPackages(unittest.TestCase):
 
     def test_worker_symlinks_and_missing_notices_are_rejected(self):
         source = self.filesystem()
-        (source / "archive/THIRD-PARTY.md").unlink()
+        (source / "archive/third-party.md").unlink()
         with self.assertRaises(ValueError):
             packaging.copy_filesystem_packages(self.stage, source, self.target)
         thumbs = self.thumbnails()

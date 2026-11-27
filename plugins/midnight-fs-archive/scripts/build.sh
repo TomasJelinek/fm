@@ -74,7 +74,9 @@ if [[ -n "$package" ]]; then
     # A running worker keeps its executable busy: rename a complete new inode into place.
     cp -- "$build_root/$profile/midnight-fs-archive" "$package/.midnight-fs-archive.new"
     mv -f -- "$package/.midnight-fs-archive.new" "$package/midnight-fs-archive"
-    cp -- "$plugin_root/THIRD-PARTY.md" "$package/"
+    # Markdown names in a package are lowercase; an earlier build may have left THIRD-PARTY.md.
+    rm -f -- "$package/THIRD-PARTY.md"
+    cp -- "$plugin_root/THIRD-PARTY.md" "$package/third-party.md"
     target=$(rustc -vV | sed -n 's/^host: //p')
     cat > "$package/plugin.toml" <<EOF
 schema_version = 1

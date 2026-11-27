@@ -36,7 +36,8 @@ fi
 cargo build "${options[@]}"
 package="$app_directory/filesystems/$provider.linux"
 mkdir -p -- "$package"
-package_files=("$library" plugin.toml README.md THIRD-PARTY.md)
+# Markdown names in a package are lowercase (README.md is readme.md).
+package_files=("$library" plugin.toml readme.md third-party.md)
 package_stage=$(mktemp -d -- "$package/.$provider-stage.XXXXXXXX")
 cleanup_package_stage() {
     # Remove only our known staging files; unexpected entries are never recursed.
@@ -49,9 +50,11 @@ trap cleanup_package_stage EXIT
 cp -- "$CARGO_TARGET_DIR/$profile/$library" "$package_stage/$library"
 cp -- "$plugin_root/$manifest" "$package_stage/plugin.toml"
 for name in README.md THIRD-PARTY.md; do
-    cp -- "$plugin_root/$name" "$package_stage/$name"
+    cp -- "$plugin_root/$name" "$package_stage/${name,,}"
 done
 for name in "${package_files[@]}"; do
     mv -fT -- "$package_stage/$name" "$package/$name"
 done
+# The uppercase names of packages built before.
+rm -f -- "$package/README.md" "$package/THIRD-PARTY.md"
 printf 'Filesystem package: %s\n' "$package"

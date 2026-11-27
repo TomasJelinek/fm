@@ -10,13 +10,19 @@ as [panel](glossary.md#panel) and [worker](glossary.md#worker) are defined in th
 
 ### Windows: VCRUNTIME140.dll is missing
 
-**Symptom:** `midnight-explorer.exe` does not start, and Windows reports that
+This applies to 0.6.3 and earlier. From 0.6.4 on, the application and its plugins
+include the C runtime they use and need no Visual C++ runtime.
+
+**Symptom:** `midnight-explorer.exe` 0.6.3 or earlier does not start, or a viewer,
+thumbnail or filesystem plugin of such a release fails to load, and Windows reports that
 `VCRUNTIME140.dll` was not found.
 
 **Cause:** the Microsoft Visual C++ x64 runtime is not installed. Neither the
-[release ZIP](glossary.md#release-zip) nor the MSI installer brings it.
+[release ZIP](glossary.md#release-zip) nor the MSI installer of those releases brings it.
 
-**Fix:** install Microsoft's
+**Fix:** install 0.6.4 or later from the
+[GitHub Releases page](https://github.com/TomasJelinek/fm/releases). To keep the older
+release, install Microsoft's
 [supported Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist),
 not a single DLL from another site, then start Midnight Explorer again.
 

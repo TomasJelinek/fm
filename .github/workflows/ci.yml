@@ -527,8 +527,9 @@ jobs:
           $library = '${{ matrix.library }}'
           Copy-Item -LiteralPath (Join-Path $build "release/$library") -Destination $package
           Copy-Item -LiteralPath "$plugin/${{ matrix.manifest }}" -Destination (Join-Path $package 'plugin.toml')
+          # Markdown names in a package are lowercase (README.md is readme.md).
           foreach ($name in @('README.md','THIRD-PARTY.md')) {
-            Copy-Item -LiteralPath "$plugin/$name" -Destination $package
+            Copy-Item -LiteralPath "$plugin/$name" -Destination (Join-Path $package $name.ToLowerInvariant())
           }
       - uses: actions/upload-artifact@v7
         with:

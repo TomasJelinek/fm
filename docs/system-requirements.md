@@ -124,12 +124,14 @@ The update check, at startup or on request, needs HTTPS access to `api.github.co
 `github.com` and GitHub's download servers; without that access only the check fails
 ([Updates](user-guide.md#updates)).
 
-**Windows:** install the Microsoft Visual C++ x64 runtime if it is not already
-present; the MSVC release executable uses `VCRUNTIME140.dll` and the Windows Universal
-CRT. Use Microsoft's
-[supported Visual C++ redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist),
-not individual DLL downloads. Rust, Cargo, Visual Studio, .NET and a separate Slint
-SDK are **not** needed to run a built executable. The command line's `cmd.exe` and
+**Windows:** no Visual C++ runtime is needed. From 0.6.4 on, every executable and
+plugin library links the C runtime statically, so none imports `VCRUNTIME140.dll` or
+another Visual C++ Redistributable DLL; they use only Windows' own DLLs, including the
+Universal CRT that is part of Windows 10 and later. Releases up to 0.6.3 needed the
+[Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+([Troubleshooting](troubleshooting.md#windows-vcruntime140dll-is-missing)). Rust,
+Cargo, Visual Studio, .NET and a separate Slint SDK are **not** needed to run a built
+executable. The command line's `cmd.exe` and
 Windows PowerShell are part of Windows; the PowerShell choice uses PowerShell 7
 (`pwsh.exe`) instead when it is installed.
 

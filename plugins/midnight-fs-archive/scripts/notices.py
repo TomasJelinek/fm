@@ -106,8 +106,15 @@ def notice_plan(metadata):
             files.append(source / package["license_file"])
         if not files:
             raise SystemExit(f"Pinned license files must be reviewed: {package['name']}")
-        plan[f"{package['name']}-{package['version']}"] = {
-            path.name: read_package_file(source, path) for path in files}
+        notices = {}
+        for path in files:
+            # Markdown names in a package are lowercase, with '-' for '_' (LICENSE.md is
+            # license.md); two notices that would share a name are refused, not merged.
+            name = path.name.lower().replace("_", "-") if path.name.lower().endswith(".md") else path.name
+            content = read_package_file(source, path)
+            if notices.setdefault(name, content) != content:
+                raise SystemExit(f"Two notices of {package['name']} share the packaged name {name}")
+        plan[f"{package['name']}-{package['version']}"] = notices
         inventory.append({"name": package["name"], "version": package["version"], "license": license_name})
     return plan, inventory
 
