@@ -14,6 +14,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -96,6 +97,16 @@ class Logic(unittest.TestCase):
         self.assertEqual(msi_test.compare_files(expected, {"a.exe": "1", "sub/b.txt": "3", "BUILD-INFO.json": "4"}),
                          ["not in the release payload: BUILD-INFO.json", "differs from the release payload: sub/b.txt"])
         self.assertEqual(msi_test.compare_files(expected, {"a.exe": "1"}), ["missing sub/b.txt"])
+
+    def test_a_per_user_icon_path_is_expanded_before_it_is_checked(self):
+        # Windows Installer records a per-user product's DisplayIcon with %APPDATA%
+        # unexpanded (the first CI run refused an installed per-user copy for it).
+        with tempfile.TemporaryDirectory() as folder:
+            icon = Path(folder) / "ProductIcon.ico"
+            icon.write_bytes(b"icon")
+            with mock.patch.dict(os.environ, {"MSI_TEST_ICON_HOME": folder}):
+                self.assertTrue(msi_test.icon_file_exists(r"%MSI_TEST_ICON_HOME%\ProductIcon.ico"))
+                self.assertFalse(msi_test.icon_file_exists(r"%MSI_TEST_ICON_HOME%\missing.ico"))
 
     def test_installed_apps_entry_names_the_product_version_publisher_folder_and_icon(self):
         folder = Path(r"C:\Program Files\Midnight Explorer (MSI)")

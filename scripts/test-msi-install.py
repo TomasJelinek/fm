@@ -205,6 +205,13 @@ def compare_files(expected, actual):
     return problems
 
 
+def icon_file_exists(path):
+    """Whether an Installed apps icon path names a file. Windows Installer records a
+    per-user product's icon as `%APPDATA%\\Microsoft\\Installer\\{code}\\...`, with the
+    variable unexpanded, so expand environment variables first."""
+    return Path(os.path.expandvars(path)).is_file()
+
+
 def check_uninstall_entry(values, version, folder, icon_exists, registry=True):
     """Problems of an Installed apps (Add/Remove Programs) entry, by registry value name."""
     problems = []
@@ -705,7 +712,7 @@ class Run:
             problems.append(f"no Installed apps entry {self.code(package)} for the {scope} scope")
         else:
             problems += [f"Installed apps ({source}): {problem}" for problem in check_uninstall_entry(
-                entry, version, folder, lambda path: Path(path).is_file(), registry=source == "registry")]
+                entry, version, folder, icon_file_exists, registry=source == "registry")]
         if problems:
             raise Failure(f"{package} {version} ({scope}):\n  " + "\n  ".join(problems))
         self.say(f"    {package} {version} is installed for the {scope} scope: "
