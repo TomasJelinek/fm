@@ -42,11 +42,36 @@ under `Software\Midnight Explorer Installer` are still there.
 
 **Cause:** both installations register the same Windows Installer components, so
 Windows Installer keeps the files while the other installation still uses those
-components. The MSI supports one kind of installation at a time.
+components. The MSI supports one kind of installation at a time; 0.6.3 and earlier
+still installed the second kind beside an earlier version, and from 0.6.4 the installer
+refuses it ([next entry](#windows-the-installer-says-midnight-explorer-is-already-installed)).
 
-**Fix:** remove the other installation too, delete the leftover folder and Start menu
-entry, and install again with one choice only. Your settings in
-`%LOCALAPPDATA%\Midnight Explorer` are not affected.
+**Fix:** remove the other installation too, then delete what is left: the folder, the
+Start menu entry (`Midnight Explorer` in your or the all-users Start menu) and the
+registry key. For a Just for me copy, in PowerShell:
+`reg delete "HKCU\Software\Midnight Explorer Installer" /f`; for an all-users copy, in a
+PowerShell started with **Run as administrator**:
+`reg delete "HKLM\SOFTWARE\Midnight Explorer Installer" /f /reg:64`. The 0.6.4 installer
+counts a leftover key as an installed copy until it is deleted. Then install again with
+one choice only. Your settings in `%LOCALAPPDATA%\Midnight Explorer` are not affected.
+
+### Windows: the installer says Midnight Explorer is already installed
+
+**Symptom:** the MSI of 0.6.4 or later says "Midnight Explorer is already installed for
+all users. Remove it in Settings > Apps > Installed apps before installing it just for
+you." (or the same with just for you and for all users exchanged), and the Install
+button of that choice is disabled. A silent installation ends with exit code 1603 and
+that message in its log; an update from the update dialog stops with it.
+
+**Cause:** the other kind of installation is installed. The MSI supports one kind at a
+time, because two copies would share Windows Installer's records of their files.
+
+**Fix:** to update the installed copy, choose its kind instead. To switch, remove the
+installed copy in **Settings › Apps › Installed apps** first, then install; your settings
+stay. If **Installed apps** lists only one Midnight Explorer and installing that same
+kind is refused, the copy that the message names was removed by 0.6.3 or earlier while
+both kinds were installed, and its files and registry key were left: delete them as in
+[the previous entry](#windows-removing-one-of-two-msi-installations-leaves-its-files).
 
 ### Windows: SmartScreen warns before the installer or the program runs
 

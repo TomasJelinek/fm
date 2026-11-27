@@ -42,8 +42,13 @@ How to read it:
   release job now installs, upgrades, repairs and removes it in both scopes on a
   disposable runner and runs [ICE](glossary.md#ice) (Internal Consistency Evaluators)
   validation; those steps first passed at `7ce68224`, the 0.6.3 tag
-  ([release record](verification/2026-11-27-release-0.6.3.md#msi-installation-test); REL-05). Keep one kind of installation at a time: with both installed, removing one
-  leaves its files ([Troubleshooting](troubleshooting.md#windows-removing-one-of-two-msi-installations-leaves-its-files)).
+  ([release record](verification/2026-11-27-release-0.6.3.md#msi-installation-test); REL-05). One kind of installation at a time: with both installed, removing one
+  leaves its files ([Troubleshooting](troubleshooting.md#windows-removing-one-of-two-msi-installations-leaves-its-files)),
+  so the 0.6.4 installer refuses the second kind while the other (0.6.1's per-user copy
+  included) is installed: the dialog disables that choice's Install button, and a silent
+  installation fails with the reason. The build checks the rule with Windows Installer's
+  own evaluation of its launch conditions; CI's installation test now installs the
+  other scope beside each copy and expects the refusal, which no CI run has passed yet.
 - **Linux specifics:** native Wayland drag and drop with other applications is new, not
   yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On
   Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which it offers to
@@ -51,9 +56,8 @@ How to read it:
 - **Open:** macOS (PLAT-01); native and manual qualification on other distributions,
   desktops, physical GPUs and live removable or network mounts (PLAT-02); CI jobs for
   the HTML viewer and the bundled-FFmpeg video helper (CI-01); native tests in the
-  release profile (REL-02); signed Windows release binaries and MSI (REL-03); the
-  installer refusing a second scope while the other is installed, and the ICE findings
-  (REL-05).
+  release profile (REL-02); signed Windows release binaries and MSI (REL-03); a passing
+  CI run of the installer's refusal of a second scope, and the ICE findings (REL-05).
 - **Documents:** [user guide](user-guide.md#build-and-run) (Build and run),
   [system requirements](system-requirements.md), [release build](release-build.md),
   [test execution](developer/test-execution.md).

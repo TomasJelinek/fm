@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -193,6 +194,59 @@ class Plan(Workspace):
         # Every dialog is shown by the sequence, except the one the progress dialog's Cancel spawns.
         self.assertEqual(dialogs - set(ui), {"CancelDlg"})
 
+    def test_one_scope_at_a_time(self):
+        # Copies in both scopes would share component codes, so the other scope's copy
+        # (found in HKCU or HKLM, also that of the 0.6.1 per-user MSI) refuses a scope.
+        _, tables = self.plan()
+        locators = {row[0]: row[1:] for row in tables["RegLocator"]}
+        searches = dict(tables["AppSearch"])
+        key = "Software\\Midnight Explorer Installer"
+        self.assertEqual(locators[searches["ME_USER_COPY"]], (package_msi.HKCU, key, "RootFolder", 18))
+        self.assertEqual(locators[searches["ME_MACHINE_COPY"]], (package_msi.HKLM, key, "RootFolder", 18))
+        properties = dict(tables["Property"])
+        self.assertEqual(properties["SecureCustomProperties"].split(";"),
+                         ["ME_DOWNGRADE_DETECTED", "ME_UPGRADE_DETECTED", "ME_USER_COPY", "ME_MACHINE_COPY"])
+        # Silent installations: launch conditions, applied only where SetScopeRule runs, in
+        # the execute sequence after AppSearch. The UI sequence evaluates launch conditions
+        # before ScopeDlg, with the default scope, so there the rule must not apply.
+        conditions = dict(tables["LaunchCondition"])
+        self.assertEqual(conditions[package_msi.OTHER_SCOPE_CONDITIONS["user"]],
+                         "Midnight Explorer is already installed for all users. Remove it in Settings > Apps > "
+                         "Installed apps before installing it just for you.")
+        self.assertEqual(conditions[package_msi.OTHER_SCOPE_CONDITIONS["machine"]],
+                         "Midnight Explorer is already installed just for you. Remove it in Settings > Apps > "
+                         "Installed apps before installing it for all users.")
+        for condition in package_msi.OTHER_SCOPE_CONDITIONS.values():
+            self.assertTrue(condition.startswith("Installed OR NOT ME_SCOPE_RULE OR "), condition)
+            self.assertLessEqual(len(condition), 255)
+        execute = {row[0]: row for row in tables["InstallExecuteSequence"]}
+        ui = {row[0]: row for row in tables["InstallUISequence"]}
+        self.assertLess(execute["AppSearch"][2], execute["SetScopeRule"][2])
+        self.assertLess(execute["SetScopeRule"][2], execute["LaunchConditions"][2])
+        self.assertIsNone(execute["SetScopeRule"][1])
+        self.assertNotIn("SetScopeRule", ui)
+        self.assertEqual({row[0]: row for row in tables["CustomAction"]}["SetScopeRule"],
+                         ("SetScopeRule", 51, "ME_SCOPE_RULE", "1"))
+        # The dialog: the conflicting choice's Install button is disabled, and its note says why.
+        rules = {(row[1], row[2]): row[3] for row in tables["ControlCondition"] if row[0] == "ScopeDlg"}
+        self.assertEqual(rules[("InstallUser", "Disable")], "ME_MACHINE_COPY")
+        self.assertEqual(rules[("InstallUser", "Enable")], "NOT ME_MACHINE_COPY")
+        self.assertEqual(rules[("InstallMachine", "Disable")], "ME_USER_COPY")
+        self.assertEqual(rules[("InstallMachine", "Enable")], "NOT ME_USER_COPY")
+        notes = {row[1]: row[9] for row in tables["Control"] if row[0] == "ScopeDlg"}
+        self.assertEqual(notes["MachineCopyNote"], conditions[package_msi.OTHER_SCOPE_CONDITIONS["user"]])
+        self.assertEqual(rules[("MachineCopyNote", "Show")], 'ME_SCOPE = "user" AND ME_MACHINE_COPY')
+        self.assertEqual(notes["UserCopyNote"], conditions[package_msi.OTHER_SCOPE_CONDITIONS["machine"]])
+        self.assertEqual(rules[("UserCopyNote", "Show")], 'ME_SCOPE = "machine" AND ME_USER_COPY')
+        # Every case the build rehearses with Windows Installer: refused only in the execute
+        # sequence of a new installation while the other scope has a copy.
+        cases = package_msi.scope_rule_cases()
+        self.assertEqual(len(cases), 4 * 4 * 2 * 2)
+        refused = {(scope, copies) for scope, _, copies, execute, maintenance, refusal in cases if refusal}
+        self.assertEqual(refused, {("user", ("machine",)), ("user", ("user", "machine")),
+                                   ("machine", ("user",)), ("machine", ("user", "machine"))})
+        self.assertTrue(all(execute and not maintenance for _, _, _, execute, maintenance, refusal in cases if refusal))
+
     def test_rules_refuse_a_package_of_one_scope_only(self):
         _, tables = self.plan()
         cases = {
@@ -210,6 +264,18 @@ class Plan(Workspace):
                 row for row in rows if row[0] != "SetInstallLocation"]),
             "install location not run": ("InstallExecuteSequence", lambda rows: [
                 row for row in rows if row[0] != "SetInstallLocation"]),
+            # One scope at a time.
+            "other scope not refused": ("LaunchCondition", lambda rows: [
+                row for row in rows if row[0] != package_msi.OTHER_SCOPE_CONDITIONS["machine"]]),
+            "scope rule before the dialog": ("InstallUISequence", lambda rows: rows + [("SetScopeRule", None, 60)]),
+            "scope rule never set": ("InstallExecuteSequence", lambda rows: [
+                row for row in rows if row[0] != "SetScopeRule"]),
+            "no search before the rule": ("InstallExecuteSequence", lambda rows: [
+                row for row in rows if row[0] != "AppSearch"]),
+            "other key searched": ("RegLocator", lambda rows: [
+                (row[0], row[1], "Software\\Other", *row[3:]) for row in rows]),
+            "dialog installs beside a copy": ("ControlCondition", lambda rows: [
+                row for row in rows if row[2] != "Disable"]),
         }
         for label, (table, change) in cases.items():
             with self.subTest(label):
@@ -317,6 +383,29 @@ class WindowsInstaller(Workspace):
             database.commit()
         with self.assertRaisesRegex(ValueError, "cannot start an installation: Action AppSearch"):
             package_msi.verify(msi, archive, out=io.StringIO())
+
+    def test_windows_installer_refuses_only_the_other_scope(self):
+        # The build rehearses the launch conditions with Windows Installer's own evaluator;
+        # a package whose conditions refuse too little or too much fails it.
+        archive = write_release(self.folder, release_files())
+        msi = package_msi.build(archive, out=io.StringIO())
+        import msi_database
+        user = package_msi.OTHER_SCOPE_CONDITIONS["user"]
+        for label, condition, error in (
+                ("other scope installs", "VersionNT64", "is not refused"),
+                ("refused before the dialog", user.replace("NOT ME_SCOPE_RULE OR ", ""), "UI sequence is refused"),
+                ("upgrade refused", user.replace("ME_MACHINE_COPY", "ME_USER_COPY"), "is refused")):
+            with self.subTest(label):
+                changed = self.folder / f"{label}.msi"
+                shutil.copyfile(msi, changed)
+                with msi_database.Database(changed, update=True) as database:
+                    database.execute(f"DELETE FROM `LaunchCondition` WHERE `Condition` = '{user}'")
+                    if condition != "VersionNT64":
+                        database.insert("LaunchCondition", [(condition, package_msi.OTHER_SCOPE_REFUSALS["user"])])
+                    database.commit()
+                with self.assertRaisesRegex(ValueError, error):
+                    package_msi.rehearse_scope_rule(changed)
+        package_msi.rehearse_scope_rule(msi)
 
     def test_verify_refuses_an_msi_of_another_payload(self):
         archive = write_release(self.folder, release_files())

@@ -7,9 +7,10 @@ actions before its first dialog, but nothing there installs it. This script does
 Installer left behind: every file byte for byte against the release ZIP, the
 `Software\\Midnight Explorer Installer` key, the Start menu shortcut, the Add/Remove
 Programs entry, the folder permissions of an all-users copy, an upgrade from an older
-build and from the published per-user MSIs, a refused downgrade, a repair, both scopes
-side by side and a complete removal that keeps the settings folder. The installed
-executable runs its own headless and UI smoke tests.
+build and from the published per-user MSIs, a refused downgrade, a repair, the other
+scope refused while one scope has a copy (one scope at a time) and a complete removal
+that keeps the settings folder. The installed executable runs its own headless and UI
+smoke tests.
 
 It changes the machine it runs on (installs, uninstalls, writes HKCU and HKLM) and so
 refuses to run without --disposable-machine. CI runs it on a throwaway GitHub-hosted
@@ -77,6 +78,8 @@ SHORTCUT = f"{PRODUCT}.lnk"
 SETTINGS_FOLDER = "Midnight Explorer"
 MARKER = "msi-install-test-marker.txt"
 DOWNGRADE_TEXT = f"A newer version of {PRODUCT} is already installed"
+# What an installation in a scope says while the other scope has a copy (one scope at a time).
+OTHER_SCOPE_TEXTS = package_msi.OTHER_SCOPE_REFUSALS
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
 SCOPES = ("user", "machine")
 # Exit codes of msiexec that mean success (3010: a restart completes it).
@@ -171,8 +174,24 @@ def decode_log(data):
     return data.decode("cp1252", errors="replace")
 
 
-def downgrade_refused(code, log_text):
-    return code == ERROR_INSTALL_FAILURE and DOWNGRADE_TEXT in log_text
+def other_scope(scope):
+    return {"user": "machine", "machine": "user"}[scope]
+
+
+def refusal_text(reason, scope):
+    """The first sentence of the message that an installation refused for `reason` leaves
+    in its log: a downgrade, or the other scope's copy (one scope at a time), which names
+    that scope."""
+    if reason == "downgrade":
+        return DOWNGRADE_TEXT
+    if reason == "other-scope":
+        return OTHER_SCOPE_TEXTS[scope].split(" Remove it ")[0]
+    raise ValueError(f"Unknown refusal: {reason}")
+
+
+def install_refused(code, log_text, text):
+    """Whether msiexec refused the installation (1603) with that message in its log."""
+    return code == ERROR_INSTALL_FAILURE and text in log_text
 
 
 def install_folder(scope, environment):
@@ -365,13 +384,20 @@ def plan(scenarios, version, previous, ui=False, ui_smoke=False):
     steps = [("preflight", {}), ("marker", {})]
     if "scopes" in scenarios:
         for scope in SCOPES:
+            other = other_scope(scope)
             steps += [
                 ("install", {"package": "older", "scope": scope}),
                 ("check-installed", {"package": "older", "scope": scope}),
+                # One scope at a time: copies in both scopes would share component codes
+                # (the codes follow the files, not the scope), so the other scope is refused
+                # while this one has a copy, and that copy stays as it was.
+                ("install-refused", {"package": "new", "scope": other, "reason": "other-scope"}),
+                ("check-installed", {"package": "older", "scope": scope}),
+                ("check-removed", {"scope": other}),
                 ("install", {"package": "new", "scope": scope}),
                 ("check-replaced", {"package": "older", "scope": scope}),
                 ("check-installed", {"package": "new", "scope": scope}),
-                ("install-refused", {"package": "older", "scope": scope}),
+                ("install-refused", {"package": "older", "scope": scope, "reason": "downgrade"}),
                 ("check-installed", {"package": "new", "scope": scope}),
                 ("smoke", {"scope": scope, "ui": ui_smoke}),
                 ("repair", {"package": "new", "scope": scope}),
@@ -379,9 +405,7 @@ def plan(scenarios, version, previous, ui=False, ui_smoke=False):
             ]
             if scope == "machine":
                 steps.append(("check-permissions", {"scope": scope}))
-            # One scope at a time. Copies in both scopes share component codes (the codes
-            # follow the files, not the scope), so removing one of them leaves its files:
-            # the package supports one scope at a time (REL-05).
+            # Removed before the other scope is installed, which it would refuse.
             steps += [("uninstall", {"package": "new", "scope": scope}),
                       ("check-removed", {"scope": scope})]
         steps.append(("check-marker", {}))
@@ -390,6 +414,10 @@ def plan(scenarios, version, previous, ui=False, ui_smoke=False):
             steps += [
                 ("install", {"package": f"previous-{published}", "scope": None}),
                 ("check-published", {"package": f"previous-{published}"}),
+                # The published per-user copy is found: all users are refused.
+                ("install-refused", {"package": "new", "scope": "machine", "reason": "other-scope"}),
+                ("check-published", {"package": f"previous-{published}"}),
+                ("check-removed", {"scope": "machine"}),
                 ("install", {"package": "new", "scope": "user"}),
                 ("check-replaced", {"package": f"previous-{published}", "scope": "user"}),
                 ("check-installed", {"package": "new", "scope": "user"}),
@@ -399,8 +427,18 @@ def plan(scenarios, version, previous, ui=False, ui_smoke=False):
         steps.append(("check-marker", {}))
     if "ui" in scenarios or ui:
         for scope in SCOPES:
+            other = other_scope(scope)
             steps += [
+                ("install", {"package": "older", "scope": scope}),
+                ("check-installed", {"package": "older", "scope": scope}),
+                # The dialog's other choice cannot install: its Install button is disabled
+                # and the dialog says why; the user cancels.
+                ("ui-refused", {"package": "new", "scope": other}),
+                ("check-installed", {"package": "older", "scope": scope}),
+                ("check-removed", {"scope": other}),
+                # The same choice upgrades that copy through the dialogs.
                 ("ui-install", {"package": "new", "scope": scope}),
+                ("check-replaced", {"package": "older", "scope": scope}),
                 ("check-installed", {"package": "new", "scope": scope}),
                 ("uninstall", {"package": "new", "scope": scope}),
                 ("check-removed", {"scope": scope}),
@@ -835,19 +873,22 @@ class Run:
             raise Failure(f"The settings folder was changed: {path}")
         self.say(f"    {path.parent} kept its marker file")
 
-    def ui_install(self, package, scope):
+    def ui_install(self, package, scope, expect="install"):
+        """Through the dialogs: install, or (expect="refuse") find the choice's Install
+        button disabled with the reason shown, and cancel."""
         self.counter += 1
         if not self.dry_run:
             self.logs.mkdir(parents=True, exist_ok=True)
-        stem = self.logs / f"{self.counter:02d}-ui-install-{package}-{scope}"
+        stem = self.logs / f"{self.counter:02d}-ui-{expect}-{package}-{scope}"
         command = ui_command(self.packages[package]["msi"], scope, stem.with_suffix(".log"),
-                             stem.with_suffix(".png"))
+                             stem.with_suffix(".png"), expect)
         self.say("  > " + subprocess.list2cmdline(command))
         if self.dry_run:
             return
         completed = subprocess.run(command, timeout=MSIEXEC_TIMEOUT, env=windows_powershell_environment())
         if completed.returncode != 0:
-            raise Failure(f"The full-UI installation ({scope}) ended with {completed.returncode}")
+            what = "installation" if expect == "install" else "refusal of the other scope"
+            raise Failure(f"The full-UI {what} ({scope}) ended with {completed.returncode}")
 
     def execute(self, steps):
         for operation, details in steps:
@@ -860,9 +901,13 @@ class Run:
             elif operation == "install":
                 self.succeed("install", package, scope)
             elif operation == "install-refused":
+                expected = refusal_text(details["reason"], scope)
                 code, text = self.msiexec("install", package, scope)
-                if not self.dry_run and not downgrade_refused(code, text):
-                    raise Failure(f"Installing {package} over a newer version was not refused (exit {code})")
+                if not self.dry_run:
+                    if not install_refused(code, text, expected):
+                        raise Failure(f"Installing {package} ({scope}) was not refused for {details['reason']} "
+                                      f"(exit {code}; expected {ERROR_INSTALL_FAILURE} and '{expected}' in the log)")
+                    self.say(f"    refused: {expected}")
             elif operation == "uninstall":
                 self.succeed("uninstall", package)
             elif operation == "repair":
@@ -871,6 +916,8 @@ class Run:
                 self.smoke(scope, details["ui"])
             elif operation == "ui-install":
                 self.ui_install(package, scope)
+            elif operation == "ui-refused":
+                self.ui_install(package, scope, expect="refuse")
             elif self.dry_run:
                 continue
             elif operation == "check-installed":
@@ -894,10 +941,12 @@ class Run:
                 raise ValueError(f"Unknown step {operation}")
 
 
-def ui_command(msi, scope, log, screenshot):
+def ui_command(msi, scope, log, screenshot, expect="install"):
+    if expect not in ("install", "refuse"):
+        raise ValueError(f"Unknown expectation: {expect}")
     return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
             str(ROOT / "scripts" / "msi-ui-install.ps1"), "-Msi", str(msi), "-Scope", scope,
-            "-Log", str(log), "-Screenshot", str(screenshot)]
+            "-Log", str(log), "-Screenshot", str(screenshot), "-Expect", expect]
 
 
 def windows_powershell_environment(**values):

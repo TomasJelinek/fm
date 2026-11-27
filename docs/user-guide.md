@@ -2192,15 +2192,20 @@ profile folder (Just for me) or the Windows drive, such as `C:\` (For all users)
 in `%LOCALAPPDATA%\Midnight Explorer`. Running the installed version's MSI again offers
 **Repair** or **Remove**.
 
-- **One kind at a time:** keep either the Just for me or the For all users installation,
-  not both. To switch, remove the installed one in **Installed apps** first. The installer
-  still installs the other kind beside an earlier version (it says that the other copy
-  stays installed), but the two copies share Windows Installer's records of their files,
-  so removing one of them later leaves its files, Start menu entry and registry key
-  behind ([Troubleshooting](troubleshooting.md#windows-removing-one-of-two-msi-installations-leaves-its-files)).
-  A later version refuses the second kind. The same version cannot be installed both
-  ways: running its MSI again offers Repair or Remove of the installed copy. When only an all-users copy is
-  installed, the installer preselects For all users so that it updates that copy.
+- **One kind at a time:** from 0.6.4 the installer refuses the second kind while the
+  other is installed, an installed 0.6.1 included. When Midnight Explorer is installed
+  for all users, **Just for me** cannot be installed: its Install button is disabled and
+  the installer says "Midnight Explorer is already installed for all users. Remove it in
+  Settings > Apps > Installed apps before installing it just for you." The same applies
+  the other way round, and to a silent installation, which ends with that message
+  (exit code 1603; [Troubleshooting](troubleshooting.md#windows-the-installer-says-midnight-explorer-is-already-installed)).
+  To switch, remove the installed copy in **Installed apps** first;
+  your settings stay. The installed kind itself is updated as usual, and when only an
+  all-users copy is installed the installer preselects For all users so that it updates
+  that copy. The same version cannot be installed both ways: running its MSI again
+  offers Repair or Remove of the installed copy. 0.6.3 still installed the second kind
+  beside an earlier version; removing one of two such copies leaves its files behind
+  ([Troubleshooting](troubleshooting.md#windows-removing-one-of-two-msi-installations-leaves-its-files)).
 - **Without the dialog:** `msiexec /i <file>.msi /qn` installs just for you. From a
   PowerShell started with **Run as administrator**, `msiexec /i <file>.msi /qn ALLUSERS=1`
   installs for all users. `INSTALLDIR=<folder>` chooses another folder in a silent

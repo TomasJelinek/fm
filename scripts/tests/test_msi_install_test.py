@@ -87,10 +87,40 @@ class Logic(unittest.TestCase):
 
     def test_a_downgrade_is_refused_by_the_launch_condition(self):
         text = f"MSI (c) ... {msi_test.DOWNGRADE_TEXT}. Uninstall it first to install this one."
+        expected = msi_test.refusal_text("downgrade", "user")
         for data in (b"\xff\xfe" + text.encode("utf-16-le"), text.encode("cp1252"), b"\xef\xbb\xbf" + text.encode()):
-            self.assertTrue(msi_test.downgrade_refused(1603, msi_test.decode_log(data)))
-        self.assertFalse(msi_test.downgrade_refused(0, text))
-        self.assertFalse(msi_test.downgrade_refused(1603, "Error 2228"))
+            self.assertTrue(msi_test.install_refused(1603, msi_test.decode_log(data), expected))
+        self.assertFalse(msi_test.install_refused(0, text, expected))
+        self.assertFalse(msi_test.install_refused(1603, "Error 2228", expected))
+
+    def test_the_other_scope_is_refused_with_its_own_message(self):
+        # One scope at a time: each scope names the other scope's copy to remove first.
+        messages = msi_test.OTHER_SCOPE_TEXTS
+        self.assertIn("before installing it just for you", messages["user"])
+        self.assertIn("before installing it for all users", messages["machine"])
+        for text in messages.values():
+            self.assertIn("Remove it in Settings > Apps > Installed apps", text)
+            self.assertTrue(text.isascii(), "the package's strings stay ASCII")
+        # The log check needs the first sentence, which names the scope that has the copy.
+        user = msi_test.refusal_text("other-scope", "user")
+        machine = msi_test.refusal_text("other-scope", "machine")
+        self.assertEqual(user, "Midnight Explorer is already installed for all users.")
+        self.assertEqual(machine, "Midnight Explorer is already installed just for you.")
+        log = f"MSI (s) (A0:B4) [12:00:00:000]: Product: Midnight Explorer -- {messages['user']}\r\n"
+        self.assertTrue(msi_test.install_refused(1603, log, user))
+        self.assertFalse(msi_test.install_refused(1603, log, machine))
+        self.assertFalse(msi_test.install_refused(0, log, user))
+        with self.assertRaises(ValueError):
+            msi_test.refusal_text("other", "user")
+        self.assertEqual([msi_test.other_scope(scope) for scope in msi_test.SCOPES], ["machine", "user"])
+
+    def test_the_dialog_script_installs_or_expects_the_refusal(self):
+        command = msi_test.ui_command("a.msi", "machine", "a.log", "a.png")
+        self.assertEqual(command[-2:], ["-Expect", "install"])
+        self.assertIn("msi-ui-install.ps1", command[command.index("-File") + 1])
+        self.assertEqual(msi_test.ui_command("a.msi", "user", "a.log", "a.png", "refuse")[-2:], ["-Expect", "refuse"])
+        with self.assertRaises(ValueError):
+            msi_test.ui_command("a.msi", "user", "a.log", "a.png", "maybe")
 
     def test_installed_files_must_equal_the_payload_exactly(self):
         expected = {"a.exe": "1", "sub/b.txt": "2"}
@@ -195,23 +225,39 @@ class Logic(unittest.TestCase):
 
 
 class Plan(unittest.TestCase):
+    @staticmethod
+    def rank(package):
+        """Version order of the test's packages: 0.0.1, the published MSIs, the release."""
+        return {"older": 0, "new": 2}.get(package, 1)
+
     def simulate(self, steps):
         """Installed (package, scope) pairs after each step, as Windows Installer would leave them."""
         installed = set()
         for operation, details in steps:
             package, scope = details.get("package"), details.get("scope")
-            if operation in ("install", "ui-install"):
+            if operation in ("install", "ui-install", "install-refused", "ui-refused"):
                 scope = scope or "user"  # the published MSIs are per user
+                other = {item for item in installed if item[1] != scope}
+                same = {item for item in installed if item[1] == scope}
                 # One version cannot be in both scopes: Windows Installer would maintain
                 # the copy that is installed instead (exit 0, nothing added).
-                self.assertNotIn(package, {item[0] for item in installed if item[1] != scope},
+                self.assertNotIn(package, {item[0] for item in other},
                                  f"{package} is already installed in the other scope")
-                replaced = {item for item in installed if item[1] == scope}
-                self.assertTrue(all(item[0] != "new" for item in replaced) or package == "new",
-                                f"{package} would be a downgrade, not an install")
-                installed = (installed - replaced) | {(package, scope)}
-                # One scope at a time: copies in both share component codes.
-                self.assertEqual(len({item[1] for item in installed}), 1, f"both scopes after {installed}")
+                downgrade = any(self.rank(item[0]) > self.rank(package) for item in same)
+                if operation.endswith("-refused"):
+                    reason = details.get("reason", "other-scope")
+                    if reason == "other-scope":
+                        # One scope at a time: refused while the other scope has a copy.
+                        self.assertTrue(other, f"nothing in the other scope refuses {package} ({scope})")
+                    else:
+                        self.assertEqual(reason, "downgrade")
+                        self.assertTrue(downgrade and not other, f"{package} ({scope}) is no downgrade: {installed}")
+                    continue
+                self.assertFalse(other, f"{package} ({scope}) would be refused: the other scope has {other}")
+                self.assertFalse(downgrade, f"{package} would be a downgrade, not an install")
+                installed = (installed - same) | {(package, scope)}
+            elif operation == "check-published":
+                self.assertIn((package, "user"), installed)
             elif operation in ("repair", "uninstall"):
                 scopes = {item[1] for item in installed if item[0] == package}
                 self.assertEqual(len(scopes), 1, f"{operation} of {package} is ambiguous: {installed}")
@@ -241,17 +287,25 @@ class Plan(unittest.TestCase):
                 self.assertIn((operation, scope), [(o, d.get("scope")) for o, d in steps])
         self.assertIn(("smoke", {"scope": "machine", "ui": True}), steps)
         self.assertEqual(operations.count("check-permissions"), 1)
-        # One scope at a time: copies in both scopes share component codes, so removing
-        # one would leave its files. Each scope is removed before the other is installed.
+        # One scope at a time: copies in both scopes would share component codes, so
+        # while one scope has a copy the other is refused, in both directions; the copy
+        # stays installed and nothing reaches the other scope.
+        for scope in msi_test.SCOPES:
+            other = msi_test.other_scope(scope)
+            refused = steps.index(("install-refused", {"package": "new", "scope": other, "reason": "other-scope"}))
+            self.assertEqual(steps[refused - 1], ("check-installed", {"package": "older", "scope": scope}))
+            self.assertEqual(steps[refused + 1:refused + 3], [("check-installed", {"package": "older", "scope": scope}),
+                                                              ("check-removed", {"scope": other})])
+            self.assertIn(("install-refused", {"package": "older", "scope": scope, "reason": "downgrade"}), steps)
         self.assertNotIn("check-side-by-side", operations)
         installs = [index for index, (o, d) in enumerate(steps) if o == "install" and d["package"] == "new"]
         removals = [index for index, (o, d) in enumerate(steps) if o == "uninstall"]
         self.assertEqual(len(removals), 2)
         self.assertLess(removals[0], installs[1])
         self.assertIn("check-marker", operations[removals[-1]:])
-        # Every installation and repair is checked before the next step changes anything.
+        # Every installation, refusal and repair is checked before the next step changes anything.
         for index, (operation, details) in enumerate(steps):
-            if operation in ("install", "repair") and details.get("package") != "older":
+            if operation in ("install", "install-refused", "repair") and details.get("package") != "older":
                 self.assertTrue(steps[index + 1][0].startswith("check-"), steps[index:index + 2])
 
     def test_published_msis_are_upgraded_in_the_per_user_folder(self):
@@ -259,6 +313,25 @@ class Plan(unittest.TestCase):
         installs = [details["package"] for operation, details in steps if operation == "install"]
         self.assertEqual(installs, ["previous-0.6.1", "new", "previous-0.6.2", "new"])
         self.assertNotIn("ui-install", [operation for operation, _ in steps])
+        # Each published per-user copy is found and refuses an installation for all users.
+        refusals = [index for index, (operation, _) in enumerate(steps) if operation == "install-refused"]
+        self.assertEqual([steps[index] for index in refusals],
+                         [("install-refused", {"package": "new", "scope": "machine", "reason": "other-scope"})] * 2)
+        for index, published in zip(refusals, ("0.6.1", "0.6.2")):
+            self.assertEqual(steps[index - 1], ("check-published", {"package": f"previous-{published}"}))
+            self.assertEqual(steps[index + 1:index + 3], [("check-published", {"package": f"previous-{published}"}),
+                                                          ("check-removed", {"scope": "machine"})])
+
+    def test_dialogs_refuse_the_other_choice_and_upgrade_in_the_same_scope(self):
+        steps = msi_test.plan(["ui"], "0.7.0", [])
+        for scope in msi_test.SCOPES:
+            other = msi_test.other_scope(scope)
+            refused = steps.index(("ui-refused", {"package": "new", "scope": other}))
+            self.assertEqual(steps[refused - 2], ("install", {"package": "older", "scope": scope}))
+            self.assertEqual(steps[refused + 1:refused + 3], [("check-installed", {"package": "older", "scope": scope}),
+                                                              ("check-removed", {"scope": other})])
+            upgraded = steps.index(("ui-install", {"package": "new", "scope": scope}))
+            self.assertEqual(steps[upgraded + 1], ("check-replaced", {"package": "older", "scope": scope}))
 
 
 @unittest.skipUnless(os.name == "nt", "The MSI is built with the Windows Installer API")
@@ -311,6 +384,7 @@ class Prepared(unittest.TestCase):
         self.assertIn("msiexec.exe /i", text)
         self.assertIn("ALLUSERS=1", text)
         self.assertIn("--ui-smoke-test --software", text)
+        self.assertIn('- install-refused {"package": "new", "scope": "machine", "reason": "other-scope"}', text)
         self.assertRegex(text, r"Planned: \d+ steps of scopes")
         self.assertEqual(sorted(path.name for path in (self.folder / "work").iterdir()),
                          ["manifest.json", "new", "older"], "a dry run writes nothing")

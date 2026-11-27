@@ -493,25 +493,46 @@ refuses an existing MSI.
   per-user installation therefore upgrades the 0.6.1/0.6.2 per-user MSI in place (same
   `UpgradeCode`). One version (one product code) is never installed in both scopes:
   Windows Installer treats a second install of it as maintenance of the installed copy.
-  Choosing For all users beside an earlier per-user version (or the other way round)
-  still installs a second copy, but the package supports one scope at a time: the
-  component codes follow the files, not the scope, so both copies register the same
-  components at different paths, and removing one of them leaves its files, shortcut and
-  key (CI saw this; REL-05 tracks refusing the second scope). The dialog reads both
-  scopes' registry key (`AppSearch`/`RegLocator`, `Software\Midnight Explorer Installer`
-  in HKCU and HKLM) and then says that the other copy stays installed; with only an
-  all-users copy present it preselects For all users. An extracted ZIP, the Move to my
-  profile copy and an administrator's copy of a build use other folders.
+  Copies of two versions in both scopes would register the same components at different
+  paths (the component codes follow the files, not the scope), and removing one of them
+  leaves its files, shortcut and key (CI saw this with 0.6.3, which installed the second
+  copy). From 0.6.4 the package refuses a scope while the other scope has a copy:
+  - **Detection:** `AppSearch`/`RegLocator` read the `RootFolder` value under
+    `Software\Midnight Explorer Installer`, which every MSI of the product writes (0.6.1's
+    per-user one included): in HKCU (`ME_USER_COPY`) and in HKLM (`ME_MACHINE_COPY`).
+  - **Dialog:** the conflicting choice's Install button is disabled
+    (`ControlCondition`), and a note says why: "Midnight Explorer is already installed
+    for all users. Remove it in Settings > Apps > Installed apps before installing it
+    just for you." (or the same for a per-user copy and For all users). With only an
+    all-users copy present it preselects For all users.
+  - **Without the dialog:** two launch conditions refuse with the same message (msiexec
+    ends with 1603). They apply only in `InstallExecuteSequence`, which runs `AppSearch`
+    too (a silent installation runs no UI sequence) and then the property-setting action
+    `SetScopeRule`, which sets `ME_SCOPE_RULE`: the UI sequence evaluates the same
+    launch conditions before ScopeDlg, still with the default per-user scope, and would
+    otherwise refuse Just for me before For all users could be chosen. `ME_USER_COPY` and
+    `ME_MACHINE_COPY` are secure custom properties, so the dialog's findings also reach
+    an elevated installation.
+  - **Not refused:** an upgrade in the same scope and the maintenance of the installed
+    version (`Installed`: Repair, Remove, or its MSI run again).
+  - **Limits:** only the installing account's per-user copy is seen (`AppSearch` reads
+    its HKCU). The key that a removal by 0.6.3 or earlier left behind beside the other
+    scope's copy counts as a copy until it is deleted
+    ([Troubleshooting](troubleshooting.md#windows-the-installer-says-midnight-explorer-is-already-installed)).
+
+  An extracted ZIP, the Move to my profile copy and an administrator's copy of a build use
+  other folders.
 - **Upgrades:** the `UpgradeCode` is fixed in the script and must never change. The
   product code follows from the version and the package code from the ZIP's SHA-256,
   so one ZIP always gives the same codes. A newer MSI removes the installed version
   completely before installing; an older one stops with "A newer version of Midnight
   Explorer is already installed". Running the installed version's MSI again offers
   Windows Installer's repair or remove.
-- **Nothing runs code:** there are no custom actions besides five that set properties
+- **Nothing runs code:** there are no custom actions besides six that set properties
   (the install location shown in Add/Remove Programs, the shortcut's start folder per
-  user and for all users, the per-user `INSTALLDIR` and the dialog's preselected scope), no `Binary` table and no
-  services. Each folder is one component whose key path is a value under
+  user and for all users, the per-user `INSTALLDIR`, the dialog's preselected scope and
+  `ME_SCOPE_RULE`), no `Binary` table and no services; the refusals are launch
+  conditions. Each folder is one component whose key path is a value under
   `Software\Midnight Explorer Installer` with registry root -1: HKCU per user, HKLM per
   machine ([Registry values](#registry-values)). That key and the installed folders,
   once empty, are removed on uninstall.
@@ -546,12 +567,20 @@ refuses an existing MSI.
   below `ProgramFiles64Folder` with the per-user folder action, key paths and registry
   values with root -1, no profile folder in `Directory`, shortcuts in
   `ProgramMenuFolder`, exactly the package's own folders removed on uninstall, the
-  dialog's scope and folder events, property-setting custom actions only, and
+  dialog's scope and folder events, property-setting custom actions only,
   `SetInstallLocation` recording `[INSTALLDIR]` as the install location, by which the
-  application finds an installed copy), the
-  installed paths, and every file of the embedded cabinet, extracted with `expand.exe`,
-  byte for byte against its ZIP entry. An administrative installation of an MSI made
-  from the 0.6.0 ZIP extracted every file unchanged
+  application finds an installed copy, and one scope at a time: both searches, the
+  disabled Install buttons, both launch conditions and `SetScopeRule` in the execute
+  sequence only, after `AppSearch`), the installed paths, and every file of the embedded
+  cabinet, extracted with `expand.exe`, byte for byte against its ZIP entry. Both
+  commands then run the UI sequence's actions before the first dialog in a session that
+  installs nothing (a missing table stops a real installation there, as error 2228
+  stopped 0.6.2's), and let Windows Installer itself evaluate the launch conditions for
+  every way to choose a scope (the default, an empty `ALLUSERS`, `ALLUSERS=1`, For all
+  users), every combination of copies found, in the UI and the execute sequence and in
+  maintenance: only the execute sequence of a new installation may refuse, with its
+  message, and only for the other scope's copy. An administrative installation of an MSI
+  made from the 0.6.0 ZIP extracted every file unchanged
   ([MSI extraction verification](verification/2026-11-26-release-msi.md)), as did one of
   a dual-purpose stand-in, whose per-user costing resolved the per-user folders
   ([dual-scope MSI verification](verification/2026-11-26-dual-scope-msi.md)). Real
@@ -559,7 +588,8 @@ refuses an existing MSI.
 - **Release notes:** describe the one MSI with both choices: Just for me (no
   administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, updates an
   installed per-user MSI) and For all users (administrator approval,
-  `C:\Program Files\Midnight Explorer (MSI)`; an existing per-user copy stays installed beside it).
+  `C:\Program Files\Midnight Explorer (MSI)`), one at a time: while one is installed, the
+  other is refused until that copy is removed in Installed apps.
 - **Tests:** `scripts/tests/test_package_msi.py`, in the scripts suite that CI runs on
   Windows and Linux, checks the payload rules and the database plan on both and, on
   Windows, builds and verifies an MSI of a small stand-in release. CI does not package
@@ -576,7 +606,8 @@ The properties that choose the installation, as the package defines them and as
 | `MSIINSTALLPERUSER` | `1` | `1`: per user; empty (`MSIINSTALLPERUSER=""`): per machine. |
 | `INSTALLDIR` | below `ProgramFiles64Folder`; per user `SetUserInstallFolder` sets `[LocalAppDataFolder]Programs\Midnight Explorer (MSI)\` | The installation folder. The update hand-off passes the installed copy's folder. |
 | `ME_SCOPE` | `user` | The dialog's choice, `user` or `machine`; `SetMachineScope` preselects `machine` for a per-machine command line or when only an all-users copy exists. |
-| `ME_USER_COPY`, `ME_MACHINE_COPY` | not set | Set by `AppSearch` when the `RootFolder` value exists in HKCU (`ME_USER_COPY`) or HKLM (`ME_MACHINE_COPY`), so the dialog can say that the other scope's copy stays installed. |
+| `ME_USER_COPY`, `ME_MACHINE_COPY` | not set | Set by `AppSearch` when the `RootFolder` value exists in HKCU (`ME_USER_COPY`) or HKLM (`ME_MACHINE_COPY`): the other scope's copy disables the dialog's Install button and refuses the installation ([one scope at a time](#windows-installer-msi)). Secure custom properties. |
+| `ME_SCOPE_RULE` | not set | Set to `1` by `SetScopeRule` in the execute sequence only, so that the launch conditions refuse the other scope there and not before the dialog. |
 | `MESTARTFOLDER` | (none) | The Start menu shortcut's start folder: `SetShortcutWorkingFolder` sets it to `[%USERPROFILE]` per user, `SetMachineShortcutWorkingFolder` to `[WindowsVolume]` for all users. |
 | `ARPINSTALLLOCATION` | set by `SetInstallLocation` to `[INSTALLDIR]` | Windows Installer's `InstallLocation`, by which the application finds an MSI installation. |
 | `UpgradeCode` | `{DDF2A2BA-6901-484C-97B2-4EF662BF5E72}` | Fixed for every MSI of the product. |
@@ -590,7 +621,7 @@ Under `Software\Midnight Explorer Installer`, in HKCU per user and HKLM per mach
 
 | Value | Component |
 | --- | --- |
-| `RootFolder` | The installation folder; `AppSearch` looks for it in the other scope. |
+| `RootFolder` | The installation folder; `AppSearch` finds an installed copy of either scope by it. |
 | one value per subfolder, named after its component | That subfolder. |
 | `StartMenuShortcut` | The Start menu shortcut. |
 
@@ -625,27 +656,37 @@ and this run's plugin packages. Its commands, in order:
       folder, shortcut or registry key exists, and writes a marker in
       `%LOCALAPPDATA%\Midnight Explorer`.
    2. It takes **Just for me** (`ALLUSERS=2 MSIINSTALLPERUSER=1`) first, then **For all
-      users** (`ALLUSERS=1`), and in each scope runs items 3 to 6, beginning with an
+      users** (`ALLUSERS=1`), and in each scope runs items 3 to 7, beginning with an
       installation of 0.0.1.
-   3. It upgrades 0.0.1 to the release, which removes 0.0.1.
-   4. It installs 0.0.1 again, which must be refused (exit 1603 and the "A newer
+   3. With 0.0.1 installed it installs the release in the other scope, which must be
+      refused (exit 1603 and the other scope's "is already installed" message); 0.0.1
+      must still be installed and nothing of the other scope present (one scope at a
+      time, in both directions).
+   4. It upgrades 0.0.1 to the release, which removes 0.0.1.
+   5. It installs 0.0.1 again, which must be refused (exit 1603 and the "A newer
       version" message).
-   5. It starts the installed `midnight-explorer.exe --smoke-test`, which must report a
+   6. It starts the installed `midnight-explorer.exe --smoke-test`, which must report a
       private installation, and `--ui-smoke-test --software`.
-   6. It deletes the executable, `README.txt` and the deepest file and repairs the
+   7. It deletes the executable, `README.txt` and the deepest file and repairs the
       installation (`/fomus`).
-   7. It removes each scope's installation before the next is installed, leaving no
-      files, folders, shortcut, key or entry (the package supports one scope at a time).
-   8. It installs each published MSI, upgrades it in place with the release (per user)
-      and removes it.
-   9. It checks that the marker survived every removal and that nothing stays
-      installed.
+   8. It removes each scope's installation before the next is installed, leaving no
+      files, folders, shortcut, key or entry.
+   9. It installs each published MSI (per user), checks that the release for all users
+      is refused beside it with the published copy unchanged, then upgrades it in place
+      with the release (per user) and removes it.
+   10. It checks that the marker survived every removal and that nothing stays
+       installed.
 6. `run --scenario ui` installs through the dialogs.
-   - `scripts/msi-ui-install.ps1` starts `msiexec /i` with its full UI, clicks Just for
-     me or For all users in ScopeDlg, presses the Install button that the choice shows
-     and Finish; the same checks follow, then removal.
+   - In each scope it installs 0.0.1 with `msiexec /qn`, then
+     `scripts/msi-ui-install.ps1 -Expect refuse` starts the release's `msiexec /i`
+     with its full UI and clicks the other scope in ScopeDlg: its Install button must
+     be disabled and the "is already installed" note shown; it presses Cancel and
+     Finish, and msiexec must end cancelled (1602) with 0.0.1 unchanged.
+   - Then the script clicks the same scope, presses the Install button that the choice
+     shows and Finish, which upgrades 0.0.1; the same checks follow, then removal.
    - It is new on the hosted runners and so does not fail the job
-     (`continue-on-error`) until it has passed there.
+     (`continue-on-error`) until it has passed there; at the 0.6.3 tag ScopeDlg did not
+     appear within its 300 seconds.
 
 After every installation, `run` checks:
 

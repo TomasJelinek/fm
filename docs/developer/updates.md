@@ -417,6 +417,10 @@ files, and opens no window. It:
      `/norestart` never restarts Windows.
    - The MSI's major upgrade removes the installed version and installs the new one in
      the same folder; Windows Installer rolls back completely on failure.
+   - From 0.6.4 the MSI refuses the copy's scope while the other scope also has a copy
+     (possible after 0.6.3 or earlier installed both): Windows Installer shows the
+     "is already installed" message, changes nothing and ends with 1603 ("failed";
+     [one scope at a time](../release-build.md#windows-installer-msi)).
 5. Waits for `msiexec` to exit.
 6. Closes the MSI and its folder.
 7. Writes `<private folder>/installer-result.json` with the installation folder and the

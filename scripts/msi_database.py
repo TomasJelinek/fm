@@ -125,39 +125,94 @@ def _library():
     return msi
 
 
+class Session:
+    """A client session of the package at `path` that installs nothing.
+
+    It ignores this machine's installation state and shows no UI. The error, warning and
+    user messages that its actions post (a failed launch condition's text, for example)
+    are collected in `messages`. Use it as a context manager.
+    """
+
+    # INSTALLLOGMODE_FATALEXIT, _ERROR, _WARNING and _USER.
+    MESSAGES = 1 | 2 | 4 | 8
+
+    def __init__(self, path):
+        msi = _library()
+        msi.MsiSetInternalUI.argtypes = (wintypes.UINT, ctypes.c_void_p)
+        msi.MsiSetInternalUI.restype = wintypes.UINT
+        msi.MsiOpenPackageExW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(MSIHANDLE))
+        msi.MsiOpenPackageExW.restype = wintypes.UINT
+        msi.MsiDoActionW.argtypes = (MSIHANDLE, wintypes.LPCWSTR)
+        msi.MsiDoActionW.restype = wintypes.UINT
+        msi.MsiSetPropertyW.argtypes = (MSIHANDLE, wintypes.LPCWSTR, wintypes.LPCWSTR)
+        msi.MsiSetPropertyW.restype = wintypes.UINT
+        self._handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, wintypes.UINT, wintypes.LPCWSTR)
+        msi.MsiSetExternalUIW.argtypes = (self._handler_type, wintypes.DWORD, ctypes.c_void_p)
+        msi.MsiSetExternalUIW.restype = ctypes.c_void_p
+        self.path = os.path.abspath(os.fspath(path))  # msi.dll needs backslashes
+        self.messages = []
+        self._session = None
+        self._previous_ui = None
+        self._handler = None
+
+    def _receive(self, _context, _kind, text):
+        if text:
+            self.messages.append(text)
+        return 0  # only observed: Windows Installer handles it as without this handler
+
+    def __enter__(self):
+        msi = _library()
+        INSTALLUILEVEL_NONE = 2
+        MSIOPENPACKAGEFLAGS_IGNOREMACHINESTATE = 1
+        self._previous_ui = msi.MsiSetInternalUI(INSTALLUILEVEL_NONE, None)
+        self._handler = self._handler_type(self._receive)
+        msi.MsiSetExternalUIW(self._handler, self.MESSAGES, None)
+        try:
+            handle = MSIHANDLE()
+            _check(msi.MsiOpenPackageExW(self.path, MSIOPENPACKAGEFLAGS_IGNOREMACHINESTATE,
+                                         ctypes.byref(handle)), "open the package")
+            self._session = _Handle(handle.value)
+        except BaseException:
+            self._restore()
+            raise
+        return self
+
+    def _restore(self):
+        msi = _library()
+        msi.MsiSetExternalUIW(self._handler_type(), 0, None)
+        msi.MsiSetInternalUI(self._previous_ui, None)
+
+    def __exit__(self, *exception):
+        try:
+            if self._session is not None:
+                self._session.close()
+        finally:
+            self._restore()
+
+    def set(self, name, value):
+        _check(_library().MsiSetPropertyW(self._session.value, name, value), f"set {name}")
+
+    def do(self, action):
+        """Windows Installer's result of running `action` (0 for success)."""
+        return _library().MsiDoActionW(self._session.value, action)
+
+
 def rehearse_actions(path, actions, properties=()):
-    """Run `actions` of the package at `path` in a client session that installs nothing.
+    """Run `actions` of the package at `path` in a session that installs nothing.
 
     The session ignores this machine's installation state and shows no UI; it checks
     that the package's own actions (searches, costing, property settings) run, the way
     they do before the first dialog of a real installation. Raises MsiError naming the
     first action that fails, with Windows Installer's error text.
     """
-    msi = _library()
-    msi.MsiSetInternalUI.argtypes = (wintypes.UINT, ctypes.c_void_p)
-    msi.MsiSetInternalUI.restype = wintypes.UINT
-    msi.MsiOpenPackageExW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(MSIHANDLE))
-    msi.MsiOpenPackageExW.restype = wintypes.UINT
-    msi.MsiDoActionW.argtypes = (MSIHANDLE, wintypes.LPCWSTR)
-    msi.MsiDoActionW.restype = wintypes.UINT
-    msi.MsiSetPropertyW.argtypes = (MSIHANDLE, wintypes.LPCWSTR, wintypes.LPCWSTR)
-    msi.MsiSetPropertyW.restype = wintypes.UINT
-    INSTALLUILEVEL_NONE = 2
-    MSIOPENPACKAGEFLAGS_IGNOREMACHINESTATE = 1
-    previous = msi.MsiSetInternalUI(INSTALLUILEVEL_NONE, None)
-    try:
-        handle = MSIHANDLE()
-        _check(msi.MsiOpenPackageExW(os.fspath(path), MSIOPENPACKAGEFLAGS_IGNOREMACHINESTATE,
-                                     ctypes.byref(handle)), "open the package")
-        with _Handle(handle.value) as session:
-            for name, value in properties:
-                _check(msi.MsiSetPropertyW(session.value, name, value), f"set {name}")
-            for action in actions:
-                result = msi.MsiDoActionW(session.value, action)
-                if result != 0:
-                    raise MsiError(f"Action {action} failed ({result}): {_last_error_text()}")
-    finally:
-        msi.MsiSetInternalUI(previous, None)
+    with Session(path) as session:
+        for name, value in properties:
+            session.set(name, value)
+        for action in actions:
+            result = session.do(action)
+            if result != 0:
+                detail = _last_error_text() or " ".join(session.messages)
+                raise MsiError(f"Action {action} failed ({result}): {detail}")
 
 
 def _last_error_text():

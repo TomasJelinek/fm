@@ -142,6 +142,27 @@ SEQUENCE_COLUMNS = ("`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequenc
 # is empty or when ALLUSERS=2 and MSIINSTALLPERUSER=1, and per machine otherwise.
 PER_USER = "NOT ALLUSERS OR (ALLUSERS = 2 AND MSIINSTALLPERUSER = 1)"
 PER_MACHINE = "ALLUSERS = 1 OR (ALLUSERS = 2 AND NOT MSIINSTALLPERUSER)"
+# One scope at a time. Windows Installer upgrades only a copy of the scope being installed,
+# and copies in both scopes register the same component codes (they follow the files), so
+# removing one of two copies would leave its files. A scope is therefore refused while the
+# other scope has a copy: AppSearch finds it by the RootFolder value that every MSI of the
+# product (0.6.1 on) writes under REGISTRY_KEY, in HKCU (ME_USER_COPY) or HKLM
+# (ME_MACHINE_COPY). An upgrade in the same scope and the maintenance of the installed
+# version (Installed) are not refused. The launch conditions refuse only in the execute
+# sequence, where SetScopeRule sets SCOPE_RULE: the UI sequence evaluates them before
+# ScopeDlg, still with the default scope, and there the dialog disables the conflicting
+# choice's Install button instead.
+SCOPE_RULE = "ME_SCOPE_RULE"
+OTHER_SCOPE_REFUSALS = {
+    "user": (f"{PRODUCT} is already installed for all users. Remove it in Settings > Apps > "
+             "Installed apps before installing it just for you."),
+    "machine": (f"{PRODUCT} is already installed just for you. Remove it in Settings > Apps > "
+                "Installed apps before installing it for all users."),
+}
+OTHER_SCOPE_CONDITIONS = {
+    "user": f"Installed OR NOT {SCOPE_RULE} OR NOT ME_MACHINE_COPY OR NOT ({PER_USER})",
+    "machine": f"Installed OR NOT {SCOPE_RULE} OR NOT ME_USER_COPY OR ({PER_USER})",
+}
 # Standard action order (the numbers Windows Installer's documentation suggests), with an
 # optional condition. The only custom actions only set properties (type 51); nothing runs
 # code. The dialogs are the ones below (DIALOGS); the negative numbers are the dialogs
@@ -158,7 +179,9 @@ SEQUENCES = {
         ("ProgressDlg", 1280), ("ExecuteAction", 1300),
         ("ExitDlg", -1), ("UserExitDlg", -2), ("FatalErrorDlg", -3)),
     "InstallExecuteSequence": (
-        ("FindRelatedProducts", 25), ("LaunchConditions", 100), ("ValidateProductID", 700),
+        # AppSearch here too: a silent installation runs no UI sequence.
+        ("FindRelatedProducts", 25), ("AppSearch", 50), ("SetScopeRule", 60),
+        ("LaunchConditions", 100), ("ValidateProductID", 700),
         ("CostInitialize", 800), ("FileCost", 900),
         ("SetUserInstallFolder", 990, f"NOT INSTALLDIR AND ({PER_USER})"),
         ("CostFinalize", 1000),
@@ -189,13 +212,15 @@ CUSTOM_ACTION_SET_PROPERTY = 51
 # in the installing administrator's profile, and Windows refuses to start a shortcut whose
 # start folder it cannot open. A per-user installation goes to the earlier per-user MSI's
 # folder (Directory: Program Files), and the dialog's default scope follows the command
-# line or an existing all-users copy.
+# line or an existing all-users copy. SetScopeRule, in the execute sequence only, lets the
+# launch conditions refuse the other scope (OTHER_SCOPE_CONDITIONS).
 CUSTOM_ACTIONS = (
     ("SetInstallLocation", CUSTOM_ACTION_SET_PROPERTY, "ARPINSTALLLOCATION", "[INSTALLDIR]"),
     ("SetShortcutWorkingFolder", CUSTOM_ACTION_SET_PROPERTY, "MESTARTFOLDER", "[%USERPROFILE]"),
     ("SetMachineShortcutWorkingFolder", CUSTOM_ACTION_SET_PROPERTY, "MESTARTFOLDER", "[WindowsVolume]"),
     ("SetUserInstallFolder", CUSTOM_ACTION_SET_PROPERTY, "INSTALLDIR", USER_INSTALL_FOLDER),
     ("SetMachineScope", CUSTOM_ACTION_SET_PROPERTY, "ME_SCOPE", "machine"),
+    ("SetScopeRule", CUSTOM_ACTION_SET_PROPERTY, SCOPE_RULE, "1"),
 )
 # Registry root -1: HKCU in a per-user installation, HKLM in a per-machine one.
 USER_OR_MACHINE = -1
@@ -439,7 +464,9 @@ def plan(payload):
         ("ARPURLUPDATEINFO", f"{SOURCE_REPOSITORY}/releases"),
         ("ARPCOMMENTS", "Dual-pane file manager. Unsigned preview; see README.txt."),
         ("ARPNOMODIFY", "1"),
-        ("SecureCustomProperties", "ME_DOWNGRADE_DETECTED;ME_UPGRADE_DETECTED"),
+        # Passed to the elevated server: the copies that the UI sequence's AppSearch found
+        # reach the execute sequence's launch conditions also after For all users.
+        ("SecureCustomProperties", "ME_DOWNGRADE_DETECTED;ME_UPGRADE_DETECTED;ME_USER_COPY;ME_MACHINE_COPY"),
         # Dual-purpose package: per user unless MSIINSTALLPERUSER is cleared (the dialog's
         # "For all users", or MSIINSTALLPERUSER="" / ALLUSERS=1 on the command line).
         ("ALLUSERS", "2"),
@@ -456,6 +483,7 @@ def plan(payload):
         ("VersionNT64", f"{PRODUCT} requires 64-bit Windows 10 or later."),
         ("NOT ME_DOWNGRADE_DETECTED",
          f"A newer version of {PRODUCT} is already installed. Uninstall it first to install this one."),
+        *((OTHER_SCOPE_CONDITIONS[scope], OTHER_SCOPE_REFUSALS[scope]) for scope in ("user", "machine")),
     ]
     return {
         "Property": properties,
@@ -471,7 +499,8 @@ def plan(payload):
         "Upgrade": upgrades,
         "LaunchCondition": launch_conditions,
         "CustomAction": list(CUSTOM_ACTIONS),
-        # The other installation's registry key, to say that it stays installed.
+        # The other scope's copy, by its registry key: the dialog disables that choice and
+        # the launch conditions refuse it (OTHER_SCOPE_CONDITIONS).
         "AppSearch": [("ME_USER_COPY", "UserCopy"), ("ME_MACHINE_COPY", "MachineCopy")],
         "RegLocator": [("UserCopy", HKCU, REGISTRY_KEY, "RootFolder", REGISTRY_RAW_64BIT),
                        ("MachineCopy", HKLM, REGISTRY_KEY, "RootFolder", REGISTRY_RAW_64BIT)],
@@ -516,12 +545,11 @@ def user_interface():
         ("ScopeDlg", "MachineText", "Text", 15, 156, WIDTH - 30, 30, TEXT, None,
          "For all users: into Program Files\\Midnight Explorer (MSI); Windows asks for administrator "
          "approval to install.", None, None),
+        # Why the choice's Install button is disabled (one scope at a time).
         ("ScopeDlg", "UserCopyNote", "Text", 15, 192, WIDTH - 30, 36, HIDDEN_TEXT, None,
-         "Midnight Explorer is also installed just for you. That copy stays installed beside this "
-         "one; remove it in Settings > Apps > Installed apps if you no longer need it.", None, None),
+         OTHER_SCOPE_REFUSALS["machine"], None, None),
         ("ScopeDlg", "MachineCopyNote", "Text", 15, 192, WIDTH - 30, 36, HIDDEN_TEXT, None,
-         "Midnight Explorer is also installed for all users. Choose For all users to update that "
-         "copy; Just for me installs a second copy beside it.", None, None),
+         OTHER_SCOPE_REFUSALS["user"], None, None),
     ]
     dialog, rows = _dialog(
         "ScopeDlg", "Install [ProductName] [ProductVersion]",
@@ -606,6 +634,11 @@ def user_interface():
         ("ScopeDlg", "InstallMachine", "Show", 'ME_SCOPE = "machine"'),
         ("ScopeDlg", "InstallMachine", "Hide", 'ME_SCOPE <> "machine"'),
         ("ScopeDlg", "InstallMachine", "Default", 'ME_SCOPE = "machine"'),
+        # One scope at a time: a choice cannot install while the other scope has a copy.
+        ("ScopeDlg", "InstallUser", "Disable", "ME_MACHINE_COPY"),
+        ("ScopeDlg", "InstallUser", "Enable", "NOT ME_MACHINE_COPY"),
+        ("ScopeDlg", "InstallMachine", "Disable", "ME_USER_COPY"),
+        ("ScopeDlg", "InstallMachine", "Enable", "NOT ME_USER_COPY"),
         ("ScopeDlg", "UserCopyNote", "Show", 'ME_SCOPE = "machine" AND ME_USER_COPY'),
         ("ScopeDlg", "UserCopyNote", "Hide", 'ME_SCOPE <> "machine" OR NOT ME_USER_COPY'),
         ("ScopeDlg", "MachineCopyNote", "Show", 'ME_SCOPE = "user" AND ME_MACHINE_COPY'),
@@ -756,7 +789,9 @@ def check_scope_rules(tables):
     """The rules of the dual-purpose package, independent of `plan`; raises ValueError for
     the first problem. Per user by default (ALLUSERS=2, MSIINSTALLPERUSER=1) into the earlier
     per-user MSI's folder, per machine below Program Files; every key path and registry value
-    follows the scope (root -1), nothing else is in a profile, and nothing runs code."""
+    follows the scope (root -1), nothing else is in a profile, one scope at a time (the other
+    scope's copy refuses an installation), and nothing runs code: custom actions only set
+    properties, and the refusals are launch conditions."""
     properties = dict(tables["Property"])
     if properties.get("ALLUSERS") != "2" or properties.get("MSIINSTALLPERUSER") != "1":
         raise ValueError("The package must be dual-purpose: ALLUSERS=2 and MSIINSTALLPERUSER=1")
@@ -803,6 +838,34 @@ def check_scope_rules(tables):
                   ("[INSTALLDIR]", USER_INSTALL_FOLDER, 'ME_SCOPE = "user"')):
         if event not in install:
             raise ValueError(f"The scope dialog must set {event[0]} for its choice")
+    check_one_scope_rules(tables, actions)
+
+
+def check_one_scope_rules(tables, actions):
+    """One scope at a time: each scope's copy is found in its hive, the dialog disables the
+    other choice's Install button, and the execute sequence (only) refuses the other scope."""
+    searches = {row[0]: row[1] for row in tables["AppSearch"]}
+    locators = {row[0]: tuple(row[1:]) for row in tables["RegLocator"]}
+    for name, root in (("ME_USER_COPY", HKCU), ("ME_MACHINE_COPY", HKLM)):
+        if locators.get(searches.get(name)) != (root, REGISTRY_KEY, "RootFolder", REGISTRY_RAW_64BIT):
+            raise ValueError(f"{name} must find the RootFolder value of an installed copy")
+    disabled = {(row[1], row[3]) for row in tables["ControlCondition"]
+                if row[0] == "ScopeDlg" and row[2] == "Disable"}
+    for button, copy in (("InstallUser", "ME_MACHINE_COPY"), ("InstallMachine", "ME_USER_COPY")):
+        if (button, copy) not in disabled:
+            raise ValueError(f"The scope dialog must disable {button} while {copy} is set")
+    launch = dict(tables["LaunchCondition"])
+    for scope, condition in OTHER_SCOPE_CONDITIONS.items():
+        if launch.get(condition) != OTHER_SCOPE_REFUSALS[scope]:
+            raise ValueError(f"A {scope} installation must be refused while the other scope has a copy")
+    # The UI sequence evaluates the launch conditions before ScopeDlg, with the default scope:
+    # the rule applies only where SetScopeRule sets it, after AppSearch in the execute sequence.
+    execute = {row[0]: row[2] for row in tables["InstallExecuteSequence"] if row[1] is None}
+    ui = {row[0] for row in tables["InstallUISequence"]}
+    order = [execute.get(name) for name in ("AppSearch", "SetScopeRule", "LaunchConditions")]
+    if (actions.get("SetScopeRule", (None,) * 4)[2:] != (SCOPE_RULE, "1") or "SetScopeRule" in ui
+            or None in order or not order[0] < order[1] < order[2]):
+        raise ValueError("The scope rule must apply in the execute sequence only, after AppSearch")
 
 
 def check(msi_path, payload, work):
@@ -887,7 +950,8 @@ def ui_actions():
 
 
 def rehearse(msi_path):
-    """Run the UI sequence's actions for both scopes in a session that installs nothing.
+    """Run the UI sequence's actions for both scopes in a session that installs nothing,
+    then the launch conditions that keep one scope at a time.
 
     A table an action needs but the package lacks (error 2228) or a failing search stops
     a real installation before its first dialog; this finds it at build time.
@@ -898,6 +962,64 @@ def rehearse(msi_path):
             msi.rehearse_actions(msi_path, ui_actions(), scope)
         except msi.MsiError as error:
             raise ValueError(f"{Path(msi_path).name} cannot start an installation: {error}") from error
+    rehearse_scope_rule(msi_path)
+
+
+# How each scope is chosen: (scope, properties). Per user: the package's default and Just for
+# me, and an empty ALLUSERS; per machine: ALLUSERS=1 on the command line (the package's
+# MSIINSTALLPERUSER=1 stays) and For all users.
+SCOPE_CHOICES = (
+    ("user", (("ALLUSERS", "2"), ("MSIINSTALLPERUSER", "1"))),
+    ("user", (("ALLUSERS", ""), ("MSIINSTALLPERUSER", ""))),
+    ("machine", (("ALLUSERS", "1"), ("MSIINSTALLPERUSER", "1"))),
+    ("machine", (("ALLUSERS", "2"), ("MSIINSTALLPERUSER", ""))),
+)
+COPIES = {"user": "ME_USER_COPY", "machine": "ME_MACHINE_COPY"}
+
+
+def scope_rule_cases():
+    """(scope, properties, copies found, execute sequence, maintenance, refused) for every
+    choice of scope and copies: refused only in the execute sequence of a new installation
+    while the other scope has a copy."""
+    cases = []
+    for scope, properties in SCOPE_CHOICES:
+        other = "machine" if scope == "user" else "user"
+        for copies in ((), ("user",), ("machine",), ("user", "machine")):
+            for execute in (False, True):
+                for maintenance in (False, True):
+                    refused = execute and not maintenance and other in copies
+                    cases.append((scope, properties, copies, execute, maintenance, refused))
+    return cases
+
+
+def rehearse_scope_rule(msi_path):
+    """The launch conditions of one scope at a time, evaluated by Windows Installer itself in
+    a session that installs nothing (the copies found are set, not searched): the execute
+    sequence refuses a scope while the other scope has a copy, but neither an upgrade in
+    the same scope nor maintenance, and the UI sequence, which evaluates them before
+    ScopeDlg with the default scope, refuses nothing."""
+    import msi_database as msi
+    name = Path(msi_path).name
+    with msi.Session(msi_path) as session:
+        for scope, properties, copies, execute, maintenance, refused in scope_rule_cases():
+            for property_name, value in properties:
+                session.set(property_name, value)
+            for property_name in (*COPIES.values(), SCOPE_RULE, "Installed"):
+                session.set(property_name, "")
+            for copy in copies:
+                session.set(COPIES[copy], "#1")
+            if maintenance:
+                session.set("Installed", "00:00:00")
+            if execute and session.do("SetScopeRule") != 0:
+                raise ValueError(f"{name}: SetScopeRule failed")
+            session.messages.clear()
+            result = session.do("LaunchConditions")
+            case = (f"{scope} installation ({dict(properties)}) with copies {list(copies) or 'none'} in the "
+                    f"{'execute' if execute else 'UI'} sequence{' (maintenance)' if maintenance else ''}")
+            if refused and (result == 0 or OTHER_SCOPE_REFUSALS[scope] not in " ".join(session.messages)):
+                raise ValueError(f"{name}: a {case} is not refused ({result}: {session.messages})")
+            if not refused and result != 0:
+                raise ValueError(f"{name}: a {case} is refused ({result}: {session.messages})")
 
 
 def main(argv=None):

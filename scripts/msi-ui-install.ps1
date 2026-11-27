@@ -7,9 +7,12 @@ Starts `msiexec /i <msi> /l*v <log>` with the full UI, chooses Just for me (-Sco
 or For all users (-Scope machine) in ScopeDlg with a real mouse click, presses the Install
 button that the choice shows, waits for ExitDlg and presses Finish. Exits with msiexec's
 exit code, or 1 when a dialog does not appear in time (msiexec is then stopped and a
-screenshot saved). It installs for real: scripts/test-msi-install.py runs it only on a
-disposable machine (--disposable-machine), and it needs an interactive desktop and an
-elevated administrator for -Scope machine (no UAC prompt can be answered).
+screenshot saved). With -Expect refuse, the other scope has a copy: the choice must show
+its Install button disabled and the note that says to remove that copy first; it then
+presses Cancel and Finish, and exits with 0 when msiexec ends cancelled (1602).
+It installs for real: scripts/test-msi-install.py runs it only on a disposable machine
+(--disposable-machine), and it needs an interactive desktop and an elevated administrator
+for -Scope machine (no UAC prompt can be answered).
 Windows PowerShell 5.1 (UI Automation of .NET Framework).
 #>
 param(
@@ -17,6 +20,7 @@ param(
   [Parameter(Mandatory)] [ValidateSet('user', 'machine')] [string]$Scope,
   [Parameter(Mandatory)] [string]$Log,
   [Parameter(Mandatory)] [string]$Screenshot,
+  [ValidateSet('install', 'refuse')] [string]$Expect = 'install',
   [int]$TimeoutSeconds = 300
 )
 $ErrorActionPreference = 'Stop'
@@ -46,13 +50,15 @@ function Get-Windows([int]$ProcessId) {
   @($automation::RootElement.FindAll($tree::Children, $condition))
 }
 
-# Controls of the process's windows whose name (without the & of access keys) matches.
-function Find-Control([int]$ProcessId, [string]$Pattern, [System.Windows.Automation.ControlType]$Type) {
+# Shown controls of the process's windows whose name (without the & of access keys)
+# matches, enabled ones unless -Enabled $false.
+function Find-Control([int]$ProcessId, [string]$Pattern, [System.Windows.Automation.ControlType]$Type,
+                      [bool]$Enabled = $true) {
   foreach ($window in Get-Windows $ProcessId) {
     $condition = New-Object System.Windows.Automation.PropertyCondition($automation::ControlTypeProperty, $Type)
     foreach ($element in $window.FindAll($tree::Descendants, $condition)) {
       $name = $element.Current.Name -replace '&', ''
-      if ($name -match $Pattern -and -not $element.Current.IsOffscreen -and $element.Current.IsEnabled) {
+      if ($name -match $Pattern -and -not $element.Current.IsOffscreen -and $element.Current.IsEnabled -eq $Enabled) {
         return [pscustomobject]@{ Window = $window; Element = $element }
       }
     }
@@ -99,6 +105,31 @@ try {
   Start-Sleep -Milliseconds 500
   $selection = $option.Element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
   if (-not $selection.Current.IsSelected) { throw "The $Scope choice is not selected after the click" }
+  if ($Expect -eq 'refuse') {
+    # One scope at a time: the other scope has a copy, so this choice cannot install.
+    $text = [System.Windows.Automation.ControlType]::Text
+    $note = Wait-Control $process 'Remove it in Settings > Apps > Installed apps' $text
+    Write-Output "ScopeDlg: $($note.Element.Current.Name)"
+    if (Find-Control $process.Id '^Install$' $button) {
+      throw "The $Scope choice can install although the other scope has a copy"
+    }
+    if (-not (Find-Control $process.Id '^Install$' $button $false)) {
+      throw 'ScopeDlg shows no disabled Install button'
+    }
+    Write-Output 'ScopeDlg: the Install button is disabled'
+    Save-Screenshot
+    Invoke-Button (Wait-Control $process '^Cancel$' $button)
+    $finish = Wait-Control $process '^Finish$' $button
+    $texts = @($finish.Window.FindAll($tree::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+      ForEach-Object { $_.Current.Name } | Where-Object { $_ })
+    Write-Output ("Closing dialog: " + ($texts -join ' | '))
+    Invoke-Button $finish
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) { throw 'msiexec did not end after Finish' }
+    if (-not ($texts -match 'cancelled')) { throw 'The closing dialog is not the cancellation dialog' }
+    if ($process.ExitCode -ne 1602) { throw "msiexec ended with $($process.ExitCode), not 1602 (cancelled)" }
+    Write-Output 'msiexec ended cancelled (1602)'
+    exit 0
+  }
   $install = Wait-Control $process '^Install$' $button
   Invoke-Button $install
   Write-Output 'ScopeDlg: Install pressed'
