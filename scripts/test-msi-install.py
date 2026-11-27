@@ -379,22 +379,12 @@ def plan(scenarios, version, previous, ui=False, ui_smoke=False):
             ]
             if scope == "machine":
                 steps.append(("check-permissions", {"scope": scope}))
-            else:
-                # One scope at a time, so that repair and removal cannot pick the other.
-                steps += [("uninstall", {"package": "new", "scope": scope}),
-                          ("check-removed", {"scope": scope})]
-        # An older copy just for you beside the all-users copy, as a per-user 0.6.1 beside
-        # an all-users 0.6.3: an upgrade finds only its own scope, so both stay and each
-        # is removed on its own. One version cannot be installed in both scopes: Windows
-        # Installer then maintains the copy that is installed (exit 0, nothing added).
-        steps += [("install", {"package": "older", "scope": "user"}),
-                  ("check-side-by-side", {}),
-                  ("uninstall", {"package": "older", "scope": "user"}),
-                  ("check-removed", {"scope": "user"}),
-                  ("check-installed", {"package": "new", "scope": "machine"}),
-                  ("uninstall", {"package": "new", "scope": "machine"}),
-                  ("check-removed", {"scope": "machine"}),
-                  ("check-marker", {})]
+            # One scope at a time. Copies in both scopes share component codes (the codes
+            # follow the files, not the scope), so removing one of them leaves its files:
+            # the package supports one scope at a time (REL-05).
+            steps += [("uninstall", {"package": "new", "scope": scope}),
+                      ("check-removed", {"scope": scope})]
+        steps.append(("check-marker", {}))
     if "previous" in scenarios:
         for published in previous:
             steps += [
@@ -809,12 +799,6 @@ class Run:
             raise Failure("The all-users folder has permissions beyond Program Files':\n  " + "\n  ".join(problems))
         self.say(f"    {len(paths)} folders and files: only administrators may change them, as in Program Files")
 
-    def check_side_by_side(self):
-        self.check_installed("older", "user")
-        self.check_installed("new", "machine")
-        self.say("    the older copy just for you and the all-users copy are installed side by side, "
-                 "with two Add/Remove Programs entries")
-
     def preflight(self):
         if self.dry_run:
             self.say("    nothing of Midnight Explorer may be installed; the per-machine steps need an "
@@ -899,8 +883,6 @@ class Run:
                 self.check_removed(scope)
             elif operation == "check-permissions":
                 self.check_permissions(scope)
-            elif operation == "check-side-by-side":
-                self.check_side_by_side()
             elif operation == "check-marker":
                 self.check_marker()
             elif operation == "check-nothing-installed":

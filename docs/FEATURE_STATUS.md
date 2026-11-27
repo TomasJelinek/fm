@@ -42,7 +42,8 @@ How to read it:
   release job now installs, upgrades, repairs and removes it in both scopes on a
   disposable runner and runs [ICE](GLOSSARY.md#ice) (Internal Consistency Evaluators)
   validation, but no run of those steps has passed yet
-  (REL-05).
+  (REL-05). Keep one kind of installation at a time: with both installed, removing one
+  leaves its files ([Troubleshooting](TROUBLESHOOTING.md#windows-removing-one-of-two-msi-installations-leaves-its-files)).
 - **Linux specifics:** native Wayland drag and drop with other applications is new, not
   yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On
   Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which it offers to

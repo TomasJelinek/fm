@@ -209,15 +209,15 @@ class Plan(unittest.TestCase):
                 self.assertTrue(all(item[0] != "new" for item in replaced) or package == "new",
                                 f"{package} would be a downgrade, not an install")
                 installed = (installed - replaced) | {(package, scope)}
+                # One scope at a time: copies in both share component codes.
+                self.assertEqual(len({item[1] for item in installed}), 1, f"both scopes after {installed}")
             elif operation in ("repair", "uninstall"):
                 scopes = {item[1] for item in installed if item[0] == package}
                 self.assertEqual(len(scopes), 1, f"{operation} of {package} is ambiguous: {installed}")
                 if operation == "uninstall":
                     installed = {item for item in installed if item[0] != package}
-            elif operation in ("check-installed", "check-side-by-side"):
-                wanted = [(package, scope)] if operation == "check-installed" else [("older", "user"), ("new", "machine")]
-                for item in wanted:
-                    self.assertIn(item, installed, f"{operation} {item} after {installed}")
+            elif operation == "check-installed":
+                self.assertIn((package, scope), installed, f"{operation} after {installed}")
             elif operation == "check-removed":
                 self.assertFalse({item for item in installed if item[1] == scope})
             elif operation == "check-nothing-installed":
@@ -232,7 +232,7 @@ class Plan(unittest.TestCase):
                 self.assertEqual(steps[-1], ("check-nothing-installed", {}))
                 self.assertEqual(self.simulate(steps), set())
 
-    def test_scopes_cover_upgrade_downgrade_repair_permissions_and_side_by_side(self):
+    def test_scopes_cover_upgrade_downgrade_repair_permissions_one_scope_at_a_time(self):
         steps = msi_test.plan(["scopes"], "0.6.2", [], ui_smoke=True)
         operations = [operation for operation, _ in steps]
         for scope in msi_test.SCOPES:
@@ -240,12 +240,14 @@ class Plan(unittest.TestCase):
                 self.assertIn((operation, scope), [(o, d.get("scope")) for o, d in steps])
         self.assertIn(("smoke", {"scope": "machine", "ui": True}), steps)
         self.assertEqual(operations.count("check-permissions"), 1)
-        # An older copy just for you beside the all-users one, then each removed on its own.
-        side = operations.index("check-side-by-side")
-        self.assertEqual(steps[side - 1], ("install", {"package": "older", "scope": "user"}))
-        self.assertEqual([(o, d.get("scope")) for o, d in steps[side + 1:] if o == "uninstall"],
-                         [("uninstall", "user"), ("uninstall", "machine")])
-        self.assertIn("check-marker", operations[side:])
+        # One scope at a time: copies in both scopes share component codes, so removing
+        # one would leave its files. Each scope is removed before the other is installed.
+        self.assertNotIn("check-side-by-side", operations)
+        installs = [index for index, (o, d) in enumerate(steps) if o == "install" and d["package"] == "new"]
+        removals = [index for index, (o, d) in enumerate(steps) if o == "uninstall"]
+        self.assertEqual(len(removals), 2)
+        self.assertLess(removals[0], installs[1])
+        self.assertIn("check-marker", operations[removals[-1]:])
         # Every installation and repair is checked before the next step changes anything.
         for index, (operation, details) in enumerate(steps):
             if operation in ("install", "repair") and details.get("package") != "older":

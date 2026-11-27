@@ -32,6 +32,22 @@ screen with Windows Installer error 2228.
 [GitHub Releases page](https://github.com/TomasJelinek/fm/releases), or the ZIP. A 0.6.1
 MSI installation is upgraded in place by the newer MSI's **Just for me** choice.
 
+### Windows: removing one of two MSI installations leaves its files
+
+**Symptom:** Midnight Explorer was installed both **Just for me** and **For all users**.
+After one of them is removed in **Installed apps**, its folder
+(`%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)` or
+`C:\Program Files\Midnight Explorer (MSI)`), its Start menu entry and its registry key
+under `Software\Midnight Explorer Installer` are still there.
+
+**Cause:** both installations register the same Windows Installer components, so
+Windows Installer keeps the files while the other installation still uses those
+components. The MSI supports one kind of installation at a time.
+
+**Fix:** remove the other installation too, delete the leftover folder and Start menu
+entry, and install again with one choice only. Your settings in
+`%LOCALAPPDATA%\Midnight Explorer` are not affected.
+
 ### Windows: SmartScreen warns before the installer or the program runs
 
 **Cause:** the executable and the MSI are not code-signed yet.
