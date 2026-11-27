@@ -27,7 +27,7 @@ class NetworkFilesystemPackages(unittest.TestCase):
             manifest = path.read_text().replace("minimum_host_minor = 5", "minimum_host_minor = 2")
             path.write_text(manifest.replace(', "sign-in"', ''))
         (package / "libmidnight_filesystem_network.so").write_bytes(b"network library")
-        (package / "THIRD-PARTY.md").write_text("Embedded crate and system runtime notices")
+        (package / "third-party.md").write_text("Embedded crate and system runtime notices")
         return source, package
 
     def test_archive_native_and_network_keep_independent_hashes_and_notices(self):
@@ -106,14 +106,14 @@ class NetworkFilesystemPackages(unittest.TestCase):
         manifest = manifest.replace("libmidnight_filesystem_network.so", library)
         entry = package / library
         entry.write_bytes(b"network library")
-        files = {entry, package / "THIRD-PARTY.md"}
+        files = {entry, package / "third-party.md"}
         data = tomllib.loads(manifest)
         with self.assertRaises(ValueError):
             packaging.library_filesystem_manifest(data, package, files, target)
 
     def test_network_library_and_notices_required_before_copy(self):
         source, package = self.network()
-        for name in ("libmidnight_filesystem_network.so", "THIRD-PARTY.md"):
+        for name in ("libmidnight_filesystem_network.so", "third-party.md"):
             path = package / name
             value = path.read_bytes()
             path.unlink()

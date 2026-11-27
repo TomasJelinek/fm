@@ -67,7 +67,7 @@ class NativeFilesystemPackages(unittest.TestCase):
             '"volume-details"]\n')
         (package / "plugin.toml").write_text(manifest)
         (package / "libmidnight_filesystem_native_linux.so").write_bytes(b"ELF fixture")
-        (package / "THIRD-PARTY.md").write_text("Full upstream licence texts embedded here")
+        (package / "third-party.md").write_text("Full upstream licence texts embedded here")
         return source, package
 
     def test_archive_and_native_packages_retain_separate_code_entries(self):
@@ -210,7 +210,7 @@ class NativeFilesystemPackages(unittest.TestCase):
 
     def test_native_library_and_embedded_notices_are_required_before_copying(self):
         source, package = self.native()
-        for name in ("libmidnight_filesystem_native_linux.so", "THIRD-PARTY.md"):
+        for name in ("libmidnight_filesystem_native_linux.so", "third-party.md"):
             path = package / name
             value = path.read_bytes()
             path.unlink()

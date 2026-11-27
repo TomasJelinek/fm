@@ -204,6 +204,26 @@ class VisualCppRuntimeTests(unittest.TestCase):
             packaging.write_archive(stage, archive, "midnight-explorer.exe", "zip")
             self.assertTrue(archive.is_file())
 
+    def test_every_windows_workspace_links_the_c_runtime_statically(self):
+        # The root workspace and every plugin workspace that ships a Windows binary or
+        # code linked into one; a plugin built on its own reads only its own config.
+        root = Path(__file__).resolve().parents[2]
+        not_windows = {"midnight-filesystem-native-linux", "midnight-filesystem-native-macos",
+                       "viewer-conformance"}
+        workspaces = [root] + [manifest.parent for manifest in sorted((root / "plugins").glob("*/Cargo.toml"))
+                               if manifest.parent.name not in not_windows]
+        self.assertGreaterEqual(len(workspaces), 13)
+        for workspace in workspaces:
+            with self.subTest(workspace=workspace.name):
+                config = tomllib.loads((workspace / ".cargo/config.toml").read_text(encoding="utf-8"))
+                flags = config["target"]["x86_64-pc-windows-msvc"]["rustflags"]
+                self.assertIn("target-feature=+crt-static", flags)
+                self.assertNotIn("rustflags", config.get("build", {}))
+        # The native AV1 library linked into the image workers uses the static runtime too.
+        script = (root / "plugins/image-decoder/native/build-windows.ps1").read_text(encoding="utf-8")
+        self.assertIn("'-Db_vscrt=mt'", script)
+        self.assertNotIn("'-Db_vscrt=md'", script)
+
 
 class MarkdownNameTests(unittest.TestCase):
     """Markdown files in a release have lowercase names, with '-' for '_'."""
