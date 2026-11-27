@@ -103,8 +103,9 @@ which is not a warning. Where a drive records when folders are read (Windows doe
 smaller drives), a folder's access time is when Copy read it. Paste and drag and drop
 copy content only.
 See [the transfer capabilities and implementation limits](developer/transfers.md).
-On Windows, you can copy files and folders from NTFS to a local FAT32 or exFAT
-drive. If a file already exists there, choose another name or skip it. Move still
+On Windows, you can copy files and folders to, from and within a local FAT32 or exFAT
+drive, and from a CD or DVD. If a file already exists on a FAT32 or exFAT drive, choose
+another name or skip it. A Move to such a drive works; a Move from or within it still
 requires a filesystem with stable file identifiers.
 Windows can also copy regular files and folders to, from, or within an SMB share
 whose server does not supply file IDs. Verification and **Preserve times and
@@ -1614,6 +1615,27 @@ and resize performance is measured by the ignored `interaction_performance` test
 (`midnight-engine` library) and the `native_resize` example of `midnight-ui`; the
 dated [interaction and layout record](verification/panel-interaction-and-layout.md)
 holds earlier results under the former `fm-ui`/`fm-engine` package names.
+
+### File systems
+
+Midnight Explorer works fully on NTFS and ReFS (Windows) and on ext4, XFS, Btrfs and tmpfs
+(Linux). On other drives some features are limited:
+
+| Drive | What is limited |
+| --- | --- |
+| USB stick or memory card with FAT32 or exFAT, Windows | No Recycle Bin: Delete asks for a permanent deletion. Copy works to, from and within it, and Move to it; a Move from or within it is refused (copy, then delete). A file changed within 2 seconds (FAT32) without changing its length may still show its previous contents in an open viewer. |
+| CD, DVD or mounted ISO image, Windows | Read only. Viewers, thumbnails, Find, folder sizes, checksum calculation and Copy from it work; saving or verifying a checksum file there does not. |
+| Network share or mapped network drive, Windows | No Recycle Bin. Servers that give files no IDs (older SMB servers and some NAS devices): a Move from or within the share is refused, and checksum files cannot be saved or verified there. |
+| WebDAV folder, Windows | No live updates: the folder is checked about every second (less often for large folders), and after a minute the panel says so. Rename, Delete and Copy there have not been tested. |
+| FAT32, exFAT or NTFS drive (vfat, exfat, ntfs3), Linux | Copy and Move to the drive, and Move from it, are refused. Rename, F7 and Delete work when the drive is mounted for your user, as desktop automounting does. The Trash takes only items on your home folder's drive. |
+| NFS share, sshfs mount or NTFS drive mounted with ntfs-3g, Linux | Rename, Delete and Trash are refused ("This filesystem cannot rename an entry without replacing another"), as are Copy and Move to it. |
+| SMB share (CIFS) or GVfs mount, Linux | Copy and Move to the share are refused. |
+
+On Linux network mounts, changes made by other computers appear at the next regular
+check (15 seconds; on NFS up to a minute longer); Windows shares report them as they
+happen. The developer notes on
+[file systems](developer/content-reads.md#file-systems) list what each file system
+supports and why.
 
 ### Icons, links and junctions
 

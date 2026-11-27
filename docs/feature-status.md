@@ -53,6 +53,17 @@ How to read it:
   yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On
   Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which it offers to
   install; Chromium never runs without its sandbox.
+- **File systems:** every feature works on NTFS, ReFS, ext4, XFS, Btrfs and tmpfs; on
+  FAT32, exFAT, CD/DVD, network shares, WebDAV, NFS, CIFS and FUSE mounts the limits are
+  listed in [File systems](user-guide.md#file-systems). On Windows, files without a
+  128-bit file ID are identified by their 64-bit file index, so in 0.6.4 viewers,
+  thumbnails, comparisons and archives read them (before, every read on FAT32 failed),
+  Copy reads from FAT32, exFAT, CD and DVD drives, and Find and folder sizes enter every
+  folder of shares that report no file IDs ([file systems](developer/content-reads.md#file-systems)).
+  On Linux, Rename, Delete and Trash on NFS and sshfs are refused with the reason. Only the
+  FAT32 answer of `FileIdInfo` was measured on a real drive; the other volumes are covered
+  by tests that inject their answers, and the opt-in real-volume tests (PLAT-02) have not
+  run yet.
 - **Open:** macOS (PLAT-01); native and manual qualification on other distributions,
   desktops, physical GPUs and live removable or network mounts (PLAT-02); CI jobs for
   the HTML viewer and the bundled-FFmpeg video helper (CI-01); native tests in the
@@ -202,6 +213,9 @@ How to read it:
   indexed; Linux: permission bits without set-ID bits), folders after their contents
   and Read-only last; archive members keep their recorded modified time; any number of
   items; what a destination cannot store is a warning of the job.
+- **Windows specifics:** Copy writes to FAT32 and exFAT drives and reads from them, from
+  CD and DVD drives and from SMB shares without file IDs; a Move from or within such a
+  drive or share needs file IDs.
 - **Linux specifics:** Copy and cross-volume Move write only to filesystems with
   `O_TMPFILE` (ext4, XFS, Btrfs, tmpfs); FAT, exFAT, NTFS, NFS, SMB, sshfs and GVfs
   destinations are refused.
@@ -246,7 +260,9 @@ How to read it:
 - **Open:** on Windows, Trash or Rename of a folder that this application itself holds
   open is refused (TRASH-01); a Linux Properties rename that leaves its staging folder
   counts the item as failed (META-04); Linux Rename and permanent Delete on live vfat,
-  exFAT, ntfs3 and CIFS mounts are not verified (PLAT-02).
+  exFAT, ntfs3 and CIFS mounts are not verified (PLAT-02); on NFS, sshfs and ntfs-3g
+  mounts, which cannot rename without replacing (`RENAME_NOREPLACE`), Linux Rename,
+  Delete and Trash are refused with that reason (FS-01).
 - **Documents:** [user guide](user-guide.md#controls) (Controls),
   [operation progress](developer/operation-progress.md),
   [security requirements](../SECURITY.md#directory-comparison-filters-and-metadata-editing).

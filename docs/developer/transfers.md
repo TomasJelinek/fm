@@ -1217,7 +1217,11 @@ publishes it with a no-replace rename. A network path key correlates a name betw
 preparations; the retained handles guard that name. These copies use conservative
 namespace scheduling. A directory Copy guards its output against being reopened
 as a source through another share name or a local alias. Protected directory
-merges derive their authority from the live conflict handle. [Microsoft FileIdInformation specification](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/e4185a8a-ed8d-4f98-ab55-ca34dc8916e6)
+merges derive their authority from the live conflict handle. Since 0.6.4 a source on a
+local volume whose file system has no 128-bit file ID (FAT, FAT32, exFAT, CDFS, UDF) is
+read the same way (`reads_without_ids`), so Copy, checksum calculation and drags take
+files from USB sticks, memory cards, CDs and DVDs; a Move still refuses such sources.
+[Microsoft FileIdInformation specification](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/e4185a8a-ed8d-4f98-ab55-ca34dc8916e6)
 
 The Windows engine tests run both unsupported-ID and all-zero responses in a
 temporary directory. The opt-in `live_smb_verified_copy_with_native_missing_and_zero_ids`

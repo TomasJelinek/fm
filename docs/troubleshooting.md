@@ -242,6 +242,32 @@ Copying from them works.
 **Fix:** copy to a local filesystem instead, or use another tool for such a
 destination. See [Linux distributions and filesystems](system-requirements.md#linux-distributions-and-filesystems).
 
+### Linux: Rename or Delete on an NFS share or sshfs mount fails
+
+**Symptom:** Rename, Delete or the Trash stops with `This filesystem cannot rename an
+entry without replacing another (renameat2 RENAME_NOREPLACE; NFS and sshfs, for
+example), which Rename, Delete and Trash need to keep the selected item safe`.
+
+**Cause:** these operations first move the item aside with a rename that never replaces
+another entry. The Linux NFS client, sshfs and some other FUSE file systems (ntfs-3g)
+cannot do that rename. Before 0.6.4 the message was only `Invalid argument (os error 22)`.
+
+**Fix:** rename or delete such items with another tool, or on the server. Reading,
+viewing, Find, folder sizes and copying from the share work. See
+[file systems](user-guide.md#file-systems).
+
+### Windows: Move from a USB stick, memory card or network share is refused
+
+**Symptom:** a Move stops with `This operation requires stable file identities, which
+this filesystem does not provide.`
+
+**Cause:** a Move checks the identity of each source across its own rename, and FAT32,
+exFAT, CD and DVD drives and some network servers give files no stable ID. A Move to such
+a drive works.
+
+**Fix:** copy the items (Copy reads them without IDs), then delete the originals. See
+[file systems](user-guide.md#file-systems).
+
 ### An archive does not open as a folder
 
 **Symptom:** Enter on an archive says `Compatible archive filesystem plugin is

@@ -322,11 +322,13 @@ on every mounted filesystem.
   shares opened from Network Neighborhood) cannot create `O_TMPFILE` files, so Copy into
   them fails with an explicit unsupported-filesystem error; copying from them works. A
   Move from another drive goes wherever Copy goes, so it fails on these destinations as
-  Copy does. It removes sources only from local ext2/3/4, XFS, Btrfs, F2FS or tmpfs;
-  the job leaves any other source in place and says why.
+  Copy does. A Move takes its sources only from folders on local ext2/3/4, XFS, Btrfs or
+  tmpfs: a Move from any other filesystem is refused when it is prepared ("Native Move
+  requires a local ext, XFS, Btrfs or tmpfs filesystem"); copy such items instead (FS-02).
 - Rename and permanent Delete on such media need a no-replace rename (the vfat, exfat,
   ntfs3 and CIFS kernel drivers implement it; FUSE mounts such as ntfs-3g only when
-  their daemon does) and a staging folder owned by you. The mount must therefore map
+  their daemon does; the NFS client and sshfs do not, so Rename, Delete and Trash are
+  refused there with that reason, FS-01) and a staging folder owned by you. The mount must therefore map
   file ownership to your user, as desktop automounting does; on a root-owned mount
   without `uid=` they are refused. The staging folder keeps the mount-provided
   permissions only if they let no other user write to it, or if its permissions, owner

@@ -32,25 +32,103 @@ Validation is the documented LiveValidated contract, not a filesystem snapshot
 or a guarantee against changes that the platform's metadata cannot detect.
 Capture, reading, validation and disposal remain backend work.
 
-## Identity on other file systems
+## File systems
 
-A Windows revision identifies the file by its volume and its 128-bit file ID
-(`FileIdInfo`). Where the file system or server has none, the file's 64-bit file index
-(`GetFileInformationByHandle`) stands in, widened: FAT32 and exFAT, which USB sticks
-and memory cards use, answer `ERROR_INVALID_PARAMETER` (measured on a FAT32 stick);
-CD and DVD file systems, WebDAV and SMB servers without the information class answer it,
-`ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED` or `ERROR_INVALID_LEVEL`. Any other
-failure stays an error. A volume answers one way for every file, so a capture and its
-revalidations compare identities of one kind. Before 0.6.4 such a volume failed every
-capture, so no viewer, thumbnail, comparison or archive could read its files.
+NTFS and ReFS on Windows, and every Linux file system, give each file a stable identity.
+Other file systems give less, and every feature below works within what they give. The
+user-facing summary is [File systems](../user-guide.md#file-systems) in the user guide.
 
-These file systems detect fewer changes: FAT keeps no change time (always 0) and write
-times in 2-second steps, and some network servers report the same index (zero) for every
-file, so there a change within those limits that keeps the length is not detected.
-Linux revisions use `fstat` (device, inode, length, modification and change times),
-which every file system answers, including vfat, exFAT, ntfs3, NFS, CIFS and FUSE mounts.
-`native_windows.rs` tests the fallback's classification and identity; an ignored test
-reads a real FAT file named by `MIDNIGHT_TEST_FAT_FILE`.
+### Identities on Windows
+
+One rule decides a file's identity everywhere: content captures
+(`midnight-plugin-host/src/native_windows.rs`), the native filesystem plugin's reads and
+Rename (`plugins/midnight-filesystem-native-windows/src/identity.rs`) and the host's Find,
+Delete, Rename, F7, metadata and folder-size queries
+(`midnight-platform-windows/src/mutation_native.rs`, `local_identity`):
+
+1. `FileIdInfo` answers a nonzero 128-bit ID: the 64-bit volume serial number and that
+   ID (NTFS, ReFS, SMB 3 servers).
+2. `FileIdInfo` fails because the file system or server does not implement it, or it
+   answers an all-zero ID (MS-FSCC 2.4.26: a server without 128-bit IDs): the 32-bit
+   volume serial number and the 64-bit file index of `GetFileInformationByHandle`,
+   widened (FAT32, exFAT, CDFS, UDF, the WebDAV redirector, SMB 2 servers).
+3. Every other failure stays an error.
+
+"Does not implement the information class" is one set of Windows errors, the same in
+every crate: `ERROR_INVALID_FUNCTION` (1), `ERROR_NOT_SUPPORTED` (50),
+`ERROR_INVALID_PARAMETER` (87; FAT32 and exFAT, measured), `ERROR_CALL_NOT_IMPLEMENTED`
+(120) and `ERROR_INVALID_LEVEL` (124). Denials, lost connections and every other error
+stay errors. The same set lets `FileAttributeTagInfo`, which FAT32 and exFAT do not
+implement either, fall back to the attributes of `FileBasicInfo` with no reparse tag; an
+entry whose attributes still claim a reparse point is then refused as a link. A volume
+answers one way for every file, so a capture and its revalidations always compare
+identities of one kind, and a Find result and the plugin's revision of the same file
+agree.
+
+Rule 2 identities are weaker:
+
+- FAT derives the file index from the position of the entry's directory record. It is
+  unique among existing entries but changes when an entry is renamed to a longer name or
+  moved, so features that compare an identity across their own rename (Move, Rename's
+  recoverable replacement, Copy's namespace pins) still require a 128-bit ID and refuse
+  such volumes. Rename, F7, Delete and Find compare identities only before their own
+  change.
+- The WebDAV redirector, CDFS and some SMB servers report index 0 for every entry. Such an
+  identity is *unknown* (`Identity::is_known`, `TransferIdentity::is_known`): Find does not
+  take a folder with it for its own ancestor or a file for another name of a counted
+  file; folder sizes, Properties and the folder tree key such folders by their canonical
+  path instead (`size_directory.rs`); the Command Prompt working-directory check refuses
+  it. Revisions still compare it, so a replacement with the same length and times
+  goes unnoticed there.
+- FAT keeps no change time (always 0) and write times in 2-second steps; exFAT keeps
+  10-millisecond write times. A same-length change within those steps is not detected.
+
+Copy, checksum calculation and drags read a source without a file ID through bindings
+that their open handles keep, as on SMB shares without IDs
+([transfers](transfers.md)): on a network share, and since 0.6.4 on a local FAT, FAT32,
+exFAT, CDFS or UDF volume (`transfer_network_identity.rs`, `reads_without_ids`). Saving a
+checksum manifest and verifying one still need proven file IDs on the manifest's volume.
+Before 0.6.4 every content capture on such a volume failed (no viewer, thumbnail,
+comparison or archive could read its files) and Copy refused a source on it.
+
+### Linux
+
+Linux identities are `(st_dev, st_ino)` from `fstat`/`statx`, which every file system
+answers. vfat and exfat number inodes per mount (`iunique`), and so do CIFS mounts with
+`noserverino` and FUSE mounts such as sshfs without `-o use_ino`: a number is stable
+while the file is open or cached but can change after the inode leaves the cache or the
+volume is mounted again. A saved archive revision (a restored tab or archive Hot Path) or
+a Find result opened much later can then be reported as changed, and must be opened or
+searched again. vfat keeps 2-second write times, exfat 10 ms and sshfs 1 s.
+
+### What each file system supports
+
+| File system | Reads (panels, Properties, viewers, thumbnails, comparisons, archives, Find, folder sizes, checksum calculation) | Changes (Rename, F7, Delete) | Copy and Move | Watches |
+| --- | --- | --- | --- | --- |
+| NTFS, ReFS; ext4, XFS, Btrfs, tmpfs | Yes | Yes, with the Trash | Yes | Native |
+| Windows FAT32, exFAT | Yes (rule 2) | Yes; no Recycle Bin, so Delete is permanent | Copy to, from and within; Move to it; Move from or within refused | Native |
+| Windows CD, DVD, ISO (CDFS, UDF) | Yes (rule 2, index 0 on CDFS) | Read only | Copy from | Native |
+| Windows SMB share or mapped drive | Yes (rule 1, or rule 2 on servers without IDs) | Yes; no Recycle Bin | Copy; Move from or within needs server file IDs | SMB change notifications |
+| Windows WebDAV folder | Yes (rule 2, index 0) | Not verified | Copy from (not verified) | None: checked every second or more, notice after a minute |
+| Linux vfat, exfat, ntfs3 | Yes | Yes when the mount maps ownership to the user; Trash only on the home file system | Copy and Move to refused (no `O_TMPFILE`); Move from refused | inotify |
+| Linux NFS | Yes | Refused: no `RENAME_NOREPLACE` | Copy and Move to refused | inotify (local changes) and the 15-second check |
+| Linux CIFS | Yes | Yes when the mount maps ownership to the user | Copy and Move to refused | inotify (local changes) and the 15-second check |
+| Linux FUSE (sshfs, GVfs) | Yes | sshfs refused: no `RENAME_NOREPLACE` | Copy and Move to refused | inotify (local changes) and the 15-second check |
+
+Evidence: Windows FAT32 `FileIdInfo` → `ERROR_INVALID_PARAMETER` was measured on a USB
+stick; the other Windows rows follow MS-FSCC (appendix notes for 2.1.9, 2.1.10 and 2.4) and
+the FAT and CDFS driver samples; the Linux rows follow the kernel's `fs/nfs`, `fs/fat`,
+`fs/exfat` and FUSE rename and `O_TMPFILE` support. Only NTFS, ext4 and tmpfs are tested
+on every run. The opt-in tests that read real volumes skip themselves when their variable
+is unset:
+
+| Variable | Tests (`--ignored`) |
+| --- | --- |
+| `MIDNIGHT_TEST_FAT_FILE` | `midnight-plugin-host` `native_windows::identity_tests`; native Windows plugin `identity::tests` |
+| `MIDNIGHT_TEST_SHARE_FILE`, `MIDNIGHT_TEST_OPTICAL_FILE` | native Windows plugin `identity::tests` |
+| `MIDNIGHT_TEST_FAT_DIRECTORY` | `midnight-platform-windows` `size_directory::tests` (read only), `tests/mutations.rs`; `midnight-engine` `operations_real_windows` (writes a temporary folder) |
+| `MIDNIGHT_TEST_SHARE_DIRECTORY` | `midnight-platform-windows` `size_directory::tests` (read only) |
+| `MIDNIGHT_TEST_SMB_DIRECTORY` | `midnight-engine` `operations_real_windows::network_copy` (writes) |
 
 ## Change-time drift (VIEW-05)
 
