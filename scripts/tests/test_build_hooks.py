@@ -17,6 +17,10 @@ def host_build(profile):
 HOST_BUILD_RELEASE = host_build("release")
 
 
+# A guard against a hang, not a duration: build.bat starts Windows PowerShell for several
+# steps, and a hosted runner's first PowerShell start has taken over a minute.
+HANG_GUARD = 180
+
 class BuildHookTests(unittest.TestCase):
     # build.bat refuses to start without PowerShell 7; these cases need no pwsh.
     WITHOUT_POWERSHELL = {"test_missing_powershell_seven_fails_before_cargo_or_plugin_builds",
@@ -115,7 +119,7 @@ class BuildHookTests(unittest.TestCase):
                            BUILD_TEST_DEPLOY_EXIT=deploy_exit, BUILD_TEST_THUMBNAIL_EXIT=thumbnail_exit,
                            BUILD_TEST_ARCHIVE_EXIT=archive_exit)
         result = subprocess.run(self.command + [profile], cwd=self.root, env=environment,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=HANG_GUARD)
         calls = self.log.read_text().splitlines() if self.log.exists() else []
         self.build_output = result.stdout + result.stderr
         return result.returncode, calls
@@ -139,7 +143,7 @@ class BuildHookTests(unittest.TestCase):
                         log.unlink()
                 result = subprocess.run(self.command + [profile], cwd=self.root,
                                         env=dict(self.environment, BUILD_TEST_HELPER_LOG=str(helpers)),
-                                        capture_output=True, text=True, timeout=30)
+                                        capture_output=True, text=True, timeout=HANG_GUARD)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 name = "midnight-elevated-listing" + (".exe" if os.name == "nt" else "")
                 expected = os.path.realpath(self.root / "_build" / profile / name)
@@ -155,7 +159,7 @@ class BuildHookTests(unittest.TestCase):
 
     def test_default_build_includes_debug_thumbnailers(self):
         result = subprocess.run(self.command, cwd=self.root, env=self.environment,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=HANG_GUARD)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("thumbnail debug", self.log.read_text().splitlines())
         self.assertIn("archive debug", self.log.read_text().splitlines())
@@ -173,7 +177,7 @@ class BuildHookTests(unittest.TestCase):
         environment["PATH"] = str(self.root / "bin") + os.pathsep + str(
             Path(os.environ["SystemRoot"]) / "System32")
         result = subprocess.run(self.command, cwd=self.root, env=environment,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=HANG_GUARD)
         self.assertEqual(result.returncode, 127, result.stdout + result.stderr)
         self.assertIn("64-bit PowerShell 7", result.stderr)
         self.assertFalse(self.log.exists(), "Missing prerequisite started a build")
@@ -187,7 +191,7 @@ class BuildHookTests(unittest.TestCase):
             str(self.root / "bin"), str(Path(os.environ["SystemRoot"]) / "System32"),
             os.path.dirname(shutil.which("pwsh"))])
         result = subprocess.run(self.command, cwd=self.root, env=environment,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=HANG_GUARD)
         self.assertEqual(result.returncode, 127, result.stdout + result.stderr)
         self.assertIn("Python 3.12", result.stderr)
         self.assertFalse(self.log.exists(), "Missing prerequisite started a build")
@@ -222,7 +226,7 @@ class BuildHookTests(unittest.TestCase):
     def run_arguments(self, *arguments, validate_exit="0"):
         environment = dict(self.environment, BUILD_TEST_VALIDATE_EXIT=validate_exit)
         result = subprocess.run(self.command + list(arguments), cwd=self.root, env=environment,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=HANG_GUARD)
         self.build_output = result.stdout + result.stderr
         return result.returncode, self.log.read_text().splitlines() if self.log.exists() else []
 
@@ -269,7 +273,7 @@ class BuildHookTests(unittest.TestCase):
                         log.unlink()
                 result = subprocess.run(self.command + list(arguments), cwd=caller,
                                         env=dict(self.environment, BUILD_TEST_CWD_LOG=str(directories)),
-                                        capture_output=True, text=True, timeout=30)
+                                        capture_output=True, text=True, timeout=HANG_GUARD)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 calls = self.log.read_text().splitlines()
                 self.assertEqual(calls, self.validated_build_calls(profile))
