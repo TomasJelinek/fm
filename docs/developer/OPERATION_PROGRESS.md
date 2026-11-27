@@ -41,7 +41,8 @@ or retained diagnostics. It does not mix an active transfer with previous jobs.
   from Jobs (Copy details for the selected job) at any time. What the window showed
   only under Details is either shown always now (the current file's bar, with the
   bytes written or read back as its accessible description) or dropped deliberately:
-  a Copy or Move's `Items remaining` line (its totals count files of the total), the
+  the separate `Items remaining` line for Copy, Move and Delete (their totals show
+  the completed count out of the total), the
   current file's byte line (its percentage and bar stay) and the separate chart of
   the current file's readback (the whole job's chart keeps its Verify curve and the
   file's bar turns to the readback's colour and share).
@@ -529,9 +530,9 @@ Neither, nor their combined throughput, is a whole-job logical verification
 percentage. Do not use advisory remaining-work estimates as an unconditional
 denominator.
 
-Right under the headline a Copy or Move shows its time remaining (the ETA below), and
-under that its totals as they change, once discovery
-has them: `Files: 12 of 2,345 · Bytes: 1.5 MiB of 7.0 MiB` (a Move counts a file
+Copy, Move and Delete show time remaining directly below the headline, followed by
+totals once discovery has counted the work. A transfer shows
+`Files: 12 of 2,345 · Bytes: 1.5 MiB of 7.0 MiB` (a Move counts a file
 once its source is removed), `Files: 12 of ~2,400 · Bytes: 1.5 MiB of ~7.2 MiB` when
 the totals are approximate (part of the tree could not be counted, the work grew
 beyond the count, or a skipped or failed item leaves part of it undone),
@@ -540,7 +541,9 @@ beyond the count, or a skipped or failed item leaves part of it undone),
 runs there is no totals line; the headline reads `Discovering: 2,345 items (7.0 MiB)`
 and counts on. A Delete counts items only: `Discovering: 1,000 items`, then `Items deleted: 400 of 1,000`
 (`Selected items moved to the Trash: 1 of 3` when only the selected items were
-counted).
+counted). Under the deletion speed chart, the parent folder and the name of the
+item being removed occupy the same two lines as in Copy/Move. Long paths and
+names keep their endings visible.
 
 The speed chart covers the job from time zero, and older intervals merged into one
 keep their peak rates. Its vertical scale holds still while a job copies (`Scale` in
@@ -570,7 +573,7 @@ Logical committed bytes are separate from actual I/O counters. Retries and
 verification reads cannot inflate completion. A Move counts a file as done in
 its totals line (`Files: N of M`) only once its source removal is
 confirmed (`source_files_removed`), even when destination publication has already
-succeeded; the window shows no Items remaining line for a Copy or Move. ETA is an
+succeeded. ETA is an
 explicitly approximate presentation of remaining logical work and backend-measured rates. The backend
 averages each rate over the job's activity time with an 8-second time constant (an
 interval's weight falls to about a third after 8 more seconds of activity) and
@@ -586,17 +589,13 @@ can be estimated, such as items without a byte budget, it uses that one. An esti
 is shown only while discovery is complete without skipped or failed items and the
 job runs, a Copy/Move also without a wait. A paused job keeps its estimate, marked
 as in `About 3 min (paused)`, and resumes from the same averages. Without an
-estimate, a Copy/Move says Time remaining: Paused while
-paused, Discovering items... while its discovery scans, Calculating... while its
-totals are known and it runs without a wait, pause request or decision, and
-Unavailable otherwise (queued or waiting, pausing, deciding or cancelling, or totals
-that are unavailable); an estimate from approximate totals reads `~2 min`; its current activity (for example
-Copying..., Saving... or Verifying current file...) labels the speed chart until the
-chart has samples. A Delete shows its activity in that line instead (Queued —
-waiting to start, Awaiting confirmation, Preparing, Discovering items..., Deleting
-items... while its progress is indeterminate, Pausing..., Paused or Resuming...), and
-Time remaining: Calculating... while its progress is determinate and no rate has
-been measured. Its headline reads Discovering: N items only while discovery scans.
+estimate, the time line reads `Paused` during a pause, `Discovering items...` during
+discovery, and `Calculating...` while a job with known totals runs without a wait,
+pause request or decision. Otherwise it reads `Unavailable`. Once cancellation
+is requested, Delete hides the estimate and shows `Cancelling...` in the headline.
+A transfer estimate from approximate totals reads `~2 min`. Until the chart has
+samples it shows the current activity, such as `Verifying current file...` or
+`Deleting items...`.
 The backend budgets writes and selected-policy readback for each discovered file:
 full length for SHA-256, or up to 192 KiB of disjoint samples. Cross-volume Move
 also includes source and destination proof reads both before and after source
@@ -624,7 +623,7 @@ shows the chart's latest interval, which the backend zeroes once the job stops
 (`0 B/s`), and the headline says why the job does not run. Native same-volume Move displays
 renamed items/s. Delete displays items/s, as Windows Explorer does. Current source
 and destination are retained in Copy details; Delete shows its current item and
-remaining count. Each
+completed count out of the total. Each
 per-file meter retains the immutable source/target identities of its own lane.
 
 ## Related contracts and evidence

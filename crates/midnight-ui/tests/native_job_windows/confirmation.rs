@@ -64,6 +64,8 @@ fn deletion(id: u64, mode: DeleteMode) -> OperationProgress {
 
 #[test]
 fn copy_move_delete_and_trash_ask_on_both_close_routes_and_continue_is_default() {
+    use i_slint_core::items::AccessibleRole;
+
     let h = Harness::new();
     for (id, deletion_mode) in [
         (1, None),
@@ -86,6 +88,13 @@ fn copy_move_delete_and_trash_ask_on_both_close_routes_and_continue_is_default()
             h.copy_progress(id, intent, CopyOperationState::Running, None);
         }
         let progress = h.children(1).remove(0);
+        if deletion_mode.is_some() {
+            for label in ["Time remaining: Unavailable", "source", "資料.txt"] {
+                assert!(
+                    modeless::accessible_item(&progress, AccessibleRole::Text, label).is_some()
+                );
+            }
+        }
         let adapters = h.attempts.get();
         h.commands.borrow_mut().clear();
         let acknowledge = || {
@@ -323,9 +332,9 @@ fn cancelling_delete_shows_one_status_with_progress_and_keeps_its_details() {
             .count()
     };
     assert_eq!(status_count(), 1);
-    assert!(
-        modeless::accessible_item(&progress, AccessibleRole::Text, "source/資料.txt").is_some()
-    );
+    for label in ["source", "資料.txt"] {
+        assert!(modeless::accessible_item(&progress, AccessibleRole::Text, label).is_some());
+    }
     assert!(
         modeless::accessible_item(&progress, AccessibleRole::Groupbox, "Deletion speed").is_some()
     );

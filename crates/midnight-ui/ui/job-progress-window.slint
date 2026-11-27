@@ -27,6 +27,7 @@ export component JobProgressWindow inherits DialogWindow {
     callback confirm-cancel(string);
     private property <bool> compact: root.height < 350px;
     private property <bool> transfer: root.job.kind == 0;
+    private property <bool> transfer-or-delete: root.transfer || root.job.kind == 1;
     private property <bool> can-request-cancel: root.job.active && root.job.cancellable;
     private property <bool> cancelling-delete: root.job.kind == 1 && root.job.active && !root.job.cancellable;
     private property <bool> show-actions: !root.cancel-confirmation
@@ -57,12 +58,11 @@ export component JobProgressWindow inherits DialogWindow {
             + jobs-caption.preferred-width + root.action-pad <= root.action-room;
     title: root.job.title;
     preferred-width: max(640px, Theme.font-size * 34);
-    // A transfer's current file takes a folder line and a name line under its chart.
-    preferred-height: root.transfer ? max(400px, Theme.font-size * 23) : max(420px, Theme.font-size * 24);
+    preferred-height: root.transfer-or-delete ? max(400px, Theme.font-size * 23) : max(420px, Theme.font-size * 24);
     // Never narrower than the widest footer: Pause and Resolve as glyphs beside
     // Cancel operation, the longest dismiss caption, inside the padding of a window that
     // is not compact. A glyph is its icon and 24px of padding, 8px from the next.
-    min-width: max(320px, 2 * (root.transfer ? 10px : 16px)
+    min-width: max(320px, 2 * (root.transfer-or-delete ? 10px : 16px)
         + max(80px, cancel-caption.preferred-width + Theme.icon-size + 28px)
         + 2 * (Theme.icon-size + 24px + 8px));
     request-close => { root.request-dismiss(); }
@@ -102,8 +102,8 @@ export component JobProgressWindow inherits DialogWindow {
             reject
         }
         VerticalLayout {
-            padding: root.compact ? 6px : root.transfer ? 10px : 16px;
-            spacing: root.compact ? 4px : root.transfer ? 6px : 10px;
+            padding: root.compact ? 6px : root.transfer-or-delete ? 10px : 16px;
+            spacing: root.compact ? 4px : root.transfer-or-delete ? 6px : 10px;
             // The native title bar's close button, Escape and the footer close the
             // window, so the header has no close button of its own.
             DialogHeader {
@@ -112,7 +112,7 @@ export component JobProgressWindow inherits DialogWindow {
                 detail: root.cancelling-delete || !root.job.active ? ""
                     : root.job.paused ? (root.job.pause-requested ? "Paused" : "Resuming...")
                     : root.job.pause-requested ? "Pausing..." : root.job.state;
-                compact: root.compact || root.transfer; native-icon: root.job.icon;
+                compact: root.compact || root.transfer-or-delete; native-icon: root.job.icon;
                 fallback-icon: root.job.kind == 1 ? FallbackIcons.delete : FallbackIcons.copy;
             }
             progress-scroll := VScrollView {
@@ -138,7 +138,7 @@ export component JobProgressWindow inherits DialogWindow {
                         }
                     }
                     if !root.cancel-confirmation && root.job.active : VerticalLayout {
-                        padding-right: 8px; spacing: root.transfer ? 6px : 10px; alignment: start;
+                        padding-right: 8px; spacing: root.transfer-or-delete ? 6px : 10px; alignment: start;
                         // The headline alone on its line: a transfer's write and verify
                         // speeds are in its chart's legend.
                         Text {
@@ -147,9 +147,8 @@ export component JobProgressWindow inherits DialogWindow {
                             font-size: root.compact ? Theme.font-size : Theme.font-size * 1.25;
                             overflow: elide;
                         }
-                        // A Copy or Move's time remaining, right under its percentage. A
-                        // paused estimate holds still and says so: "About 3 min (paused)".
-                        if root.transfer : Text {
+                        // A paused estimate keeps its value directly under the headline.
+                        if root.transfer-or-delete && !root.cancelling-delete : Text {
                             text: "Time remaining: " + (root.job.eta != "" ? root.job.eta
                                 : root.job.paused ? "Paused"
                                 : root.job.discovering ? "Discovering items..."
@@ -167,7 +166,7 @@ export component JobProgressWindow inherits DialogWindow {
                                 : root.job.activity-label != "" ? root.job.activity-label : "Discovering operation items";
                             indeterminate: !root.job.paused && !root.job.waiting; progress: 0; height: 4px;
                         }
-                        if root.transfer || root.job.kind == 1 : OperationSpeedChart {
+                        if root.transfer-or-delete : OperationSpeedChart {
                             chart: root.transfer ? root.job.transfer-speed-chart : root.job.speed-chart;
                             write-rate: root.job.write-speed; verify-rate: root.job.verify-speed;
                             deletion: root.job.kind == 1;
@@ -178,17 +177,12 @@ export component JobProgressWindow inherits DialogWindow {
                                 : root.job.activity-label != "" ? root.job.activity-label
                                 : root.job.discovering ? "Discovering items..."
                                 : root.job.paused ? "Paused" : "Waiting for activity";
-                            height: max(130px, Theme.font-size * 7.5);
+                            // Leave room for the folder and filename above a compact footer.
+                            height: max(root.compact ? 80px : 130px, Theme.font-size * 7.5);
                         }
-                        // The current file, always in the same place right under the job's
-                        // chart: its folder on one line (an archive member's archive and the
-                        // folders inside it), its name on the next with its own percentage,
-                        // and its own bar, which every file updates (a quick one passes
-                        // through to 100%). Each line leaves out its middle when it is too
-                        // long, keeping the folder's last part and the name's end. Both
-                        // lines keep their height, so nothing appears, disappears or moves
-                        // between files.
-                        if root.transfer : VerticalLayout {
+                        // Keep both path lines in place between items. A transfer also
+                        // reports the current file's byte progress beside and below its name.
+                        if root.transfer-or-delete : VerticalLayout {
                             spacing: 2px;
                             PathText {
                                 text: root.job.transfer-directory; tail: root.job.transfer-directory-tail;
@@ -203,13 +197,13 @@ export component JobProgressWindow inherits DialogWindow {
                                     horizontal-stretch: 1; min-width: 0px;
                                     height: Theme.font-size * 1.5;
                                 }
-                                Text {
+                                if root.transfer : Text {
                                     text: root.job.file-percent; color: Theme.secondary-text;
                                     font-size: Theme.small-font; width: Theme.font-size * 8;
                                     horizontal-alignment: right; vertical-alignment: center;
                                 }
                             }
-                            Rectangle {
+                            if root.transfer : Rectangle {
                                 accessible-role: progress-indicator;
                                 accessible-label: "Current file progress";
                                 accessible-value: root.job.file-percent;
@@ -223,19 +217,18 @@ export component JobProgressWindow inherits DialogWindow {
                                 }
                             }
                         }
-                        if root.job.current-path != "" && !root.transfer : Text {
+                        if root.job.current-path != "" && !root.transfer-or-delete : Text {
                             text: root.job.current-path; color: Theme.text; font-size: Theme.font-size;
                             wrap: char-wrap; min-width: 0px;
                         }
-                        if !root.transfer && !root.cancelling-delete : Text {
+                        if !root.transfer-or-delete : Text {
                             text: root.job.eta == "" && root.job.activity-label != ""
                                 ? root.job.activity-label
                                 : "Time remaining: " + (root.job.eta != "" ? root.job.eta
                                     : root.job.paused ? "Paused" : "Calculating...");
                             color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
                         }
-                        // A Copy or Move counts its files in its totals instead.
-                        if root.job.remaining != "" && !root.transfer : Text {
+                        if root.job.remaining != "" && !root.transfer-or-delete : Text {
                             text: root.job.remaining; color: Theme.text;
                             font-size: Theme.font-size; wrap: word-wrap;
                         }

@@ -92,8 +92,9 @@ fn a_finished_delete_shows_its_outcome_and_opens_its_error_in_place() {
     apply_deletion(&h, job.clone());
     let progress = h.children(1).remove(0);
     // Tall enough that the whole running view is on screen.
-    modeless::draw(&progress, 900, 900, "delete-running-remaining");
-    assert!(shows(&progress, "Items remaining: 24284"));
+    modeless::draw(&progress, 900, 900, "delete-running-totals");
+    assert!(shows(&progress, "Items deleted: 108 of 24392"));
+    assert!(!shows(&progress, "Items remaining"));
     job.state = OperationState::CompletedWithErrors;
     job.failed = 1;
     let locked = Path::new("source").join("folder").join("locked.txt");

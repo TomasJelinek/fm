@@ -531,9 +531,9 @@ fn every_file_shows_its_folder_and_name_and_its_own_bar_under_the_chart_without_
     );
 }
 #[test]
-fn delete_shows_its_item_totals_and_a_held_estimate_while_paused() {
+fn delete_uses_the_transfer_layout_for_its_estimate_folder_and_name() {
     let mut test = ui::TestUi::new();
-    let mut delete = job("41", "Delete");
+    let mut delete = job("41", "Permanently delete");
     delete.kind = 1;
     delete.active = true;
     delete.pausable = true;
@@ -543,24 +543,88 @@ fn delete_shows_its_item_totals_and_a_held_estimate_while_paused() {
     delete.transfer_totals = "Items deleted: 400 of 1000".into();
     delete.remaining = "Items remaining: 600".into();
     delete.eta = "About 30 s".into();
-    test.window.set_job(delete.clone());
-    test.draw();
-    for label in [
-        "Items deleted: 400 of 1000",
-        "Items remaining: 600",
-        "Time remaining: About 30 s",
-    ] {
-        ui::popup_item(&test.window, label, AccessibleRole::Text);
+    delete.speed_chart = SpeedChartData {
+        speed: "20 items/s".into(),
+        scale: "40 items/s".into(),
+        history: "Elapsed 20 s".into(),
+        ..charted_copy().transfer_speed_chart
+    };
+    let folder = "D:\\Photos\\Family archive\\2025\\Autumn travels\\Original camera files\\資料";
+    let name = "Autumn photographs — evening by the harbour.jpg";
+    show_file(&mut delete, folder, name);
+    delete.state = "Running".into();
+    let mut copy = delete.clone();
+    copy.kind = 0;
+    copy.title = "Copy".into();
+    copy.transfer_totals = "Files: 400 of 1000".into();
+    let line = |test: &ui::TestUi, label: &str| {
+        native_rect(&ui::popup_item(&test.window, label, AccessibleRole::Text))
+    };
+    for (width, height) in [(640, 400), (420, 300)] {
+        test.window.set_job(copy.clone());
+        test.resize(width, height);
+        let copy_eta = line(&test, "Time remaining: About 30 s");
+        let copy_folder = line(&test, folder);
+        let copy_name = line(&test, name);
+        test.window.set_job(delete.clone());
+        test.draw();
+        assert_eq!(line(&test, "Time remaining: About 30 s").1, copy_eta.1);
+        assert_eq!(line(&test, folder).1, copy_folder.1);
+        let name_line = line(&test, name);
+        assert_eq!(name_line.1, copy_name.1);
+        let cancel = ui::popup_item(&test.window, "Cancel operation", AccessibleRole::Button);
+        assert!(name_line.1 + name_line.3 <= native_rect(&cancel).1);
+        assert!(
+            name_line.2 > copy_name.2,
+            "Delete uses the full filename row"
+        );
+        ui::popup_item(
+            &test.window,
+            "Items deleted: 400 of 1000",
+            AccessibleRole::Text,
+        );
+        assert!(
+            ui::find_popup_item(&test.window, "Items remaining: 600", AccessibleRole::Text)
+                .is_none()
+        );
+        assert!(
+            ui::find_popup_item(
+                &test.window,
+                "Current file progress",
+                AccessibleRole::ProgressIndicator
+            )
+            .is_none()
+        );
+        test.snapshot("delete-progress");
     }
     delete.paused = true;
     delete.pause_requested = true;
     delete.activity_label = "Paused".into();
     delete.eta = "About 30 s (paused)".into();
-    test.window.set_job(delete);
+    test.window.set_job(delete.clone());
     test.draw();
     ui::popup_item(
         &test.window,
         "Time remaining: About 30 s (paused)",
+        AccessibleRole::Text,
+    );
+    delete.eta = "".into();
+    delete.paused = false;
+    delete.pause_requested = false;
+    test.window.set_job(delete.clone());
+    test.draw();
+    ui::popup_item(
+        &test.window,
+        "Time remaining: Calculating...",
+        AccessibleRole::Text,
+    );
+    delete.determinate = false;
+    delete.discovering = true;
+    test.window.set_job(delete);
+    test.draw();
+    ui::popup_item(
+        &test.window,
+        "Time remaining: Discovering items...",
         AccessibleRole::Text,
     );
 }

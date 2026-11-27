@@ -254,6 +254,12 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         _ => outcome::change(progress),
     };
     let issues = outcome::mutation_issues(progress, &p.number_locale);
+    let (transfer_directory, transfer_name) = progress
+        .current_path
+        .as_deref()
+        .filter(|_| deletion && active)
+        .map(copy_presentation::path_parts)
+        .unwrap_or_default();
     OperationRow {
         identity: if progress.kind == MutationKind::Rename {
             format!("rename-job:{}", progress.id.0).into()
@@ -310,10 +316,10 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         determinate: meter.determinate,
         progress: meter.fraction,
         icon: p.desktop.image(&IconKey::action(icon), IconPlace::Action),
-        transfer_directory: Default::default(),
-        transfer_name: Default::default(),
-        transfer_directory_tail: Default::default(),
-        transfer_name_tail: Default::default(),
+        transfer_directory_tail: path_tail(&transfer_directory),
+        transfer_name_tail: name_tail(&transfer_name),
+        transfer_directory,
+        transfer_name,
         // "Items deleted: 3 of 10" for a Delete; nothing for other changes.
         transfer_totals: meter.totals,
         transfer_outcome: outcome.into(),

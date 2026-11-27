@@ -526,6 +526,8 @@ fn job_rows_and_details_count_one_in_the_singular() {
 #[test]
 fn delete_details_mark_selected_root_scope_and_unknown_bytes_explicitly() {
     let p = Presenter::new("left".into(), "right".into());
+    let parent = PathBuf::from("source").join("資料");
+    let folder = parent.join("Autumn photographs");
     let mut value = OperationProgress {
         id: OperationId(9),
         kind: MutationKind::Delete(DeleteMode::Trash),
@@ -536,7 +538,7 @@ fn delete_details_mark_selected_root_scope_and_unknown_bytes_explicitly() {
         completed: 0,
         failed: 0,
         processed_entries: 0,
-        current_path: None,
+        current_path: Some(folder.clone()),
         source_directory: "source".into(),
         renamed_to: None,
         message: String::new(),
@@ -553,6 +555,14 @@ fn delete_details_mark_selected_root_scope_and_unknown_bytes_explicitly() {
         },
     };
     let row = mutation(&p, &value);
+    assert_eq!(row.current_path, folder.to_string_lossy().as_ref());
+    assert_eq!(row.transfer_directory, parent.to_string_lossy().as_ref());
+    assert_eq!(
+        row.transfer_directory_tail,
+        format!("{}資料", std::path::MAIN_SEPARATOR)
+    );
+    assert_eq!(row.transfer_name, "Autumn photographs");
+    assert_eq!(row.transfer_name_tail, " photographs");
     assert!(
         row.detail
             .contains("Selected items only; folder contents were not counted")
@@ -613,6 +623,7 @@ fn delete_progress_distinguishes_waiting_scanning_and_control_states() {
     assert_eq!(queued.activity_label, "Queued — waiting to start");
     assert!(queued.active && queued.waiting);
     assert!(!queued.discovering && !queued.determinate && queued.eta.is_empty());
+    assert!(queued.transfer_directory.is_empty() && queued.transfer_name.is_empty());
 
     progress.state = OperationState::Running;
     let starting = update(&mut p, &progress);
@@ -696,6 +707,8 @@ fn delete_progress_distinguishes_waiting_scanning_and_control_states() {
     let refreshed = update(&mut p, &cleanup);
     assert_eq!(refreshed.state, "Cancelling");
     assert_eq!(refreshed.current_path, "source/cleanup-資料.txt");
+    assert_eq!(refreshed.transfer_directory, "source");
+    assert_eq!(refreshed.transfer_name, "cleanup-資料.txt");
     assert_eq!(refreshed.summary, "1 / 3 targets · 1 error");
     assert!(refreshed.detail.contains("2 entries processed"));
     assert!(refreshed.detail.contains("Cleanup access denied"));
