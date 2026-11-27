@@ -771,7 +771,13 @@ class Run:
             problems.append(f"{REGISTRY_KEY} is left in {'HKCU' if scope == 'user' else 'HKLM'}")
         if shortcut_path(scope, self.environment).exists():
             problems.append(f"{shortcut_path(scope, self.environment)} is left")
+        other = "machine" if scope == "user" else "user"
         for package in self.packages:
+            # Windows Installer keeps a per-user product's Uninstall entry under HKLM too
+            # (CI: none under HKCU), so an entry there is the other scope's while the
+            # package is installed in it.
+            if product_version(self.code(package), other):
+                continue
             if registry_values(scope, f"{UNINSTALL_KEY}\\{self.code(package)}") is not None:
                 problems.append(f"the Add/Remove Programs entry of {package} is left ({scope})")
         if problems:
