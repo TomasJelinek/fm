@@ -18,14 +18,14 @@ carry that permission, so the application adds it to those files itself in a fol
 that only you can change (in a shared folder, secure it or move it first). Plugins are still refused when a
 file in the folder belongs to another account or a link leads out of the folder.
 Retry with authorization (UAC) for a folder you cannot open runs the included
-midnight-elevated-listing.exe as Administrator. It is used only when an administrator
-installs the complete folder where standard users cannot change it, for example
-below C:\Program Files. From a folder in your user profile the message for a
-denied folder offers no retry and states this requirement. Earlier packages'
-application (then named me.exe) used the included helper from such a
-folder, where any program running as you could replace it: replace an earlier
-extracted package with this one, or at least delete its
-midnight-elevated-listing.exe.
+midnight-elevated-listing.exe as Administrator. The application starts it only
+when it is exactly the helper this version shipped with (it checks the file's
+SHA-256 before Windows asks you) and only you and administrators can change the
+folder it is in, such as this folder in your profile or C:\Program Files. Where
+that does not hold, the message for a denied folder says why instead of offering
+the retry. Earlier packages' application (then named me.exe) started the included
+helper without checking it: replace an earlier extracted package with this one,
+or at least delete its midnight-elevated-listing.exe.
 Rust and Visual Studio are not needed to run the application.
 Install Microsoft's Visual C++ x64 Redistributable if VCRUNTIME140.dll is missing:
 https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist
@@ -35,14 +35,16 @@ The executable is unsigned. This ZIP has no installer; each release also
 publishes an unsigned MSI with the same files, which asks whether to install just
 for you (no administrator rights, %LOCALAPPDATA%\Programs\Midnight Explorer (MSI))
 or for all users (administrator approval to install,
-C:\Program Files\Midnight Explorer (MSI)), and is updated by a newer MSI. Check for updates (toolbar
+C:\Program Files\Midnight Explorer (MSI)); from 0.6.3 an MSI installation
+updates itself with the next release's MSI. Check for updates (toolbar
 and About) asks GitHub for a newer release, at startup too (at most once in 20
 hours; Options > General > Updates turns it off). Download and install accepts only
 an archive whose checksums are signed with the project's release key, installs it
 on restart and restores this version if the new one does not start. It updates
-only a folder you can change; for a folder that only administrators can change it
-offers the release page instead. See SECURITY.md (Update check).
-Default graphics use Direct3D 12. --software is a diagnostic fallback with known
+only a folder you can change; for an extracted folder that only administrators can
+change it offers the release page instead. See SECURITY.md (Update check).
+Graphics use the GPU through Vulkan or Direct3D 12 (WGPU_BACKEND selects one).
+--software is a diagnostic fallback with known
 bitmap-emoji limitations, not equivalent to the GPU renderer's Unicode coverage.
 
 Example:
