@@ -3,8 +3,10 @@
 Confirmed product requirement, 6 November 2026: every third-party library must
 allow the intended development, use and distribution without mandatory license
 fees, subscriptions or royalties. Prefer maintained open-source libraries.
-This covers direct and transitive dependencies in the application, public API/SDK,
-independent plugins, tests and build/release tooling.
+This covers direct and transitive dependencies in the application, the public API/SDK
+(the separate Cargo workspaces `api/`, `worker-api/`, `thumbnail-api/`,
+`filesystem-api/`, `image-viewer-api/` and `web-viewer-api/` that plugins build
+against), independent plugins, tests and build/release tooling.
 
 Prefer compatible MIT, Apache-2.0, BSD, ISC and similarly permissive licenses.
 Open-source copyleft is not automatically excluded: its conditions must fit the
@@ -15,20 +17,23 @@ Check license files and notices in the pinned source, not just a crate's label.
 
 ## Dependency changes
 
-1. Establish the needed capability, maintained upstream and smallest useful feature
-   set. Reuse a suitable existing dependency before adding another.
-2. Inspect the exact version's license, bundled code/data, native libraries and
+1. Establish the needed capability and the smallest useful feature set.
+2. Reuse a suitable existing dependency if there is one; otherwise choose a library
+   with a maintained upstream.
+3. Inspect the exact version's license, bundled code/data, native libraries and
    enabled optional components, including codec licenses where relevant.
-3. Keep independent plugins' dependency locks and tests in their own projects.
-   Sharing this Git repository does not permit dependency on private host crates.
-   A plugin pins each registry dependency exactly (`=x.y.z`) to the version in its
-   own lock file; `scripts/tests/test_plugin_dependency_pins.py` checks this.
-4. Regenerate the [direct and complete inventories](THIRD_PARTY.md), update the
-   [lock file entries outside the inventory](dependencies/LOCKFILE_ONLY.md), and
-   preserve required copyright/license/source notices in each distributable artifact.
-5. Check maintenance and RustSec advisories for the affected target/features.
-   Record unresolved findings; a clean scan is not proof of safety.
-6. Record the selected license branch and any concrete distribution obligations
+4. For an independent plugin, keep its dependency lock and tests in its own project.
+   - Sharing this Git repository does not permit dependency on private host crates.
+   - A plugin pins each registry dependency exactly (`=x.y.z`) to the version in its
+     own lockfile; `scripts/tests/test_plugin_dependency_pins.py` checks this.
+5. Regenerate the [direct and complete inventories](THIRD_PARTY.md#regenerating-the-inventory).
+6. Update the [lockfile entries outside the inventory](dependencies/LOCKFILE_ONLY.md).
+7. Preserve the required copyright, license and source notices in each distributable
+   artifact ([distribution notices](THIRD_PARTY.md#distribution-notices)).
+8. Check maintenance and the [RustSec](https://rustsec.org/) advisories (the Rust
+   security advisory database) for the affected target and features.
+   - Record unresolved findings; a clean scan is not proof of safety.
+9. Record the selected license branch and any concrete distribution obligations
    when a permissive default does not describe the actual component.
 
 The inventory reports upstream declarations, not an automated compatibility verdict.
@@ -46,7 +51,7 @@ license covers every plugin under `plugins/` (each carries the GPL text as its
 `LICENSE` and declares `license = "GPL-3.0-or-later"`) and the public API/SDK
 workspaces (owner's decision, 23 November 2026), whose `LICENSE` files hold the same
 text. The API/SDK crates' Cargo manifests still declare no `license` field: their
-released archives' checksums are pinned in the plugins' lock files, so each crate gains
+released archives' checksums are pinned in the plugins' lockfiles, so each crate gains
 the field with its next version. Binary releases are accompanied by their
 corresponding source: each release's tagged commit in the public repository, which the
 release notes, the archives' `README.txt` and `BUILD-INFO.json` name. Every dependency
@@ -107,9 +112,10 @@ that date:
   built and checked on Windows. It remains the fallback if the built-in route proves
   insufficient.
 
-**MSI validation and installation test (27 November 2026):** scripts/test-msi-install.py
-runs the Windows SDK's ICE rules (darice.cub) on the MSI through the same msi.dll
-API: it extracts darice.cub with `expand.exe` from the SDK's own
+**MSI validation and installation test (27 November 2026):** `scripts/test-msi-install.py`
+runs the Windows SDK's Internal Consistency Evaluators ([ICE](GLOSSARY.md#ice) rules,
+`darice.cub`), Windows Installer's own validation rules, on the MSI through the same
+msi.dll API: it extracts darice.cub with `expand.exe` from the SDK's own
 MsiVal2-x86_en-us.msi and cabinet in Windows Kits\10\bin\<version>\x86 (installs
 nothing, runs no msival2.exe), merges it into a copy of the MSI and runs its ICE
 actions. The Windows SDK is free with Windows development (Microsoft Software License
@@ -118,7 +124,9 @@ image, a developer's Visual Studio), never downloaded by the script or shipped, 
 without it the check is skipped with a warning. The installation test itself uses only
 msiexec.exe, Windows PowerShell's UI Automation and the GitHub CLI already on the
 hosted runner, and the published MSIs it upgrades are checked against their signed
-SHA256SUMS with scripts/release-signing.py.
+SHA256SUMS with scripts/release-signing.py
+([MSI installation test](RELEASE_BUILD.md#msi-installation-test)).
+
 **Native runtimes:** Windows/system graphics libraries remain governed by their
 vendors; their use does not make the operating system open source. Linux libraries
 retain their distribution's licenses. Rust bindings do not relicense native
@@ -145,10 +153,13 @@ the user with Windows or with the extension; HEVC Video Extensions may be a paid
 item or come with the PC. Midnight Explorer bundles, redistributes and links none of
 them, adds no patent-encumbered codec of its own and pays no codec royalty, so the
 project and its packages stay royalty-free; a missing decoder is named to the user
-(the extension, or on N/KN editions the Media Feature Pack) and never downloaded or
-installed by the application. The helpers bind Media Foundation with the `windows`
-0.62.2 crate (MIT OR Apache-2.0), already in the inventory. Linux is decided below.
+(the extension, or on the N and KN editions of Windows, which ship without media
+features, the Media Feature Pack) and never downloaded or installed by the
+application. The helpers bind Media Foundation with the `windows`
+0.62.2 crate (MIT OR Apache-2.0), already in the inventory. The Linux decision is
+[Platform video decoders (Linux)](#platform-video-decoders-linux).
 
+<a id="platform-video-decoders-linux"></a>
 **Platform video decoders (Linux):** decided 21 November 2026 (user decision: "the
 distribution's own FFmpeg, and if not available then GStreamer"). Video in codecs
 outside the bundled profile is decoded by libraries the user's distribution installed,
