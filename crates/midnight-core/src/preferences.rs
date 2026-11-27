@@ -87,8 +87,8 @@ impl PaneTabPreferences {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PreferenceTheme {
-    #[default]
     Blue = 0,
+    #[default]
     Dark = 1,
     Light = 2,
     Dracula = 3,
@@ -187,7 +187,7 @@ impl PreferenceTheme {
         Self::PlumSmoke,
     ];
 
-    pub const DEFAULT_DARK: Self = Self::Blue;
+    pub const DEFAULT_DARK: Self = Self::Dark;
     pub const DEFAULT_LIGHT: Self = Self::Light;
 
     pub const fn is_light(self) -> bool {

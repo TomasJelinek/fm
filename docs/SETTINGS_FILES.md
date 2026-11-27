@@ -245,8 +245,8 @@ earlier schema, reads as its default.
 
 The former per-dialog "Preserve exact modified time" choice was never saved, so
 schema 43 migrates nothing else ([transfer options](developer/TRANSFER_OPTIONS.md)).
-Earlier profiles, and files that keep both default palettes, open with Blue for dark
-appearance and Light for light appearance and retain their other settings; files with
+Earlier profiles, and files that keep both default palettes, open with Dark for dark
+appearance (Blue until 0.6.3) and Light for light appearance and retain their other settings; files with
 explicit choices keep them, including Pencil Lead and Letterhead.
 
 ### Top-level fields

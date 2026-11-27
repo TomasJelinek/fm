@@ -96,7 +96,7 @@ fn theme_catalog_keeps_original_ids_and_appends_stable_names() {
         (PreferenceTheme::SolarizedLight, "solarized-light"),
         (PreferenceTheme::CarbonGreen, "carbon-green"),
     ];
-    assert_eq!(PreferenceTheme::default(), PreferenceTheme::Blue);
+    assert_eq!(PreferenceTheme::default(), PreferenceTheme::Dark);
     assert!(PreferenceTheme::ALL.len() >= expected.len());
     for (index, (theme, name)) in expected.into_iter().enumerate() {
         assert_eq!(PreferenceTheme::ALL[index], theme);

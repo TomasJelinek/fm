@@ -125,7 +125,8 @@ fn imported() -> UserPreferences {
 
 fn current() -> UserPreferences {
     UserPreferences {
-        dark_theme: PreferenceTheme::Dark,
+        // Blue is not the default dark palette (Dark is), so Reset changes it.
+        dark_theme: PreferenceTheme::Blue,
         bookmarks: vec![bookmark(7, "current", Some(1))],
         ..UserPreferences::default()
     }
@@ -493,7 +494,7 @@ fn reset_waits_for_a_pending_export() {
     let mut h = Harness::new();
     let request = h.choose(true, &native("saved.json"));
     h.p.reset_options(&sender(&h.sent));
-    assert_eq!(h.p.preferences.values.dark_theme, PreferenceTheme::Dark);
+    assert_eq!(h.p.preferences.values.dark_theme, PreferenceTheme::Blue);
     assert!(h.p.preferences.options.reset_status.is_empty());
     h.event(Event::PreferencesExported {
         request,

@@ -134,14 +134,14 @@ fn separate_theme_keys_require_both_recognized_names_in_the_correct_mode() {
 }
 
 #[test]
-fn blue_and_light_are_the_defaults_and_explicit_choices_are_kept() {
-    assert_eq!(PreferenceTheme::DEFAULT_DARK, PreferenceTheme::Blue);
+fn dark_and_light_are_the_defaults_and_explicit_choices_are_kept() {
+    assert_eq!(PreferenceTheme::DEFAULT_DARK, PreferenceTheme::Dark);
     assert_eq!(PreferenceTheme::DEFAULT_LIGHT, PreferenceTheme::Light);
     let old = document(UserPreferences::default());
     assert!(old.get("dark_theme").is_none());
     assert!(old.get("light_theme").is_none());
     let loaded = decode_preferences(&serde_json::to_vec(&old).unwrap()).unwrap();
-    assert_eq!(loaded.dark_theme, PreferenceTheme::Blue);
+    assert_eq!(loaded.dark_theme, PreferenceTheme::Dark);
     assert_eq!(loaded.light_theme, PreferenceTheme::Light);
     let previous_defaults = UserPreferences {
         dark_theme: PreferenceTheme::PencilLead,

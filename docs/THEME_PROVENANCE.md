@@ -47,8 +47,8 @@ this is not a claim about a global popularity ranking.
 | Plum Smoke | `45` / `plum-smoke` | Original palette. Violet-tinted charcoal with a lilac cursor edge and neutral graphite file marks. |
 
 Options groups the catalog by appearance and sorts the names within each group.
-The initial choices are Blue for a dark desktop and Light for a light
-desktop. The saved pair follows operating-system appearance changes.
+The initial choices are Dark for a dark desktop and Light for a light
+desktop (Blue was the dark default from 0.6.0 to 0.6.2). The saved pair follows operating-system appearance changes.
 
 In a dark-theme choice, `dos-commander` is an alias for Amber Terminal. Saving
 that choice writes `amber-terminal`. IDs 0–12 retain their original saved names.
@@ -110,7 +110,7 @@ Slate Blue, Slate Teal and Slate Violet share a neutral charcoal body, darker
 chrome, raised gray controls, near-white main text and readable secondary text.
 Their blue, teal and violet accents distinguish focus, selection and active
 controls while the base surfaces remain neutral. All three use dark native
-widgets. IDs 0–22, their saved names and the Blue default remain unchanged.
+widgets. IDs 0–22 and their saved names remain unchanged.
 
 The user-supplied screenshot informed the surface hierarchy and blue accent of
 Slate Blue. These are original semantic color choices; no screenshot pixels,

@@ -880,8 +880,9 @@ fn reset_always_reports_what_it_did_until_the_next_edit_or_session() {
         "again, the same"
     );
     // A previewed setting: the next edit retires the report, Reset applies.
-    p.change_preferences(1, 0, 0, &send);
-    assert_eq!(p.preferences.values.dark_theme.index(), 1);
+    // Blue (index 0): any dark palette other than the default Dark.
+    p.change_preferences(0, 0, 0, &send);
+    assert_eq!(p.preferences.values.dark_theme.index(), 0);
     assert_eq!(p.preferences.options.reset_status, "", "an edit retires it");
     p.reset_options(&send);
     assert_eq!(

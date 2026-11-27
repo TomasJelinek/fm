@@ -34,7 +34,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     let mut app = App::start(config(&folder, &store));
     if app.window.get_theme_index() != DEFAULT_DARK {
         return Err(format!(
-            "the default dark theme is {} instead of Blue",
+            "the default dark theme is {} instead of Dark",
             app.window.get_theme_index()
         ));
     }
@@ -65,7 +65,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         "Options › Appearance previewing Carbon Black",
     );
     options::cancel(&mut app)?;
-    app.until("Cancel to restore Blue", |app| {
+    app.until("Cancel to restore Dark", |app| {
         app.window.get_theme_index() == DEFAULT_DARK
     });
     if app.window.get_current_app_icon() != harvest {
@@ -75,7 +75,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     let restored = Frame::of(&mut app).mean_luma();
     if (restored - initial_luma).abs() > 2.0 || store.saves() != 0 {
         return Err(format!(
-            "Cancel did not restore Blue: mean luma {initial_luma:.1} before, {restored:.1} after; {} saves",
+            "Cancel did not restore Dark: mean luma {initial_luma:.1} before, {restored:.1} after; {} saves",
             store.saves()
         ));
     }
@@ -248,11 +248,11 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
 
     // Reset to defaults restores the default appearance.
     options::press(&mut app, "Reset to defaults")?;
-    app.until("Blue after Reset to defaults", |app| {
+    app.until("Dark after Reset to defaults", |app| {
         app.window.get_theme_index() == DEFAULT_DARK && app.window.get_density_index() == 0
     });
     for (label, wanted) in [
-        ("Dark theme", "Blue"),
+        ("Dark theme", "Dark"),
         ("Light theme", "Light"),
         (ICON_PICKER, "Harvest Navigator"),
         ("Spacing", SPACING_DESKTOP),
@@ -310,6 +310,6 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         ));
     }
     context.note("All three icon choices displayed distinct window artwork. OK saved Interleave, restart restored it, cancelling Reset kept it, and accepting Reset saved Harvest Navigator.");
-    context.note("Appearance: Cancel restored the previewed theme. Paper Contrast was previewed on a dark host, then the Dark pick. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Blue and Light with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
+    context.note("Appearance: Cancel restored the previewed theme. Paper Contrast was previewed on a dark host, then the Dark pick. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Dark and Light with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
     app.shutdown()
 }

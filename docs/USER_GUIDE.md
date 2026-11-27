@@ -1076,7 +1076,7 @@ current keys. Terms such as [panel](GLOSSARY.md#panel), [tab](GLOSSARY.md#tab) a
   the Updates choices (check at startup, include preview releases).
   In **Appearance**, choose a **Dark theme** and a **Light theme**. Midnight Explorer
   uses the matching choice at startup and when your operating system switches appearance.
-  The 30 dark choices default to **Blue** and the 16 light choices to **Light**.
+  The 30 dark choices default to **Dark** and the 16 light choices to **Light**.
   While Options is open, the theme you picked last, dark or light, is previewed in the
   whole application whatever the system appearance. **OK** saves both choices and shows
   the one that matches the system appearance; **Cancel** restores the previous theme.
