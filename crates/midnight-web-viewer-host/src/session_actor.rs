@@ -232,6 +232,9 @@ impl Signal {
     /// A write to the browser starts. The watchdog learns of it only when it would not wake
     /// by this write's deadline anyway: it keeps timing the latest write for one limit
     /// after it started, so a burst of writes wakes it about once per limit, not per write.
+    /// The notification is sent under the lock: sent after it, the decisions of writes
+    /// that came before the watchdog set its deadline would each wake it again once it
+    /// waits (CI saw four wakeups in a 0.2 ms burst).
     fn busy(&self, limit: Duration) -> Result<(), String> {
         let mut inbox = self.inbox.lock().map_err(|_| WATCHDOG_UNAVAILABLE)?;
         let now = Instant::now();
@@ -240,10 +243,10 @@ impl Signal {
         let untimed = now
             .checked_add(limit)
             .is_some_and(|deadline| inbox.watch.is_none_or(|watch| watch > deadline));
-        drop(inbox);
         if untimed {
             self.watchdog.notify_one();
         }
+        drop(inbox);
         Ok(())
     }
 
