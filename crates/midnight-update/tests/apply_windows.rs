@@ -3,7 +3,9 @@
 //! moment, and when the file stays held it puts everything back.
 use crate::apply::{Behaviour, FakeLauncher, fast, setup};
 use midnight_update::apply::{self, Outcome, Timings};
-use std::{cell::RefCell, fs::OpenOptions, os::windows::fs::OpenOptionsExt, time::Duration};
+use std::{
+    cell::RefCell, fs::OpenOptions, os::windows::fs::OpenOptionsExt, process::Stdio, time::Duration,
+};
 
 fn held(path: &std::path::Path) -> std::fs::File {
     // Share nothing: no rename, delete or write while this handle is open.
@@ -75,11 +77,19 @@ fn a_running_executable_can_be_renamed() {
     let folder = tempfile::tempdir().unwrap();
     let copy = folder.path().join("child.exe");
     std::fs::copy(std::env::var_os("ComSpec").unwrap(), &copy).unwrap();
+    // The copied command interpreter reads commands from a pipe that stays open: it runs
+    // until killed and starts no program of its own that would outlive it.
     let mut child = std::process::Command::new(&copy)
-        .args(["/c", "ping -n 3 127.0.0.1 >NUL"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .unwrap();
     std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the program is running"
+    );
     let moved = folder.path().join("moved.exe");
     let result = std::fs::rename(&copy, &moved);
     let _ = child.kill();
