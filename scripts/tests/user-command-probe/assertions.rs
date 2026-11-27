@@ -134,7 +134,10 @@ fn publish(source: &Path, destination: &Path) {
     }
 }
 pub(crate) fn wait(child: &mut dyn TerminalProcess) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // A guard against a hang, not a duration: the shell and helper end within seconds,
+    // but a hosted runner's first Windows PowerShell start once took longer than 15 s
+    // (and another over 60 s in test_deploy_build).
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             assert!(status.success());
