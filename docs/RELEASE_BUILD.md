@@ -10,8 +10,9 @@ default to debug, producing `_build/debug/midnight-explorer.exe` or
 `_build/debug/midnight-explorer`. For a focused host-code change, build only
 `midnight-explorer` with Cargo, and rebuild plugins when their own code or API changes. Plugin trust and deployment requirements apply in debug
 too. Build release for final integration and packaging or for a specific performance
-comparison, not after every UI edit: fat LTO and one code-generation unit trade build
-time for the published binary.
+comparison, not after every UI edit: fat [LTO](GLOSSARY.md#lto) (link-time
+optimization across the whole program) and one code-generation unit trade build time
+for the published binary.
 
 OS baselines, runtime dependencies and build RAM and storage allowances are in the
 [system requirements](SYSTEM_REQUIREMENTS.md). Test a release on those baselines: a
@@ -33,18 +34,20 @@ The workspace release profile (`[profile.release]` in `Cargo.toml`):
   overrides.
 
 Each independently built viewer, thumbnailer and filesystem plugin also strips its
-release binaries. The Linux HTML packager verifies the pinned CEF SDK and runs
-GNU `strip --strip-unneeded` on staged copies of its four ELF binaries before
-writing the runtime inventory. The final ZIP and tarball check rejects debug
-sidecars, embedded debug information and full symbol tables across the application
-and its workers. Dynamic exports, unwind data, build IDs and references to external
-PDBs support loading and diagnostics and may be present in a release image.
+release binaries. The Linux HTML packager verifies the pinned [CEF](GLOSSARY.md#cef)
+(Chromium Embedded Framework) SDK and runs GNU `strip --strip-unneeded` on staged
+copies of its four ELF binaries before writing the runtime inventory. The final ZIP
+and tarball check rejects debug sidecars, embedded debug information and full symbol
+tables across the application and its [workers](GLOSSARY.md#worker). Dynamic exports,
+unwind data, build IDs and references to external PDBs support loading and
+diagnostics and may be present in a release image.
 The [0.6.0 payload checks](verification/2026-11-25-release-payload.md) record
 the measured changes and native Chromium rendering results.
 
 A same-source Windows comparison of this profile reduced the executable from 42,425,856 to
 37,096,448 bytes (12.56%), with overlapping native resize and redraw timings across six
-alternating runs per profile ([record](verification/2026-11-07-release-optimization.md));
+alternating runs per profile
+([release optimization verification](verification/2026-11-07-release-optimization.md));
 it was not repeated on Linux.
 
 File integrity, bounds checks, native identity validation and explicit confirmation
@@ -60,12 +63,15 @@ and the [Rust PGO workflow](https://doc.rust-lang.org/rustc/profile-guided-optim
 
 ## Building a release
 
-Run `build.bat release` or `./build.sh release` (Cargo's `--release`), then smoke-test
-that executable. Adding `--validate` also runs CI's tests for the platform and the
-installed smoke test of that release build
-([full validation](developer/TEST_EXECUTION.md#full-validation)).
+1. Run `build.bat release` (Windows) or `./build.sh release` (Linux), which build with
+   Cargo's `--release`.
+   - Adding `--validate` also runs CI's tests for the platform and the installed smoke
+     test of that release build
+     ([full validation](developer/TEST_EXECUTION.md#full-validation)).
+2. Smoke-test the executable in `_build/release/`.
 
-The helpers build the host and its authorization helper (`midnight-elevation`), then
+The helpers build the host and its [authorization helper](GLOSSARY.md#elevated-listing-helper)
+(`midnight-elevation`), then
 the platform's native and network filesystem packages, the six viewer packages, both
 thumbnail workers and the archive worker against the public APIs and SDKs, and stage
 them in `filesystems/`, `viewers/` and `thumbnailers/` beside the executable. Every
@@ -83,11 +89,11 @@ generated notices, and the thumbnail folder as a whole, so files of a dependency
 FFmpeg version that is no longer shipped never reach a deployment or archive. The
 native helper's test and offline options are in the
 [native filesystem build instructions](developer/NATIVE_FILESYSTEM_API.md#building-the-native-package);
-the network helper has the same options, and its
-[guide](../plugins/midnight-filesystem-network/README.md) covers its Linux system
-runtime. Both use the shared filesystem package helper, which stages all inputs before
-it replaces an installed library. Each plugin has its own lockfile, tests, release
-profile and third-party notices.
+the network helper has the same options, and the
+[network filesystem plugin README](../plugins/midnight-filesystem-network/README.md)
+covers its Linux system runtime. Both use the shared filesystem package helper, which
+stages all inputs before it replaces an installed library. Each plugin has its own
+lockfile, tests, release profile and third-party notices.
 
 CI and full validation run the workspace tests in the debug test profile (the plugin
 jobs use their own profiles) and, against a release build, the installed filesystem
@@ -96,6 +102,26 @@ filesystem packages with `scripts/package-release.py validate-filesystems` and r
 that smoke test; it does not package or publish. Release builds take longer and may
 use more RAM because of whole-program optimization.
 
+### Build environment variables
+
+The build helpers set what they need themselves. These variables let a caller supply
+inputs or change a helper's behavior:
+
+| Variable | Value | Effect |
+| --- | --- | --- |
+| `MIDNIGHT_ELEVATED_LISTING` | absolute path of the built `midnight-elevated-listing` (`.exe` on Windows) | `crates/midnight-explorer/build.rs` records that file's SHA-256 in the executable ([Authorization helper digest](#authorization-helper-digest)). Unset or empty: no digest is recorded. `build.bat`, `build.sh`, the `validate` host build and the CI release job set it. |
+| `MIDNIGHT_FFMPEG_PREFIX` | a prebuilt FFmpeg 9.0.2 installation prefix (on Windows an MSVC build) | Used instead of building FFmpeg for the video thumbnail and playback workers. Windows builds require it; Linux builds the pinned FFmpeg when it is unset. Needs `MIDNIGHT_FFMPEG_SOURCE_ARCHIVE` and `LIBCLANG_PATH` too. |
+| `MIDNIGHT_FFMPEG_SOURCE_ARCHIVE` | the FFmpeg 9.0.2 source archive | The corresponding source shipped with that prefix's libraries; refused unless it matches the pinned SHA-256. |
+| `LIBCLANG_PATH` | libclang's library folder | Generates the FFmpeg bindings of the video workers. When it is unset, the Linux build searches `/usr/lib/llvm-*/lib`, the usual library folders and `llvm-config --libdir`. |
+| `CEF_PATH` | on Linux, the root of a CEF SDK | Used instead of the downloaded CEF SDK after every file is checked against the pinned digests. On Windows it may name only the build's own verified `cef-sdk` folder. |
+| `MIDNIGHT_HTML_TARGET_DIR` | Windows: an absolute drive path of plain folder names, such as `D:\mh` | Cargo target folder of the HTML viewer, short enough that CEF's objects stay below the 260-character MSVC path limit; inside the checkout it must be below `_build`. |
+| `MIDNIGHT_VIEWER_SDK_CONFIG`, `MIDNIGHT_IMAGE_VIEWER_SDK_CONFIG`, `MIDNIGHT_HTML_SDK_CONFIG`, `MIDNIGHT_THUMBNAIL_SDK_CONFIG`, `MIDNIGHT_ARCHIVE_SDK_CONFIG` | path of a packaged public SDK bundle's Cargo configuration file | The viewer, image and PDF viewer, HTML viewer, thumbnail or archive build uses that bundle instead of packaging the public SDK, unless its own SDK argument is given. |
+| `MIDNIGHT_VIEWERS_OFFLINE` | `1` | The viewer, thumbnail and archive builds run Cargo offline. |
+| `MIDNIGHT_THUMBNAILERS_OFFLINE`, `MIDNIGHT_ARCHIVE_OFFLINE` | `1` | Only the thumbnail or only the archive build runs offline. |
+
+The variables of the extracted-installation check are in
+[Before publishing](#before-publishing).
+
 ### Build output and links
 
 The build helpers in `scripts/`, the viewer plugins' build scripts, the image, PDF and
@@ -103,7 +129,7 @@ thumbnail plugins' Linux CI scripts, the archive worker's Linux build script, th
 decoder's native helpers (`plugins/image-decoder/native`), the release packager and the
 test runners follow one rule for generated output:
 
-- Output lies strictly below the checkout's own `_build`, recognised however a path
+- Output lies strictly below the checkout's own `_build`, recognized however a path
   spells the checkout, or, outside the checkout, below the first `_build` of a custom
   target directory. That `_build` and every folder below it must not be a link,
   junction or other reparse point; the checkout and the folders above it may be (links,
@@ -151,8 +177,10 @@ nothing behind when it is refused.
 A release consists of a Windows x64 ZIP and a Linux x86-64 GNU/glibc tar.gz, from 0.6.1
 on a Windows installer (MSI) made from that ZIP ([Windows installer](#windows-installer-msi)),
 plus a `SHA256SUMS` file and, from 0.5.1 on, its signature `SHA256SUMS.minisig`
-([signing](#signing-the-release)): the [0.1.0](releases/0.1.0.md), [0.5.0](releases/0.5.0.md),
-[0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md), [0.5.3](releases/0.5.3.md), [0.5.4](releases/0.5.4.md), [0.6.0](releases/0.6.0.md), [0.6.1](releases/0.6.1.md) and [0.6.2](releases/0.6.2.md) previews. Linux archives
+([signing](#signing-the-release)). Every release so far is a preview: [0.1.0](releases/0.1.0.md), [0.5.0](releases/0.5.0.md),
+[0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md), [0.5.3](releases/0.5.3.md),
+[0.5.4](releases/0.5.4.md), [0.6.0](releases/0.6.0.md), [0.6.1](releases/0.6.1.md),
+[0.6.2](releases/0.6.2.md) and [0.6.3](releases/0.6.3.md), the current one. Linux archives
 are built on Ubuntu 24.04; native Fedora, openSUSE and other desktop tests are pending
 (PLAT-02). The Windows executable and the MSI are unsigned (REL-03): the checksums
 establish download integrity, not code signing.
@@ -187,9 +215,12 @@ Python 3.11 or later and its standard library. It neither builds nor publishes.
 The packager's tests run with `python -B -m unittest discover -s scripts/tests -v`, and
 CI's `scripts-and-lint` job runs them on Windows and Linux.
 
-Example after the Windows build and checks (PowerShell, Python installed):
+Example after the Windows build and checks of 0.6.3, in PowerShell 7 at the repository
+root with Python installed. `$sysroot` holds the toolchain's sysroot, whose
+`share/doc/rust` folder `--rust-docs` names:
 
 ```powershell
+$sysroot = (rustc --print sysroot)
 cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc |
     Out-File -Encoding utf8 _build/windows-metadata.json
 cargo tree -p midnight-explorer --locked --target x86_64-pc-windows-msvc `
@@ -199,11 +230,11 @@ python -B scripts/package-release.py --binary _build/release/midnight-explorer.e
     --metadata _build/windows-metadata.json --target x86_64-pc-windows-msvc `
     --dependency-list _build/windows-dependencies.txt `
     --format zip --readme packaging/windows/README.txt `
-    --revision (git rev-parse HEAD) --rust-docs "RUST_SYSROOT/share/doc/rust" `
-    --license-overrides packaging/licenses --output _build/releases/v0.6.0
+    --revision (git rev-parse HEAD) --rust-docs "$sysroot/share/doc/rust" `
+    --license-overrides packaging/licenses --output _build/releases/v0.6.3
 ```
 
-Replace `RUST_SYSROOT` with the output of `rustc --print sysroot`. For Linux, use the
+For Linux, use the
 Linux binary, metadata and target (`x86_64-unknown-linux-gnu`), `--format tar.gz`,
 `--readme packaging/linux/README.txt` and
 `--desktop-entry packaging/linux/io.github.TomasJelinek.MidnightExplorer.desktop`.
@@ -225,7 +256,7 @@ An archive contains:
   `ASSET_PROVENANCE.md`, `THEME_PROVENANCE.md` and the application icon;
 - `BUILD-INFO.json` with the version, target, source revision, Rust version and the
   executable's SHA-256, and the manifests, file sizes and SHA-256 values of the
-  authorization helper and every module;
+  authorization helper and every module ([BUILD-INFO.json](#build-infojson));
 - `Cargo.lock`, the dependency inventory (`THIRD-PARTY.json` and `THIRD-PARTY.txt`)
   and the original license texts under `licenses/`, including the Rust standard
   library's and the adapted themes';
@@ -235,6 +266,45 @@ Everything lies below one folder, `midnight-explorer-<version>-<target>/`, and t
 archive is named after it. The update check installs only an archive with exactly
 this layout whose `BUILD-INFO.json` matches its files
 ([Updates](developer/UPDATES.md#trust)), so do not repack or rename it.
+
+### BUILD-INFO.json
+
+`scripts/package-release.py` writes `BUILD-INFO.json` at the top of the release folder:
+one JSON object in UTF-8, indented, ending with a newline.
+
+| Field | Type | Meaning | Example |
+| --- | --- | --- | --- |
+| `version` | string | The workspace version. | `"0.6.3"` |
+| `target` | string | The Rust target of the build. | `"x86_64-pc-windows-msvc"` |
+| `revision` | string | The packaged commit, the full 40-character Git revision. | |
+| `profile` | string | Always `"release"`. | `"release"` |
+| `rust` | string | The toolchain channel of `rust-toolchain.toml`. | `"1.99.1"` |
+| `binary` | string | The executable's file name. | `"midnight-explorer.exe"` |
+| `binary_sha256` | string | The executable's SHA-256, 64 lowercase hexadecimal digits. | |
+| `authorization_helper` | [file record](#file-records) | `midnight-elevated-listing` (`.exe` on Windows). | |
+| `viewer_plugins` | array of objects | One per viewer package: `id`, `version`, `target`, `package_sha256` and `files` ([file records](#file-records)); a worker viewer adds `kind` (`"image-viewer-worker"` or `"web-viewer-worker"`), `protocol`, `entry_executable` and `extensions`, a native viewer `abi_major`, `entry_library` and `models`. | |
+| `filesystem_plugins` | array of objects | One per filesystem package: the fields of its package manifest plus `package_sha256` and `files`. | |
+| `thumbnail_workers` | object | `providers` (the thumbnail providers' manifests), `target`, `package_sha256` and `files`. | |
+
+#### File records
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | string | The file's path in the release folder, with `/` separators, for example `"thumbnailers/avcodec-63.dll"`. |
+| `bytes` | number | The file's size. |
+| `sha256` | string | The file's SHA-256, 64 lowercase hexadecimal digits. |
+| `executable` | boolean | Whether the archive gives the file mode 0755. |
+
+A `package_sha256` is the SHA-256 of the package's file records written as compact
+JSON with sorted keys.
+
+The updater reads `version`, `target`, `binary` and `binary_sha256` and checks every
+object anywhere in the file that has a `path` and a `sha256`, with its `bytes` where
+given ([Updates, Trust](developer/UPDATES.md#trust)). It refuses a `BUILD-INFO.json`
+larger than 16 MiB. An MSI installs every file except `BUILD-INFO.json`
+([Windows installer](#windows-installer-msi)).
+
+### Module checks
 
 The packager validates every module before copying it:
 
@@ -264,11 +334,12 @@ authority; image decoding also runs in the required restricted worker.
 
 **Retry with authorization** uses the shipped `midnight-elevated-listing` only from a
 folder that no other account can change. An executable that records the helper's digest
-(below) accepts the shipped helper also in the user's own installation (the per-user
-MSI, a ZIP extracted into the profile); one without it accepts only an installation that
-an administrator (Windows, for example below `C:\Program Files`) or root (Linux, for
-example `/opt/midnight-explorer`) made. Where the helper cannot be used, a denied
-folder's message offers no retry and says why. Packages built before these checks used
+([Authorization helper digest](#authorization-helper-digest)) accepts the shipped helper
+also in the user's own installation (the per-user MSI, a ZIP extracted into the
+profile); one without it accepts only an installation that an administrator (Windows,
+for example below `C:\Program Files`) or root (Linux, for example
+`/opt/midnight-explorer`) made. Where the helper cannot be used, a denied folder's
+message offers no retry and says why. Packages built before these checks used
 the shipped helper from any folder; see
 [the authorization helper](../SECURITY.md#directory-authorization-helper) for what
 their users must replace or delete.
@@ -281,7 +352,7 @@ their users must replace or delete.
 `MIDNIGHT_AUTHORIZATION_HELPER_SHA256=<digest>;`; unset, the record is empty. The helper
 must be built before the executable that records it, so `build.bat`, `build.sh`, the
 `validate` host build and the CI release job build only the helper first and then both
-packages with the variable naming that helper:
+packages with the variable naming that helper. In PowerShell at the repository root:
 
 ```powershell
 cargo build -p midnight-explorer -p midnight-elevation --bin midnight-elevated-listing --release --locked
@@ -295,7 +366,8 @@ then ship exactly that helper; a different one is refused at run time as altered
 retry is not offered), never trusted. `scripts/package-release.py` refuses an executable
 without a recorded digest or with one that differs from the packaged helper, and
 `package-release.py check-authorization-helper --binary EXECUTABLE --target TARGET`
-(run by the CI release job) checks a build. The variable is not a run-time setting, and
+(run by the CI release job; a synopsis, with the executable's path and its Rust target
+in place of the capitals) checks a build. The variable is not a run-time setting, and
 a digest kept in a data file such as `BUILD-INFO.json` would not do: anything beside the
 executable in a per-user installation can be changed by its user.
 
@@ -304,22 +376,43 @@ application keeps its AboutSlint widget. Midnight Explorer is GPL-3.0-or-later, 
 published release must have its corresponding source available: push the release tag
 (`v<version>`) for the packaged commit before publishing the archives.
 
-Before publishing, run `scripts/package-msi.py verify` on the MSI, unpack both archives,
-compare the executable hashes with the tested
-artifacts, run the unpacked executables' filesystem and UI smoke checks, inspect the
-ELF requirements and the archive paths and permissions, and verify `SHA256SUMS`. A
-Windows ZIP carries no NTFS permissions, so the build scripts' read-and-execute grant
-for the workers' AppContainer on the FFmpeg libraries and playback helpers is not in
-it; the application adds it at run time in a private installation
-([SECURITY.md](../SECURITY.md#the-workers-grant-on-installed-files)). Check that with
-the unpacked ZIP's `thumbnailers` folder, which must not name the workers' SID:
-`MIDNIGHT_THUMBNAILERS_TEST_PACKAGE=<unpacked>\thumbnailers` and a private
-`HOST_TEST_INSTALL_ROOT` (as `scripts/validate.ps1` makes it), then
-`cargo test -p midnight-thumbnail-host --test integration extracted_installation -- --ignored`
-and `cargo test -p midnight-media-host --test extracted_installation -- --ignored`: both
-copy the folder as an extraction does and start the video thumbnail helper and both
-playback helpers. Do not
-include private preferences, caches, toolchains, PDBs or generated intermediate
+### Before publishing
+
+1. Run `scripts/package-msi.py verify` on the MSI ([Windows installer](#windows-installer-msi)).
+2. Unpack both archives.
+3. Compare the unpacked executables' hashes with those of the tested artifacts.
+4. Run the unpacked executables' filesystem and UI smoke checks.
+5. Inspect the ELF requirements and the archive paths and permissions.
+6. Check the workers' grant on the unpacked ZIP's `thumbnailers` folder, as the next
+   steps describe.
+   - A Windows ZIP carries no NTFS permissions, so the build scripts' read-and-execute
+     grant for the workers' [AppContainer](GLOSSARY.md#appcontainer) on the FFmpeg
+     libraries and playback helpers is not in it; the application adds it at run time
+     in a private installation, one that no other account can change
+     ([SECURITY.md](../SECURITY.md#the-workers-grant-on-installed-files)).
+   - The unpacked folder must not name the workers' SID.
+7. Set `MIDNIGHT_THUMBNAILERS_TEST_PACKAGE` to the unpacked ZIP's `thumbnailers` folder,
+   for example after unpacking into `_build/release-check`:
+
+   ```powershell
+   Expand-Archive _build/releases/v0.6.3/midnight-explorer-0.6.3-x86_64-pc-windows-msvc.zip -DestinationPath _build/release-check
+   $env:MIDNIGHT_THUMBNAILERS_TEST_PACKAGE = (Resolve-Path _build/release-check/midnight-explorer-0.6.3-x86_64-pc-windows-msvc/thumbnailers).Path
+   ```
+
+8. Set `HOST_TEST_INSTALL_ROOT` to a new private folder, as
+   [Private installation root](developer/TEST_EXECUTION.md#private-installation-root)
+   creates it (`scripts/validate.ps1` makes it the same way).
+9. Run the two ignored tests, which copy the folder as an extraction does and start the
+   video thumbnail helper and both playback helpers:
+
+   ```powershell
+   cargo test -p midnight-thumbnail-host --test integration extracted_installation -- --ignored
+   cargo test -p midnight-media-host --test extracted_installation -- --ignored
+   ```
+
+10. Verify `SHA256SUMS` ([Signing the release](#signing-the-release)).
+
+Do not include private preferences, caches, toolchains, PDBs or generated intermediate
 objects.
 
 ### Windows installer (MSI)
@@ -329,14 +422,14 @@ objects.
 with Python 3.11 or later and needs nothing else: it writes the database with the
 Windows Installer API (`msi.dll`) and the cabinet with `makecab.exe`, and checks it with
 `expand.exe`, all part of Windows ([tool choice](DEPENDENCY_POLICY.md#current-decisions)).
-It neither builds nor publishes.
+It neither builds nor publishes. For 0.6.3, in PowerShell at the repository root:
 
 ```powershell
 python -B scripts/package-msi.py build `
-    --zip _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.zip
+    --zip _build/releases/v0.6.3/midnight-explorer-0.6.3-x86_64-pc-windows-msvc.zip
 python -B scripts/package-msi.py verify `
-    --msi _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.msi `
-    --zip _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.zip
+    --msi _build/releases/v0.6.3/midnight-explorer-0.6.3-x86_64-pc-windows-msvc.msi `
+    --zip _build/releases/v0.6.3/midnight-explorer-0.6.3-x86_64-pc-windows-msvc.zip
 ```
 
 `build` writes below the checkout's `_build` (`--output` names another folder there) and
@@ -360,15 +453,17 @@ refuses an existing MSI.
   - **Just for me** (default): per user, without administrator rights or a UAC prompt,
     into `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, the 0.6.1 per-user MSI's
     folder. `%LOCALAPPDATA%\Programs\Midnight Explorer` is left to the application's
-    own **Move to my profile…** copy.
+    own **Move to my profile…** copy, which the shared-installation notice offers
+    ([Shared installations](USER_GUIDE.md#shared-installations)).
   - **For all users:** per machine into `C:\Program Files\Midnight Explorer (MSI)`;
     the Install button carries the UAC shield and Windows Installer asks for consent
-    when installation starts. Not `C:\Program Files\Midnight Explorer`, which the
-    user guide names for an administrator's copy of a build. The package sets no
-    permissions, so the folder inherits Program Files' (only administrators can
-    change it).
+    when installation starts. Not `C:\Program Files\Midnight Explorer`, which is left
+    to an administrator's own copy of a build ([Build and run](USER_GUIDE.md#build-and-run)).
+    The package sets no permissions, so the folder inherits Program Files' (only
+    administrators can change it).
 
-  The `INSTALLDIR` property follows the scope: `Directory` puts it below
+  The `INSTALLDIR` property follows the scope ([MSI properties](#msi-properties)):
+  `Directory` puts it below
   `ProgramFiles64Folder`, and the property-setting action `SetUserInstallFolder` sets the
   per-user folder before `CostFinalize` when the installation is per user and no
   `INSTALLDIR` is given; the dialog's Install button sets `ALLUSERS=2`,
@@ -376,7 +471,8 @@ refuses an existing MSI.
   or `[%ProgramW6432]\...`) for its choice, because the folder properties of the
   dialog's session do not change with the scope. Without the dialog,
   `msiexec /i <msi> /qn` installs per user and `msiexec /i <msi> /qn ALLUSERS=1` (or
-  `MSIINSTALLPERUSER=""`) per machine from an elevated prompt; the dialog's Install
+  `MSIINSTALLPERUSER=""`) per machine from an elevated prompt (synopses: `<msi>` is the
+  MSI's path); the dialog's Install
   overrides an `INSTALLDIR` from the command line. A Start menu shortcut **Midnight
   Explorer**, in the user's or the all-users Start menu, starts the executable in the
   user's profile folder, like the Desktop shortcut of `scripts/deploy-private.ps1`: per
@@ -409,11 +505,12 @@ refuses an existing MSI.
   per-user `INSTALLDIR` and the dialog's preselected scope), no `Binary` table and no
   services. Each folder is one component whose key path is a value under
   `Software\Midnight Explorer Installer` with registry root -1: HKCU per user, HKLM per
-  machine. That key and the installed folders, once empty, are removed on uninstall.
+  machine ([Registry values](#registry-values)). That key and the installed folders,
+  once empty, are removed on uninstall.
   Settings, caches and update downloads in `%LOCALAPPDATA%\Midnight Explorer` are never
   touched.
 - **Updates:** the application swaps in place only a folder with `BUILD-INFO.json`,
-  which the MSI leaves out. From 0.6.3, an installed copy finds
+  which the MSI leaves out. From 0.6.3, an MSI installation finds
   its installation through Windows Installer (the product of this `UpgradeCode` whose
   `InstallLocation`, set from `INSTALLDIR` by `SetInstallLocation`, is its folder, in
   the per-user or the per-machine context) and updates with the next release's MSI: the
@@ -421,11 +518,11 @@ refuses an existing MSI.
   checks it against its line in the signed `SHA256SUMS` and runs
   `msiexec /i <msi> /passive /norestart` with `ALLUSERS=2 MSIINSTALLPERUSER=1` (per
   user) or `ALLUSERS=1` (per machine, through UAC) and `INSTALLDIR` set to the copy's
-  folder ([Updates](developer/UPDATES.md#windows-installer-copies)). The MSI therefore
+  folder ([MSI installations](developer/UPDATES.md#msi-installations)). The MSI therefore
   must keep its name, its `UpgradeCode`, `SetInstallLocation`, the `INSTALLDIR`
   property and its major upgrade, and its line must be in the signed `SHA256SUMS`
-  ([signing](#signing-the-release)); a release without it offers MSI copies the release
-  page. No marker file is added: Windows Installer's own records identify the copy,
+  ([signing](#signing-the-release)); a release without it offers MSI installations the
+  release page. No marker file is added: Windows Installer's own records identify the copy,
   also for a copy installed by 0.6.1. That version cannot run the hand-off itself; its
   users run a newer MSI once by hand. The first update through the hand-off is from an
   installed 0.6.3 to the release after it.
@@ -447,10 +544,10 @@ refuses an existing MSI.
   installed paths, and every file of the embedded cabinet, extracted with `expand.exe`,
   byte for byte against its ZIP entry. An administrative installation of an MSI made
   from the 0.6.0 ZIP extracted every file unchanged
-  ([record](verification/2026-11-26-release-msi.md)), as did one of a dual-purpose
-  stand-in, whose per-user costing resolved the per-user folders
-  ([record](verification/2026-11-26-dual-scope-msi.md)). Real installations run in CI
-  (below).
+  ([MSI extraction verification](verification/2026-11-26-release-msi.md)), as did one of
+  a dual-purpose stand-in, whose per-user costing resolved the per-user folders
+  ([dual-scope MSI verification](verification/2026-11-26-dual-scope-msi.md)). Real
+  installations run in CI ([MSI installation test](#msi-installation-test)).
 - **Release notes:** describe the one MSI with both choices: Just for me (no
   administrator rights, `%LOCALAPPDATA%\Programs\Midnight Explorer (MSI)`, updates an
   installed per-user MSI) and For all users (administrator approval,
@@ -459,88 +556,166 @@ refuses an existing MSI.
   Windows and Linux, checks the payload rules and the database plan on both and, on
   Windows, builds and verifies an MSI of a small stand-in release. CI does not package
   releases, so the release MSI itself is built on the owner's machine with the ZIP.
-- **Installation test (CI):** the Windows leg of CI's `release` job installs the MSI for
-  real on its disposable hosted runner (an administrator) with
-  `scripts/test-msi-install.py`, after the release build and this run's plugin
-  packages:
-  1. `stand-in` writes a release-shaped ZIP from the job's release
-     `midnight-explorer.exe` and `midnight-elevated-listing.exe` and its viewer and
-     filesystem packages (no thumbnailers and stand-in notices: CI does not build the
-     full release), with the checks of `package-release.py`'s layout that
-     `package-msi.py` applies; `prepare` builds its MSI and that of a copy versioned
-     0.0.1 (same files, README and `BUILD-INFO.json` rewritten).
-  2. `ice` runs the Windows SDK's ICE rules (`darice.cub`, see the
-     [dependency policy](DEPENDENCY_POLICY.md#current-decisions)). Errors beyond the
-     recorded findings fail the job. Recorded (REL-05): ICE03 for every column, as the
-     package has no `_Validation` table; ICE20 for the missing `FilesInUse` dialog,
-     `ErrorDialog` property and `AdminUISequence` closing dialogs; ICE57 for the
-     `StartMenuShortcut` component (per-user data, scope-dependent key path).
-  3. `previous` downloads the published per-user MSIs older than the workspace
-     version (0.6.1 now, 0.6.2 too once the version moves on) and checks each against its release's signed
-     `SHA256SUMS`.
-  4. `run --disposable-machine` refuses to start when any product with the MSI's
-     `UpgradeCode`, either install folder, shortcut or registry key exists, and then,
-     with `msiexec /qn /l*v`, for **Just for me** (`ALLUSERS=2 MSIINSTALLPERUSER=1`)
-     and then **For all users** (`ALLUSERS=1`): installs 0.0.1, upgrades it to the
-     release (0.0.1 removed), refuses 0.0.1 again (exit 1603 and the "A newer version"
-     message), starts the installed `midnight-explorer.exe --smoke-test` (which must
-     report a private installation) and `--ui-smoke-test --software`, deletes the
-     executable, `README.txt` and the deepest file and repairs (`/fomus`). After every
-     installation it checks Windows Installer's record of the scope and version, every
-     installed file against the ZIP (byte for byte, nothing extra), the
-     `Software\Midnight Explorer Installer` values in HKCU or HKLM, the Start menu
-     shortcut's target and start folder (the user's profile, or the literal
-     `%USERPROFILE%` for all users) and the Installed apps entry (name, version,
-     publisher, install location and existing icon). The all-users folder's permissions
-     may grant changes only to SYSTEM, Administrators, TrustedInstaller and CREATOR
-     OWNER or what Program Files itself grants. Just for me is removed before For all
-     users is installed, then installed again beside it: both are listed, and each
-     `msiexec /x` removes exactly one scope, leaving no files, folders, shortcut, key or
-     entry. Then each published MSI is installed and upgraded in place by the release
-     (per user) and removed. A marker in `%LOCALAPPDATA%\Midnight Explorer` must
-     survive every removal.
-  5. `run --scenario ui` installs through the dialogs: `scripts/msi-ui-install.ps1`
-     starts `msiexec /i` with its full UI, clicks Just for me or For all users in
-     ScopeDlg, presses the Install button that the choice shows and Finish, and the same
-     checks follow, then removal. It is new on the hosted runners and so does not fail
-     the job (`continue-on-error`) until it has passed there.
 
-  The logs of every `msiexec` run (and a screenshot of a UI failure) are uploaded as
-  the `msi-install-logs` artifact. `run --dry-run` prints the plan anywhere without
-  changing anything; never run the test without `--dry-run` on a machine whose
-  installation or settings matter. Not covered: the UAC prompt (the runner is already
-  elevated), a second account starting the all-users copy, **Retry with authorization**,
-  the thumbnailers and HTML viewer that a real release ZIP adds, and a ZIP made by
-  `package-release.py` itself.
+#### MSI properties
+
+The properties that choose the installation, as the package defines them and as
+`msiexec` accepts them on its command line:
+
+| Property | Default in the package | Meaning |
+| --- | --- | --- |
+| `ALLUSERS` | `2` | With `MSIINSTALLPERUSER=1`: per user. `1` on the command line, or `2` with an empty `MSIINSTALLPERUSER`: per machine. |
+| `MSIINSTALLPERUSER` | `1` | `1`: per user; empty (`MSIINSTALLPERUSER=""`): per machine. |
+| `INSTALLDIR` | below `ProgramFiles64Folder`; per user `SetUserInstallFolder` sets `[LocalAppDataFolder]Programs\Midnight Explorer (MSI)\` | The installation folder. The update hand-off passes the installed copy's folder. |
+| `ME_SCOPE` | `user` | The dialog's choice, `user` or `machine`; `SetMachineScope` preselects `machine` for a per-machine command line or when only an all-users copy exists. |
+| `ME_USER_COPY`, `ME_MACHINE_COPY` | not set | Set by `AppSearch` when the `RootFolder` value exists in HKCU (`ME_USER_COPY`) or HKLM (`ME_MACHINE_COPY`), so the dialog can say that the other scope's copy stays installed. |
+| `MEUSERPROFILE` | `%USERPROFILE%` | The Start menu shortcut's start folder; per user `SetShortcutWorkingFolder` sets it to `[%USERPROFILE]`. |
+| `ARPINSTALLLOCATION` | set by `SetInstallLocation` to `[INSTALLDIR]` | Windows Installer's `InstallLocation`, by which the application finds an MSI installation. |
+| `UpgradeCode` | `{DDF2A2BA-6901-484C-97B2-4EF662BF5E72}` | Fixed for every MSI of the product. |
+| `ProductCode`, `ProductVersion` | derived from the version | One product code per version. |
+| `ARPNOMODIFY` | `1` | Add/Remove Programs offers Remove and Repair, not Change. |
+
+#### Registry values
+
+Under `Software\Midnight Explorer Installer`, in HKCU per user and HKLM per machine
+(registry root -1), each value is a DWORD `1` that serves as a component's key path:
+
+| Value | Component |
+| --- | --- |
+| `RootFolder` | The installation folder; `AppSearch` looks for it in the other scope. |
+| one value per subfolder, named after its component | That subfolder. |
+| `StartMenuShortcut` | The Start menu shortcut. |
+
+#### MSI installation test
+
+The Windows leg of CI's `release` job installs the MSI for real on its disposable hosted
+runner (an administrator) with `scripts/test-msi-install.py`, after the release build
+and this run's plugin packages. Its commands, in order:
+
+1. `stand-in` writes a release-shaped ZIP.
+   - It holds the job's release `midnight-explorer.exe` and
+     `midnight-elevated-listing.exe` and its viewer and filesystem packages, with
+     stand-in notices and no thumbnailers: CI does not build the full release.
+   - It passes the checks of `package-release.py`'s layout that `package-msi.py`
+     applies.
+2. `prepare` builds the MSI of that ZIP and of a copy versioned 0.0.1 (same files,
+   README and `BUILD-INFO.json` rewritten).
+3. `ice` runs the Windows SDK's Internal Consistency Evaluators
+   ([ICE](GLOSSARY.md#ice) rules, `darice.cub`; see the
+   [dependency policy](DEPENDENCY_POLICY.md#current-decisions)).
+   - Errors beyond the recorded findings fail the job.
+   - Recorded (REL-05): ICE03 for every column, as the package has no `_Validation`
+     table; ICE20 for the missing `FilesInUse` dialog, `ErrorDialog` property and
+     `AdminUISequence` closing dialogs; ICE57 for the `StartMenuShortcut` component
+     (per-user data, scope-dependent key path).
+4. `previous` downloads the published per-user MSIs older than the workspace version
+   (0.6.1 and 0.6.2 for 0.6.3) and checks each against its release's signed
+   `SHA256SUMS`.
+5. `run --disposable-machine --scenario scopes --scenario previous --ui-smoke` installs
+   with `msiexec /qn /l*v`:
+   1. It refuses to start when any product with the MSI's `UpgradeCode`, either install
+      folder, shortcut or registry key exists, and writes a marker in
+      `%LOCALAPPDATA%\Midnight Explorer`.
+   2. It takes **Just for me** (`ALLUSERS=2 MSIINSTALLPERUSER=1`) first, then **For all
+      users** (`ALLUSERS=1`), and in each scope runs items 3 to 6, beginning with an
+      installation of 0.0.1.
+   3. It upgrades 0.0.1 to the release, which removes 0.0.1.
+   4. It installs 0.0.1 again, which must be refused (exit 1603 and the "A newer
+      version" message).
+   5. It starts the installed `midnight-explorer.exe --smoke-test`, which must report a
+      private installation, and `--ui-smoke-test --software`.
+   6. It deletes the executable, `README.txt` and the deepest file and repairs the
+      installation (`/fomus`).
+   7. It removes Just for me before For all users is installed.
+   8. It installs Just for me again beside For all users: both are listed, and each
+      `msiexec /x` removes exactly one scope, leaving no files, folders, shortcut, key
+      or entry.
+   9. It installs each published MSI, upgrades it in place with the release (per user)
+      and removes it.
+   10. It checks that the marker survived every removal and that nothing stays
+       installed.
+6. `run --scenario ui` installs through the dialogs.
+   - `scripts/msi-ui-install.ps1` starts `msiexec /i` with its full UI, clicks Just for
+     me or For all users in ScopeDlg, presses the Install button that the choice shows
+     and Finish; the same checks follow, then removal.
+   - It is new on the hosted runners and so does not fail the job
+     (`continue-on-error`) until it has passed there.
+
+After every installation, `run` checks:
+
+- Windows Installer's record of the scope and version;
+- every installed file against the ZIP (byte for byte, nothing extra);
+- the `Software\Midnight Explorer Installer` values in HKCU or HKLM;
+- the Start menu shortcut's target and start folder (the user's profile, or the literal
+  `%USERPROFILE%` for all users);
+- the Installed apps entry (name, version, publisher, install location and existing
+  icon);
+- for all users, the folder's permissions: they may grant changes only to SYSTEM,
+  Administrators, TrustedInstaller and CREATOR OWNER or what Program Files itself
+  grants.
+
+The logs of every `msiexec` run (and a screenshot of a UI failure) are uploaded as
+the `msi-install-logs` artifact. `run --dry-run` prints the plan anywhere without
+changing anything; never run the test without `--dry-run` on a machine whose
+installation or settings matter. Not covered: the UAC prompt (the runner is already
+elevated), a second account starting the all-users copy, **Retry with authorization**,
+the thumbnailers and HTML viewer that a real release ZIP adds, and a ZIP made by
+`package-release.py` itself.
 
 ### Signing the release
 
 The update check installs only releases whose `SHA256SUMS` is signed with the
-project's release key ([Updates](developer/UPDATES.md#trust)). With both archives and the MSI in
-one folder, on the owner's machine (Python 3.11 or later, standard library only):
+project's release key ([Updates](developer/UPDATES.md#trust)). Sign on the owner's
+machine (Python 3.11 or later, standard library only), in PowerShell at the repository
+root, for 0.6.3:
 
-```powershell
-python -B scripts/release-signing.py checksums `
-    _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.zip `
-    _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-pc-windows-msvc.msi `
-    _build/releases/v0.6.1/midnight-explorer-0.6.1-x86_64-unknown-linux-gnu.tar.gz
-python -B scripts/release-signing.py sign --version 0.6.1 `
-    --secret-key <path outside every checkout>\midnight-explorer-release.key `
-    _build/releases/v0.6.1/SHA256SUMS
-python -B scripts/release-signing.py verify --version 0.6.1 _build/releases/v0.6.1/SHA256SUMS
-```
+1. Put both archives and the MSI in one folder, `_build/releases/v0.6.3/`.
+2. Set `MIDNIGHT_RELEASE_KEY` to the path of the secret key file
+   ([Keys](developer/UPDATES.md#keys)).
+3. Write `SHA256SUMS`:
 
-`checksums` writes `SHA256SUMS` (`<sha256>  <file name>` lines, one for each archive and
-the MSI). The application's updater uses its platform's archive line for an extracted
-copy and the MSI's line for a copy that Windows Installer manages; the MSI's line also
+   ```powershell
+   python -B scripts/release-signing.py checksums `
+       _build/releases/v0.6.3/midnight-explorer-0.6.3-x86_64-pc-windows-msvc.zip `
+       _build/releases/v0.6.3/midnight-explorer-0.6.3-x86_64-pc-windows-msvc.msi `
+       _build/releases/v0.6.3/midnight-explorer-0.6.3-x86_64-unknown-linux-gnu.tar.gz
+   ```
+
+4. Sign it. `sign` asks for the key's password, writes `SHA256SUMS.minisig` and
+   verifies it:
+
+   ```powershell
+   python -B scripts/release-signing.py sign --version 0.6.3 `
+       --secret-key $env:MIDNIGHT_RELEASE_KEY _build/releases/v0.6.3/SHA256SUMS
+   ```
+
+5. Verify the pair against the repository's public key:
+
+   ```powershell
+   python -B scripts/release-signing.py verify --version 0.6.3 _build/releases/v0.6.3/SHA256SUMS
+   ```
+
+6. Upload `SHA256SUMS` and `SHA256SUMS.minisig` with the archives and the MSI. The
+   asset names must stay exactly these.
+
+`checksums` takes files of one folder only and refuses an existing `SHA256SUMS`
+(`--force` replaces it); `sign` likewise refuses an existing signature. `SHA256SUMS`
+has one ASCII line per file, sorted by file name: the file's SHA-256 in 64 lowercase
+hexadecimal digits, two spaces and the file name. For 0.6.3 its lines name, in order:
+
+| Line | File |
+| --- | --- |
+| 1 | `midnight-explorer-0.6.3-x86_64-pc-windows-msvc.msi` |
+| 2 | `midnight-explorer-0.6.3-x86_64-pc-windows-msvc.zip` |
+| 3 | `midnight-explorer-0.6.3-x86_64-unknown-linux-gnu.tar.gz` |
+
+The application's updater uses its platform's archive line for an extracted
+copy and the MSI's line for an MSI installation; the MSI's line also
 lets users check the installer they download. A release whose `SHA256SUMS` lacks the
-MSI line cannot update MSI copies. `sign` asks for the
-key's password, writes `SHA256SUMS.minisig` with the trusted comment
-`timestamp:<now> file:SHA256SUMS release:midnight-explorer-<version>`, verifies it and
-refuses a secret key inside the repository or one that does not belong to
-`packaging/update-signing.pub`. `verify` checks the pair against the repository's
-public key. Upload `SHA256SUMS` and `SHA256SUMS.minisig` with the archives and the MSI; the asset
-names must stay exactly these. The version must be the workspace version that the
+MSI line cannot update MSI installations. The trusted comment of `SHA256SUMS.minisig` is
+`timestamp:<now> file:SHA256SUMS release:midnight-explorer-<version>`. `sign` refuses
+a secret key inside the repository or one that does not belong to
+`packaging/update-signing.pub`. The version must be the workspace version that the
 archives' `BUILD-INFO.json` reports, and the public key in the tagged commit must be
 the one the release was signed with. The key pair is created once with
 `generate-key` (see [Keys](developer/UPDATES.md#keys)).
