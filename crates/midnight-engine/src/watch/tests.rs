@@ -1075,7 +1075,11 @@ async fn a_folder_without_notifications_is_checked_often_and_reported_only_when_
         fail: true,
         ..Native::default()
     });
-    let report = Duration::from_secs(2);
+    // Retries come 60 ms after the first failure, then each after twice the previous
+    // wait: 0.06, 0.18, 0.42, 0.90, 1.86 and 3.78 s after it, or later on a busy
+    // machine. The status comes with the first failed retry at or after the report
+    // time: just under the fifth retry, after four retries and checks every 40 ms.
+    let report = Duration::from_millis(1_800);
     let (_owner, controller, mut tasks, mut events) = controller_with(
         files.clone(),
         Some(native.clone()),
