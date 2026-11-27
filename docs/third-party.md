@@ -243,7 +243,9 @@ texts are in the [Office preview notices](dependencies/office-preview-notices.md
   Apache-2.0 OR MIT) in the host, public filesystem plugin API and Linux network
   provider. Native filesystem packages use the same API and carry its notice.
 
-Each plugin package carries its own `THIRD-PARTY.md` with the selected license texts.
+Each plugin package carries its own notices with the selected license texts: the
+plugin's `THIRD-PARTY.md` (`THIRD_PARTY.md` for the HTML viewer), named `third-party.md`
+in the package, as every Markdown file in a package has a lowercase name.
 Every independent plugin pins each registry dependency exactly to its locked version
 (`scripts/tests/test_plugin_dependency_pins.py`).
 
@@ -364,7 +366,7 @@ the four palette licenses under `licenses/themes/`, with
 [theme-provenance.md](theme-provenance.md). Like the inventory, the notices
 conservatively include build dependencies. The packager refuses a crate without license
 files unless `--license-overrides` supplies them, and refuses links. Plugin packages
-carry their own `THIRD-PARTY.md` (`third-party.md` for the HTML viewer) and notices,
+carry their own `third-party.md` and notices,
 viewer packages also their own `LICENSE`, and the packager refuses a plugin package
 without them. This inventory supplements those per-package
 notices; it does not replace them.

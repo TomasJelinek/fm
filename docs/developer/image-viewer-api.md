@@ -27,7 +27,8 @@ retargeted to different bytes.
 ## Installation and discovery
 
 Install a package under `<application directory>/viewers/<package>/` with
-`image-viewer.json`, its executable, `LICENSE`, `THIRD-PARTY.md` and notices:
+`image-viewer.json`, its executable, `LICENSE`, `third-party.md` and notices (the bundled
+packages give every Markdown file a lowercase name):
 
 ```json
 {

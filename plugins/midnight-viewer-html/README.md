@@ -60,8 +60,9 @@ checks the same way. The helper builds the Rust DLL and creates
 Copy the whole resulting package beneath the application-private
 `viewers/midnight-viewer-html/` directory. Do not register it from an opened folder.
 Retain `LICENSE` (this provider's GPL-3.0-or-later licence), CEF's `LICENSE.txt`, `CREDITS.html`,
-`THIRD_PARTY.md`, `notices/` and `runtime-files.json`; the latter lists every package
-file's SHA-256. Release packaging (`scripts/package-release.py`) refuses an HTML viewer
+`third-party.md` (this folder's `THIRD_PARTY.md`), `notices/` and `runtime-files.json`, which
+lists every package file's SHA-256; the packager gives every Markdown file a lowercase
+name. Release packaging (`scripts/package-release.py`) refuses an HTML viewer
 package without its own `LICENSE`.
 
 ## Verification

@@ -12,7 +12,8 @@ streaming, memory and integrity rules in detail.
 - The package is `midnight.fs.archive`, version 0.3.0, kind `filesystem-worker`, with
   the executable `midnight-fs-archive` (`midnight-fs-archive.exe` on Windows). It is
   installed in the application's `filesystems/midnight.fs.archive/` folder with its
-  `plugin.toml`, `THIRD-PARTY.md` and the generated `licenses/` folder.
+  `plugin.toml`, `third-party.md` (the plugin's `THIRD-PARTY.md`) and the generated
+  `licenses/` folder, whose Markdown notices also have lowercase names.
 - Its manifest declares `protocol = 4`, `stable_entry_ids = true` and eleven formats:
   `zip`, `tar`, `gzip`, `tar-gzip`, `7z`, `xz`, `tar-xz`, `bzip2`, `tar-bzip2`, `zstd`
   and `tar-zstd`. A change to how member IDs are assigned needs a new package version.

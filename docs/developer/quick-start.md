@@ -161,7 +161,7 @@ app/
       plugin.toml
       my_viewer.dll
       LICENSE
-      THIRD-PARTY.md
+      third-party.md
       notices/...
 ```
 

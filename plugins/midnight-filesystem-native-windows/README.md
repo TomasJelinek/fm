@@ -2,8 +2,8 @@
 
 This separate Cargo workspace builds `midnight_filesystem_native_windows.dll`.
 It depends on the public filesystem API/SDK and pinned MIT-licensed Windows
-bindings; no application/private crate is linked. Retain `THIRD-PARTY.md` in
-distributed packages.
+bindings; no application/private crate is linked. Retain `THIRD-PARTY.md` (named
+`third-party.md` in the package) in distributed packages.
 
 ```powershell
 $env:CARGO_TARGET_DIR = "$PWD/_build/native-filesystems/windows"
