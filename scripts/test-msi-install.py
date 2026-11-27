@@ -32,6 +32,7 @@ import ctypes
 import hashlib
 import importlib.util
 import json
+import ntpath
 import os
 import re
 import secrets
@@ -186,8 +187,12 @@ def shortcut_path(scope, environment):
 
 
 def expected_working_folder(scope, environment):
-    """Per user the installing user's profile; per machine the literal variable."""
-    return environment["USERPROFILE"] if scope == "user" else "%USERPROFILE%"
+    """Per user the installing user's profile; per machine the Windows drive's root, which
+    every account can open (Windows Installer expands a profile variable when it creates
+    the shortcut, so the all-users one cannot name each account's own profile)."""
+    if scope == "user":
+        return environment["USERPROFILE"]
+    return environment["SystemDrive"].rstrip("\\") + "\\"
 
 
 def same_path(first, second):
@@ -208,8 +213,9 @@ def compare_files(expected, actual):
 def icon_file_exists(path):
     """Whether an Installed apps icon path names a file. Windows Installer records a
     per-user product's icon as `%APPDATA%\\Microsoft\\Installer\\{code}\\...`, with the
-    variable unexpanded, so expand environment variables first."""
-    return Path(os.path.expandvars(path)).is_file()
+    variable unexpanded, so expand `%NAME%` variables first, as Windows does (`ntpath`, so
+    the script's tests behave the same on Linux)."""
+    return Path(ntpath.expandvars(path)).is_file()
 
 
 def check_uninstall_entry(values, version, folder, icon_exists, registry=True):
@@ -558,6 +564,10 @@ def entry_values(product_code, scope):
     when Windows Installer wrote one there, otherwise Windows Installer's own record."""
     values = registry_values(scope, f"{UNINSTALL_KEY}\\{product_code}")
     if values is not None:
+        # Windows Installer writes no DisplayIcon there: Installed apps shows the
+        # product's ARPPRODUCTICON, which Windows Installer records as its ProductIcon.
+        if "DisplayIcon" not in values:
+            values["DisplayIcon"] = product_info(product_code, scope, "ProductIcon")
         return "registry", values
     if product_version(product_code, scope) is None:
         return None, None

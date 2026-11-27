@@ -26,7 +26,7 @@ spec.loader.exec_module(msi_test)
 
 ENVIRONMENT = {"LOCALAPPDATA": r"C:\Users\me\AppData\Local", "APPDATA": r"C:\Users\me\AppData\Roaming",
                "ProgramW6432": r"C:\Program Files", "ProgramData": r"C:\ProgramData",
-               "USERPROFILE": r"C:\Users\me"}
+               "USERPROFILE": r"C:\Users\me", "SystemDrive": "C:"}
 
 
 def shell_link(target=None, working=None, arguments=None, environment_target=None):
@@ -105,8 +105,9 @@ class Logic(unittest.TestCase):
             icon = Path(folder) / "ProductIcon.ico"
             icon.write_bytes(b"icon")
             with mock.patch.dict(os.environ, {"MSI_TEST_ICON_HOME": folder}):
-                self.assertTrue(msi_test.icon_file_exists(r"%MSI_TEST_ICON_HOME%\ProductIcon.ico"))
-                self.assertFalse(msi_test.icon_file_exists(r"%MSI_TEST_ICON_HOME%\missing.ico"))
+                # The host's separator, so that the expanded path also exists on Linux.
+                self.assertTrue(msi_test.icon_file_exists("%MSI_TEST_ICON_HOME%" + os.sep + "ProductIcon.ico"))
+                self.assertFalse(msi_test.icon_file_exists("%MSI_TEST_ICON_HOME%" + os.sep + "missing.ico"))
 
     def test_installed_apps_entry_names_the_product_version_publisher_folder_and_icon(self):
         folder = Path(r"C:\Program Files\Midnight Explorer (MSI)")
@@ -128,11 +129,14 @@ class Logic(unittest.TestCase):
         self.assertEqual(info, {"target": target, "working_folder": r"C:\Users\me", "arguments": None})
         user = msi_test.expected_working_folder("user", ENVIRONMENT)
         self.assertEqual(msi_test.check_shortcut(info, Path(target), user), [])
+        # All users: the Windows drive's root, never the installing account's profile.
         machine = msi_test.expected_working_folder("machine", ENVIRONMENT)
-        self.assertEqual(machine, "%USERPROFILE%")
+        self.assertEqual(machine, "C:\\")
         self.assertEqual(len(msi_test.check_shortcut(info, Path(target), machine)), 1)
+        root = msi_test.parse_shortcut(shell_link(target, working="C:\\"))
+        self.assertEqual(msi_test.check_shortcut(root, Path(target), machine), [])
         literal = msi_test.parse_shortcut(shell_link(target, working="%USERPROFILE%", arguments="--x"))
-        self.assertEqual(len(msi_test.check_shortcut(literal, Path(target), machine)), 1)
+        self.assertEqual(len(msi_test.check_shortcut(literal, Path(target), machine)), 2)
         variable = msi_test.parse_shortcut(shell_link(environment_target=r"%ProgramFiles%\a.exe"))
         self.assertEqual(variable["target"], r"%ProgramFiles%\a.exe")
         with self.assertRaises(ValueError):

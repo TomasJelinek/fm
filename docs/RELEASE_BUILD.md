@@ -475,9 +475,13 @@ refuses an existing MSI.
   MSI's path); the dialog's Install
   overrides an `INSTALLDIR` from the command line. A Start menu shortcut **Midnight
   Explorer**, in the user's or the all-users Start menu, starts the executable in the
-  user's profile folder, like the Desktop shortcut of `scripts/deploy-private.ps1`: per
-  user `[%USERPROFILE]`, per machine the literal `%USERPROFILE%`, which the shell
-  expands for whoever starts it. Add/Remove Programs (HKCU or HKLM, as Windows
+  folder where the left panel opens on a first start: per user the user's profile
+  folder (`[%USERPROFILE]`), like the Desktop shortcut of `scripts/deploy-private.ps1`;
+  for all users the Windows drive's root (`[WindowsVolume]`, for example `C:\`), which
+  every account can open. A profile variable cannot serve all users: Windows Installer
+  expands it when it creates the shortcut, so every account would start in the
+  installing administrator's profile, and Windows refuses to start a shortcut whose
+  start folder it cannot open. Add/Remove Programs (HKCU or HKLM, as Windows
   Installer chooses for the scope) shows the version, the publisher Tomas Jelinek, the
   Harvest Navigator icon (`assets/branding/midnight-explorer.ico`) and links to the
   repository, this release's source and the releases page; it offers Remove and
@@ -500,9 +504,9 @@ refuses an existing MSI.
   completely before installing; an older one stops with "A newer version of Midnight
   Explorer is already installed". Running the installed version's MSI again offers
   Windows Installer's repair or remove.
-- **Nothing runs code:** there are no custom actions besides four that set properties
-  (the install location shown in Add/Remove Programs, the shortcut's start folder, the
-  per-user `INSTALLDIR` and the dialog's preselected scope), no `Binary` table and no
+- **Nothing runs code:** there are no custom actions besides five that set properties
+  (the install location shown in Add/Remove Programs, the shortcut's start folder per
+  user and for all users, the per-user `INSTALLDIR` and the dialog's preselected scope), no `Binary` table and no
   services. Each folder is one component whose key path is a value under
   `Software\Midnight Explorer Installer` with registry root -1: HKCU per user, HKLM per
   machine ([Registry values](#registry-values)). That key and the installed folders,
@@ -569,7 +573,7 @@ The properties that choose the installation, as the package defines them and as
 | `INSTALLDIR` | below `ProgramFiles64Folder`; per user `SetUserInstallFolder` sets `[LocalAppDataFolder]Programs\Midnight Explorer (MSI)\` | The installation folder. The update hand-off passes the installed copy's folder. |
 | `ME_SCOPE` | `user` | The dialog's choice, `user` or `machine`; `SetMachineScope` preselects `machine` for a per-machine command line or when only an all-users copy exists. |
 | `ME_USER_COPY`, `ME_MACHINE_COPY` | not set | Set by `AppSearch` when the `RootFolder` value exists in HKCU (`ME_USER_COPY`) or HKLM (`ME_MACHINE_COPY`), so the dialog can say that the other scope's copy stays installed. |
-| `MEUSERPROFILE` | `%USERPROFILE%` | The Start menu shortcut's start folder; per user `SetShortcutWorkingFolder` sets it to `[%USERPROFILE]`. |
+| `MESTARTFOLDER` | (none) | The Start menu shortcut's start folder: `SetShortcutWorkingFolder` sets it to `[%USERPROFILE]` per user, `SetMachineShortcutWorkingFolder` to `[WindowsVolume]` for all users. |
 | `ARPINSTALLLOCATION` | set by `SetInstallLocation` to `[INSTALLDIR]` | Windows Installer's `InstallLocation`, by which the application finds an MSI installation. |
 | `UpgradeCode` | `{DDF2A2BA-6901-484C-97B2-4EF662BF5E72}` | Fixed for every MSI of the product. |
 | `ProductCode`, `ProductVersion` | derived from the version | One product code per version. |
@@ -646,8 +650,8 @@ After every installation, `run` checks:
 - Windows Installer's record of the scope and version;
 - every installed file against the ZIP (byte for byte, nothing extra);
 - the `Software\Midnight Explorer Installer` values in HKCU or HKLM;
-- the Start menu shortcut's target and start folder (the user's profile, or the literal
-  `%USERPROFILE%` for all users);
+- the Start menu shortcut's target and start folder (the user's profile, or the Windows
+  drive's root for all users);
 - the Installed apps entry (name, version, publisher, install location and existing
   icon);
 - for all users, the folder's permissions: they may grant changes only to SYSTEM,

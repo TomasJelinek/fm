@@ -163,6 +163,7 @@ SEQUENCES = {
         ("SetUserInstallFolder", 990, f"NOT INSTALLDIR AND ({PER_USER})"),
         ("CostFinalize", 1000),
         ("SetInstallLocation", 1001), ("SetShortcutWorkingFolder", 1002, PER_USER),
+        ("SetMachineShortcutWorkingFolder", 1003, f"NOT ({PER_USER})"),
         ("MigrateFeatureStates", 1200), ("InstallValidate", 1400),
         # Early: the earlier version is removed completely before this one is installed.
         ("RemoveExistingProducts", 1401), ("InstallInitialize", 1500),
@@ -180,15 +181,19 @@ SEQUENCES = {
         ("InstallFiles", 4000), ("InstallFinalize", 6600)),
 }
 CUSTOM_ACTION_SET_PROPERTY = 51
-# Add/Remove Programs shows the install folder; the Start menu shortcut starts in the
-# user's profile folder, as the Desktop shortcut of scripts/windows-shortcut.ps1 does. Per
-# user that is the installing user's; the all-users shortcut keeps the variable
-# (MEUSERPROFILE's default), which the shell expands for whoever starts it. A per-user
-# installation goes to the earlier per-user MSI's folder (Directory: Program Files), and the
-# dialog's default scope follows the command line or an existing all-users copy.
+# Add/Remove Programs shows the install folder. The Start menu shortcut's start folder is
+# where the left panel opens on a first start: per user the installing user's profile, as
+# the Desktop shortcut of scripts/windows-shortcut.ps1 does; for all users the Windows
+# drive's root, which every account can open. A profile variable cannot serve all users:
+# Windows Installer expands it when it creates the shortcut, so every account would start
+# in the installing administrator's profile, and Windows refuses to start a shortcut whose
+# start folder it cannot open. A per-user installation goes to the earlier per-user MSI's
+# folder (Directory: Program Files), and the dialog's default scope follows the command
+# line or an existing all-users copy.
 CUSTOM_ACTIONS = (
     ("SetInstallLocation", CUSTOM_ACTION_SET_PROPERTY, "ARPINSTALLLOCATION", "[INSTALLDIR]"),
-    ("SetShortcutWorkingFolder", CUSTOM_ACTION_SET_PROPERTY, "MEUSERPROFILE", "[%USERPROFILE]"),
+    ("SetShortcutWorkingFolder", CUSTOM_ACTION_SET_PROPERTY, "MESTARTFOLDER", "[%USERPROFILE]"),
+    ("SetMachineShortcutWorkingFolder", CUSTOM_ACTION_SET_PROPERTY, "MESTARTFOLDER", "[WindowsVolume]"),
     ("SetUserInstallFolder", CUSTOM_ACTION_SET_PROPERTY, "INSTALLDIR", USER_INSTALL_FOLDER),
     ("SetMachineScope", CUSTOM_ACTION_SET_PROPERTY, "ME_SCOPE", "machine"),
 )
@@ -420,7 +425,7 @@ def plan(payload):
     shortcut_taken = set()
     shortcuts = [("StartMenuShortcut", "ProgramMenuFolder", msi_name(PRODUCT, shortcut_taken),
                   "StartMenuShortcut", f"[#{executable_key}]", None, "Dual-pane file manager",
-                  None, None, None, None, "MEUSERPROFILE")]
+                  None, None, None, None, "MESTARTFOLDER")]
     properties = [
         ("ProductCode", product_code(version)),
         ("ProductName", PRODUCT),
@@ -439,7 +444,6 @@ def plan(payload):
         # "For all users", or MSIINSTALLPERUSER="" / ALLUSERS=1 on the command line).
         ("ALLUSERS", "2"),
         ("MSIINSTALLPERUSER", "1"),
-        ("MEUSERPROFILE", "%USERPROFILE%"),
         ("ME_SCOPE", "user"),
         ("ME_MAINTENANCE", "Repair"),
         ("DefaultUIFont", "METext"),

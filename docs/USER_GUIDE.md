@@ -2181,7 +2181,8 @@ Windows Installer error 2228 and installs nothing, see
 
 Either way it adds **Midnight Explorer** to the Start menu (yours, or every account's)
 and an entry to **Settings › Apps › Installed apps** (Add/Remove Programs), from which
-you repair or remove it. Removing it deletes the installed files and leaves your settings
+you repair or remove it. On a first start from that entry the left panel opens your
+profile folder (Just for me) or the Windows drive, such as `C:\` (For all users). Removing it deletes the installed files and leaves your settings
 in `%LOCALAPPDATA%\Midnight Explorer`. Running the installed version's MSI again offers
 **Repair** or **Remove**.
 

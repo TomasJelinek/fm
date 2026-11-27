@@ -143,9 +143,14 @@ class Plan(Workspace):
         self.assertEqual(execute["SetUserInstallFolder"][1:],
                          (f"NOT INSTALLDIR AND ({package_msi.PER_USER})", execute["CostFinalize"][2] - 10))
         self.assertEqual(execute["SetShortcutWorkingFolder"][1], package_msi.PER_USER)
+        # All users: the Windows drive's root. Windows Installer expands a profile variable
+        # when it creates the shortcut, which would start every account in the installer's.
+        self.assertEqual(execute["SetMachineShortcutWorkingFolder"][1], f"NOT ({package_msi.PER_USER})")
+        self.assertEqual(actions["SetShortcutWorkingFolder"][2:], ("MESTARTFOLDER", "[%USERPROFILE]"))
+        self.assertEqual(actions["SetMachineShortcutWorkingFolder"][2:], ("MESTARTFOLDER", "[WindowsVolume]"))
         properties = dict(tables["Property"])
         self.assertEqual((properties["ALLUSERS"], properties["MSIINSTALLPERUSER"]), ("2", "1"))
-        self.assertEqual(properties["MEUSERPROFILE"], "%USERPROFILE%")
+        self.assertNotIn("MESTARTFOLDER", properties)
         self.assertEqual(properties["Manufacturer"], "Tomas Jelinek")
         self.assertEqual(properties["ProductVersion"], VERSION)
         # The 0.6.1 per-user MSI's upgrade code, so that a per-user installation upgrades it.
@@ -154,7 +159,7 @@ class Plan(Workspace):
         (shortcut,) = tables["Shortcut"]
         self.assertEqual(shortcut[1:5], ("ProgramMenuFolder", "MIDNIG~1|Midnight Explorer", "StartMenuShortcut",
                                          "[#MainExecutable]"))
-        self.assertEqual(shortcut[11], "MEUSERPROFILE")
+        self.assertEqual(shortcut[11], "MESTARTFOLDER")
         self.assertNotIn("NOT ALLUSERS", dict(tables["LaunchCondition"]))
         package_msi.check_scope_rules(tables)
 
