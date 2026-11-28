@@ -91,6 +91,10 @@ fn retryable(error: &FsError) -> bool {
         )
 }
 
+/// How many targets kept for their skipped items the message names; the rest are counted
+/// (the same bound as the job's errors).
+const KEPT_NAMED: usize = 16;
+
 /// The job's decisions and the errors they leave.
 struct Decider<'a> {
     job: &'a Job,
@@ -173,8 +177,11 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
     job.discover_deletion(&mut progress);
     // Completed targets that reported an issue (a residue); each is also one error.
     let mut residues = 0;
-    // Targets kept only because they still contain skipped items.
+    // Targets kept only because they still contain skipped items: named up to the
+    // bound the errors use, then counted, so a selection of up to a million targets
+    // with Skip all errors cannot build a message of tens of megabytes.
     let mut kept = Vec::new();
+    let mut kept_more = 0_usize;
     let mut decided = false;
     let mut decider = Decider {
         job: &job,
@@ -240,10 +247,14 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
                     if done.skipped == 0 {
                         progress.completed += 1;
                     } else if decider.skipped_inside {
-                        kept.push(format!(
-                            "{} was not deleted because it still contains skipped items.",
-                            path.display()
-                        ));
+                        if kept.len() < KEPT_NAMED {
+                            kept.push(format!(
+                                "{} was not deleted because it still contains skipped items.",
+                                path.display()
+                            ));
+                        } else {
+                            kept_more += 1;
+                        }
                     }
                     // The change completed; its issue is counted without undoing it.
                     if let Some(residue) = done.residue {
@@ -318,6 +329,11 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
     progress.paused = false;
     let mut lines: Vec<String> = progress.errors.iter().map(ToString::to_string).collect();
     lines.extend(kept);
+    if kept_more > 0 {
+        lines.push(format!(
+            "{kept_more} more items were not deleted because they still contain skipped items."
+        ));
+    }
     // A residue undoes nothing; an incomplete target can leave partial work.
     if progress.processed_entries > 0
         && (progress.state == OperationState::Cancelled || progress.failed > residues)

@@ -270,6 +270,37 @@ async fn skip_keeps_that_entry_and_its_target_and_deletes_every_other_target() {
     assert_eq!(h.deleted(), [h.target(1)]);
 }
 
+/// A large selection kept for its skipped items names the first targets and counts the
+/// rest, so Skip all errors over many targets keeps the message small.
+#[tokio::test]
+async fn kept_targets_beyond_the_bound_are_counted_not_named() {
+    let names: Vec<String> = (0..20).map(|index| format!("tree{index}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut h = deleting(&refs);
+    {
+        let mut failures = h.calls.entry_failures.lock().unwrap();
+        for index in 0..20 {
+            failures.insert(h.target(index), 1);
+        }
+    }
+    h.start().await;
+    let failure = h.failure().await;
+    h.decide(&failure, CopyChoice::SkipAllErrors).await;
+    let (done, asked) = h.finished_deciding(CopyChoice::Cancel).await;
+    assert!(asked.is_empty(), "{asked:?}");
+    let named = done
+        .message
+        .matches("was not deleted because it still contains skipped items.")
+        .count();
+    assert_eq!(named, 16, "{}", done.message);
+    assert!(
+        done.message
+            .contains("4 more items were not deleted because they still contain skipped items."),
+        "{}",
+        done.message
+    );
+}
+
 #[tokio::test]
 async fn skip_all_errors_skips_the_later_failures_of_the_job_without_asking() {
     let mut h = deleting(&["tree", "other", "last"]);
