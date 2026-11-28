@@ -642,7 +642,7 @@ fn a_folder_in_another_mount_namespace_is_outside_although_its_path_looks_inside
         }
     }
     let pid = child.id();
-    let mut child = Kill(&mut child);
+    let child = Kill(&mut child);
     let own = fs::read_link("/proc/self/ns/mnt").unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
