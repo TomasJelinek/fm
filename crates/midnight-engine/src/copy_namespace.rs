@@ -1849,24 +1849,6 @@ impl ProbeBatch {
                     if let Some(close) = close {
                         self.registry.closes.lock().unwrap()[close].refreshed += 1;
                     }
-                    #[cfg(test)]
-                    if root.is_some()
-                        && std::env::var_os("MIDNIGHT_TEST_TRACE_COPY_NAMESPACE").is_some()
-                    {
-                        let outcome = match &result {
-                            Ok(TransferNamespaceProbe::Known(scopes)) => {
-                                format!("Known(scopes={})", scopes.len())
-                            }
-                            Ok(TransferNamespaceProbe::Unknown) => "Unknown".to_owned(),
-                            Err(error) => {
-                                format!("Error(kind={:?}, message={})", error.kind, error.message)
-                            }
-                        };
-                        eprintln!(
-                            "scheduler delegated namespace sequence={} root={root:?} access={:?} refresh={outcome}",
-                            snapshot.sequence, pin.access
-                        );
-                    }
                     result
                 }) {
                     Ok(result) => result?,

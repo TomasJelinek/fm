@@ -185,8 +185,9 @@ digests at their fixed lengths in one allocation and an error only when it has o
 chunks of up to 64 rows (`CHECKSUM_BATCH_SIZE`) with no per-row `Arc`: `ChecksumRow`
 is at most 104 bytes (a test asserts it), and a SHA-256 row with a typical 25-byte name
 measured 198 bytes of process memory at 100,000 rows (19.9 MB) and 196 bytes at
-1,000,000 (196 MB) in a Windows release build (the ignored measurement tests in
-`midnight-core/tests/checksum_verification.rs`). During a
+1,000,000 (196 MB) in a Windows release build (the ignored `row_memory_compact`
+measurement in `midnight-core/tests/checksum_verification.rs`, whose row count
+`MIDNIGHT_CHECKSUM_ROWS` sets; 100,000 by default). During a
 calculation the window also keeps the listed files (a name and a length each) until
 Finished. Generation tags reject late
 events. Close submits `ReleaseChecksums`, which cancels active calculation and

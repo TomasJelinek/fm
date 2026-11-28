@@ -13,8 +13,6 @@ use std::{
 /// paths a list holds; the native formats themselves (CF_HDROP, URI lists) have no count
 /// limit, and neither has this.
 pub const MAX_FILE_CLIPBOARD_BYTES: usize = 256 * 1024 * 1024;
-/// The bound of `MAX_FILE_CLIPBOARD_BYTES` in the words of its refusals.
-pub const MAX_FILE_CLIPBOARD_TEXT: &str = "256 MiB";
 /// Native items that one Copy, Move or drop takes at most. A job keeps only the selected
 /// paths and a few bytes per item (its identity and kind, captured in one pass that closes
 /// each item again) and opens each item just before copying it, so the bound is the memory
@@ -82,7 +80,6 @@ mod tests {
             .filter(char::is_ascii_digit)
             .collect();
         assert_eq!(digits, MAX_NATIVE_TRANSFER_ROOTS.to_string());
-        assert_eq!(MAX_FILE_CLIPBOARD_TEXT, "256 MiB");
         assert_eq!(MAX_FILE_CLIPBOARD_BYTES, 256 << 20);
     }
 }
