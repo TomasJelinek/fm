@@ -262,3 +262,61 @@ impl Drop for DeniedFolder {
         }
     }
 }
+
+/// Manual timing of a deep tree, run in a release build: `MIDNIGHT_HOT_PATH_ROOT=<folder>
+/// cargo test --release -p midnight-engine --lib
+/// folder_sizes::native_tests::native_size_of_a_deep_tree -- --ignored --nocapture`.
+/// The tree (`deep-tree`: eight levels of three folders, five files of 1 KiB in every
+/// folder: 9,841 folders and 49,205 files) is created once below the root and kept.
+#[test]
+#[ignore = "timing probe for manual before/after measurements"]
+fn native_size_of_a_deep_tree() {
+    fn fill(folder: &Path, depth: usize) {
+        fs::create_dir_all(folder).unwrap();
+        for file in 0..5 {
+            fs::write(folder.join(format!("file {file}.dat")), [9; 1024]).unwrap();
+        }
+        if depth < 8 {
+            for child in 0..3 {
+                fill(
+                    &folder.join(format!("level {depth} folder {child}")),
+                    depth + 1,
+                );
+            }
+        }
+    }
+    let root = std::env::var_os("MIDNIGHT_HOT_PATH_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("midnight-hot-path-measure"))
+        .join("deep-tree");
+    let marker = root.with_extension("complete");
+    if !marker.exists() {
+        fill(&root, 0);
+        fs::write(&marker, b"").unwrap();
+    }
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let entry = Entry::new(EntryId(1), root.clone(), EntryKind::Directory);
+        let started = Instant::now();
+        let mut last = FolderSize::default();
+        compute_batched(
+            &LocalFileSystem::new(None),
+            &[entry],
+            &Cancellation::default(),
+            &mut |_, size| {
+                last = size;
+                true
+            },
+            &Arc::new(IoBudget::isolated()),
+            &crate::ReportArena::testing(),
+        );
+        samples.push(started.elapsed());
+        assert_eq!((last.files, last.errors), (49_205, 0));
+        assert!(last.finished);
+    }
+    samples.sort();
+    println!(
+        "native size of a deep tree (9,841 folders, 49,205 files): median {:?}, samples {samples:?}",
+        samples[samples.len() / 2]
+    );
+}

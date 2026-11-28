@@ -780,6 +780,7 @@ variables that a test sets only for a child process it starts are not listed.
 | `midnight-compare-engine` `src/binary_tests.rs` | `MIDNIGHT_SCAN_MIB` |
 | `midnight-engine` `src/copy_cadence_measure_tests.rs` | `MIDNIGHT_MEASURE_SOURCE`, `MIDNIGHT_MEASURE_DESTINATION`, `MIDNIGHT_MEASURE_JOBS` |
 | `midnight-engine` `src/copy_small_files_measure_tests.rs` | `MIDNIGHT_MEASURE_ROOT`, `MIDNIGHT_MEASURE_RUNS` |
+| `midnight-engine` `src/hot_path_measure_tests.rs` (Find), `src/folder_sizes/native_tests.rs` (deep tree), `src/checksum_worker_tests.rs` (large file) | `MIDNIGHT_HOT_PATH_ROOT`, `MIDNIGHT_MEASURE_RUNS`, `MIDNIGHT_CHECKSUM_LARGE_MIB` |
 | `midnight-engine` `src/copy_streamed_tests.rs` | `MIDNIGHT_STREAMED_DIR`, `MIDNIGHT_STREAMED_ITEMS`, `MIDNIGHT_STREAMED_INTENT`, `MIDNIGHT_STREAMED_MOVE_TO`, `MIDNIGHT_STREAMED_FOLDER`, `MIDNIGHT_STREAMED_SECONDS` |
 | `midnight-engine` `src/copy_timing_tests.rs` | `MIDNIGHT_TIMING_MOVES`, `MIDNIGHT_TIMING_FILES` |
 | `midnight-engine` `src/copy_unprotected_source_tests.rs` | `MIDNIGHT_TEST_UNQUALIFIED_ROOT` |
@@ -795,6 +796,7 @@ variables that a test sets only for a child process it starts are not listed.
 | `midnight-explorer` `src/native_thumbnail_linux_tests.rs` | `MIDNIGHT_NATIVE_THUMBNAIL_PNG`, `MIDNIGHT_NATIVE_THUMBNAIL_CACHE` |
 | `midnight-explorer` `--ui-smoke-test` | `MIDNIGHT_UI_SMOKE_DWELL_MS` (how long the started window stays open) |
 | `midnight-explorer` `examples/archive_thumbnails.rs` | `MIDNIGHT_ARCHIVE_PROBE_DIRECT_DECODE` |
+| `midnight-explorer` `examples/listing_probe.rs` (panel listing, sort, selection and quick search through the installed native plugin; arguments only) | — |
 | `midnight-native-filesystem-host` `src/network/installed_linux_tests.rs` | `MIDNIGHT_NETWORK_TEST_ALLOW_LAN` |
 | `midnight-platform-linux` `src/transfer_namespace_tests.rs` | `MIDNIGHT_CASEFOLD_TMPFS_TEST_DIR` |
 | `midnight-platform-linux` `src/mutation/tests.rs` | `MIDNIGHT_MODELESS_TEST_DIR` |

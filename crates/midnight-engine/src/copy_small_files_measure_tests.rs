@@ -6,7 +6,8 @@
 //! small_files_measure -- --ignored --nocapture --test-threads 1`.
 //!
 //! The fixture is created once below `MIDNIGHT_MEASURE_ROOT` (else the temporary folder):
-//! `small-5000` (5,000 files of 1–16 KiB) and `large-500` (500 files of 1 MiB).
+//! `small-5000` (5,000 files of 1–16 KiB), `large-500` (500 files of 1 MiB) and
+//! `one-1024` (one file of 1 GiB).
 //! `MIDNIGHT_MEASURE_RUNS` (default 5) copies of each folder run one after another into
 //! an emptied sibling folder of the same volume; each run prints its time, and the
 //! median follows.
@@ -14,6 +15,8 @@ use super::*;
 
 const SMALL: (&str, usize) = ("small-5000", 5_000);
 const LARGE: (&str, usize) = ("large-500", 500);
+/// One file of 1 GiB: the per-byte cost without the per-file one.
+const ONE: (&str, usize) = ("one-1024", 1);
 
 fn measure_root() -> PathBuf {
     std::env::var_os("MIDNIGHT_MEASURE_ROOT")
@@ -44,6 +47,8 @@ fn source(root: &Path, (name, count): (&str, usize)) -> PathBuf {
         for index in 0..count {
             let len = if count == SMALL.1 {
                 1024 * (1 + index % 16)
+            } else if count == ONE.1 {
+                1024 * 1024 * 1024
             } else {
                 1024 * 1024
             };
@@ -161,4 +166,10 @@ async fn measure_small_files() {
 #[ignore = "measurement; run explicitly in a release build"]
 async fn measure_large_files() {
     measure(LARGE).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "measurement; run explicitly in a release build"]
+async fn measure_one_large_file() {
+    measure(ONE).await;
 }

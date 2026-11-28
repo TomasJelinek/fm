@@ -1615,3 +1615,85 @@ fn cancelling_stops_the_walk_between_files() {
     stop_at_first_rows(wide, false, WIDE_FILES);
     stop_at_first_rows(deep, true, LEVELS + 1);
 }
+
+/// A timing, not a check (run it explicitly in a release build): checksums of one large
+/// file on the native filesystem with each algorithm alone and with all five, beside a
+/// plain read of the same file in 1 MiB chunks (the disk's or the file cache's rate).
+/// The file (`MIDNIGHT_CHECKSUM_LARGE_MIB`, default 1,024 MiB) is created once in
+/// `MIDNIGHT_HOT_PATH_ROOT` (else the temporary folder) and left there for later runs.
+#[test]
+#[ignore = "times checksums of one large native file; run explicitly"]
+fn native_large_file_throughput() {
+    use std::io::Read;
+    let mib: u64 = std::env::var("MIDNIGHT_CHECKSUM_LARGE_MIB")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1024);
+    let root = std::env::var_os("MIDNIGHT_HOT_PATH_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("midnight-hot-path-measure"));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join(format!("large-{mib}.bin"));
+    if std::fs::metadata(&path).map(|m| m.len()).ok() != Some(mib << 20) {
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut chunk = vec![0u8; 1 << 20];
+        for _ in 0..mib {
+            for byte in &mut chunk {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = state as u8;
+            }
+            std::io::Write::write_all(&mut file, &chunk).unwrap();
+        }
+    }
+    let native = midnight_platform::LocalFileSystem::new(None);
+    let rate = |seconds: f64| (mib as f64) / seconds;
+    let runs = 5;
+    let mut read = Vec::new();
+    for _ in 0..runs {
+        let started = Instant::now();
+        let mut file = std::fs::File::open(&path).unwrap();
+        let mut buffer = vec![0u8; 1 << 20];
+        while file.read(&mut buffer).unwrap() != 0 {}
+        read.push(started.elapsed().as_secs_f64());
+    }
+    read.sort_by(f64::total_cmp);
+    eprintln!("plain read: median {:.0} MiB/s", rate(read[runs / 2]));
+    let sets: [(&str, &[ChecksumAlgorithm]); 6] = [
+        ("CRC32", &[ChecksumAlgorithm::Crc32]),
+        ("MD5", &[ChecksumAlgorithm::Md5]),
+        ("SHA-1", &[ChecksumAlgorithm::Sha1]),
+        ("SHA-256", &[ChecksumAlgorithm::Sha256]),
+        ("SHA-512", &[ChecksumAlgorithm::Sha512]),
+        ("all five", &ChecksumAlgorithm::ALL),
+    ];
+    for (label, algorithms) in sets {
+        let mut times = Vec::new();
+        for _ in 0..runs {
+            let mut request = request();
+            request.targets = vec![path.clone().into()];
+            request.algorithms = ChecksumAlgorithms::new(algorithms).unwrap();
+            let started = Instant::now();
+            let run = calculate(
+                request,
+                &native,
+                &UNCLASSIFIED,
+                &Cancellation::default(),
+                ChecksumRetention::new(()),
+                |_| true,
+            );
+            times.push(started.elapsed().as_secs_f64());
+            assert_eq!(run.summary.progress.calculated, 1);
+        }
+        times.sort_by(f64::total_cmp);
+        eprintln!(
+            "{label}: median {:.0} MiB/s ({:.3} s for {mib} MiB), range {:.0}-{:.0} MiB/s",
+            rate(times[runs / 2]),
+            times[runs / 2],
+            rate(times[runs - 1]),
+            rate(times[0]),
+        );
+    }
+}

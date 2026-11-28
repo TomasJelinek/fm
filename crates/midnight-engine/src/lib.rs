@@ -77,6 +77,8 @@ mod folder_sizes;
 mod fonts;
 mod free_space;
 mod hidden_entries;
+#[cfg(test)]
+mod hot_path_measure_tests;
 mod installation_notice;
 mod license_notices;
 mod listing_refresh;
