@@ -210,14 +210,16 @@ fn current_job() -> Option<Arc<Job>> {
     let adapter = current_transfer_namespace_changes()?;
     let weak = Arc::downgrade(&adapter);
     let key = Arc::as_ptr(&adapter) as *const () as usize;
+    // Declared before the lock, so dropped after it: a stale job (a retired adapter's, at
+    // the same address) can be dropped here last, and its Drop locks `JOBS`.
+    let _stale;
     let mut jobs = JOBS
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    if let Some(job) = jobs.get(&key).and_then(Weak::upgrade)
-        && Weak::ptr_eq(&job.adapter, &weak)
-    {
-        return Some(job);
+    match jobs.get(&key).and_then(Weak::upgrade) {
+        Some(job) if Weak::ptr_eq(&job.adapter, &weak) => return Some(job),
+        found => _stale = found,
     }
     let job = Arc::new(Job {
         adapter: weak,

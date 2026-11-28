@@ -205,11 +205,37 @@ fn pooled<T>(
     identity: TransferIdentity,
     current: impl Fn(&T) -> bool,
 ) -> Option<Arc<T>> {
-    pool.lock()
+    // The pool's lock is released at the end of this statement, before a stale entry is
+    // dropped: its other holders may have let go meanwhile, and then its Drop locks the
+    // pool to remove its own entry.
+    let found = pool
+        .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&identity)
-        .and_then(Weak::upgrade)
-        .filter(|found| current(found))
+        .and_then(Weak::upgrade);
+    found.filter(|found| current(found))
+}
+
+/// The current pooled entry of `identity`, or else `candidate`, pooled in its place. A
+/// stale entry and an unused candidate are dropped after the pool's lock is released, as
+/// in `pooled`.
+fn pool_or_found<T>(
+    pool: &Pool<T>,
+    identity: TransferIdentity,
+    current: impl Fn(&T) -> bool,
+    candidate: Arc<T>,
+) -> Arc<T> {
+    let stale;
+    {
+        let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
+        match pool.get(&identity).and_then(Weak::upgrade) {
+            Some(found) if current(&found) => return found,
+            found => stale = found,
+        }
+        pool.insert(identity, Arc::downgrade(&candidate));
+    }
+    drop(stale);
+    candidate
 }
 
 fn anchor(path: &Path) -> Result<Arc<Anchor>, FsError> {
@@ -225,16 +251,7 @@ fn anchor(path: &Path) -> Result<Arc<Anchor>, FsError> {
         identity,
         physical: path.to_owned(),
     });
-    let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(found) = pool
-        .get(&identity)
-        .and_then(Weak::upgrade)
-        .filter(|found| current(found))
-    {
-        return Ok(found);
-    }
-    pool.insert(identity, Arc::downgrade(&candidate));
-    Ok(candidate)
+    Ok(pool_or_found(pool, identity, current, candidate))
 }
 
 pub(super) fn capture(
@@ -313,17 +330,12 @@ pub(super) fn capture_physical(
         Some(_) => candidate.check_rules()?,
         None => candidate.validate_levels(cancel)?,
     }
-    let candidate = Arc::new(candidate);
-    let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(found) = pool
-        .get(&expected)
-        .and_then(Weak::upgrade)
-        .filter(|found| found.physical() == physical)
-    {
-        return Ok(found);
-    }
-    pool.insert(expected, Arc::downgrade(&candidate));
-    Ok(candidate)
+    Ok(pool_or_found(
+        pool,
+        expected,
+        |found: &Parent| found.physical() == physical,
+        Arc::new(candidate),
+    ))
 }
 
 impl Parent {
@@ -582,16 +594,7 @@ fn open_volume(root: &Arc<Anchor>) -> Result<Arc<Volume>, FsError> {
         file,
         root: root.clone(),
     });
-    let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(found) = pool
-        .get(&root.identity)
-        .and_then(Weak::upgrade)
-        .filter(|found| current(found))
-    {
-        return Ok(found);
-    }
-    pool.insert(root.identity, Arc::downgrade(&volume));
-    Ok(volume)
+    Ok(pool_or_found(pool, root.identity, current, volume))
 }
 
 // Remove only this allocation's weak entry. Per-insert whole-pool scans would turn a
@@ -902,6 +905,10 @@ fn skipped(part: &str) -> bool {
 #[cfg(test)]
 #[path = "transfer_namespace_parent_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transfer_namespace_pool_tests.rs"]
+mod pool_tests;
 
 #[cfg(test)]
 #[path = "transfer_namespace_proof_tests.rs"]
