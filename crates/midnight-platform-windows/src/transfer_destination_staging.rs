@@ -336,20 +336,21 @@ impl Left {
     }
 
     /// Retry the held folders. One that now holds an entry is released and reported; the
-    /// others stay held. At the job's end (`last`), a refusal not yet told is reported.
+    /// others stay held. At the job's end (`last`) every folder is tried and every refusal
+    /// not yet told is reported too: no later call is left to report the rest.
     fn retry(&self, last: bool) -> Result<(), FsError> {
         let pending = std::mem::take(&mut *self.lock());
-        let mut outcome = Ok(());
+        let mut failures = Vec::new();
         let mut kept = Vec::with_capacity(pending.len());
         for leftover in pending {
-            // One report per call; the rest wait for the next.
-            if outcome.is_err() {
+            // One report per call before the end; the rest wait for the next.
+            if !last && !failures.is_empty() {
                 kept.push(leftover);
                 continue;
             }
             match remove_folder(leftover.private) {
                 Removal::Removed => {}
-                Removal::Released(failure) => outcome = Err(failure),
+                Removal::Released(failure) => failures.push(failure),
                 Removal::Held(private, failure) => kept.push(Leftover {
                     private,
                     failure,
@@ -357,16 +358,31 @@ impl Left {
                 }),
             }
         }
-        if last
-            && outcome.is_ok()
-            && let Some(leftover) = kept.iter_mut().find(|leftover| !leftover.reported)
-        {
-            leftover.reported = true;
-            outcome = Err(leftover.failure.clone());
+        if last {
+            for leftover in kept.iter_mut().filter(|leftover| !leftover.reported) {
+                leftover.reported = true;
+                failures.push(leftover.failure.clone());
+            }
         }
         self.lock().extend(kept);
-        outcome
+        one_report(failures)
     }
+}
+
+/// One error for the folders `failures` name: the first, naming the others too.
+fn one_report(failures: Vec<FsError>) -> Result<(), FsError> {
+    let mut failures = failures.into_iter();
+    let Some(mut first) = failures.next() else {
+        return Ok(());
+    };
+    for other in failures {
+        first.message.push_str(&format!(
+            "; staging folder {} was kept too: {}",
+            other.path.display(),
+            other.message
+        ));
+    }
+    Err(first)
 }
 
 impl Drop for Left {

@@ -317,6 +317,49 @@ fn a_removal_still_refused_at_the_job_end_is_reported_and_tried_once_more() {
     });
 }
 
+/// Every staging folder still refused at the job's end is reported, not only the first:
+/// the last folder of the job tries each once more but has nobody to report to, so a
+/// folder left out of the end report would stay on disk unreported.
+#[test]
+fn every_removal_still_refused_at_the_job_end_is_reported() {
+    let temp = crate::test_fixtures::build_temp("staging-");
+    with_job(|turns| {
+        let parent = directory(temp.path());
+        let cancel = Cancellation::default();
+        let first = parent
+            .create_directory(OsStr::new("first"), &cancel)
+            .unwrap();
+        let second = parent
+            .create_directory(OsStr::new("second"), &cancel)
+            .unwrap();
+        publish(first.as_ref(), "file", b"first");
+        publish(second.as_ref(), "file", b"second");
+        let folders = [
+            staging_folder(&temp.path().join("first")),
+            staging_folder(&temp.path().join("second")),
+        ];
+        // A latched peer refuses every change of the job until after it ends.
+        turns.refuse(true);
+        first.finish_staging().unwrap();
+        second.finish_staging().unwrap();
+        drop((first, second));
+        let failure = parent
+            .finish_staging()
+            .expect_err("a refusal at the job's end is reported");
+        assert_eq!(failure.kind, io::ErrorKind::WouldBlock, "{failure}");
+        drop(parent);
+        let report = format!("{} {}", failure.path.display(), failure.message);
+        for folder in &folders {
+            assert!(folder.exists(), "{}", folder.display());
+            assert!(
+                report.contains(&*folder.to_string_lossy()),
+                "{} is left on disk but missing from the report: {report}",
+                folder.display()
+            );
+        }
+    });
+}
+
 #[test]
 fn sibling_destination_folders_stage_in_folders_of_their_own() {
     let temp = crate::test_fixtures::build_temp("staging-");

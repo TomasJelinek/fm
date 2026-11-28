@@ -116,8 +116,8 @@ skipped) and at its end: the kernel refuses one that still holds an entry, such 
 program's file, and the job keeps it, never lists or empties it, and reports it with its
 exact path. A staging folder whose removal the job's namespace coordination refuses is
 kept by the job and removed by a later attempt (the end of another folder's copy, the
-job's end or the job's last folder going away); one still refused at the job's end is
-reported by its path. See [staging and cancellation](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md#short-staging-names-and-cancellation).
+job's end or the job's last folder going away); each one still refused at the job's end
+is reported by its path, in one error of the job. See [staging and cancellation](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md#short-staging-names-and-cancellation).
 
 ## Destination capabilities
 
