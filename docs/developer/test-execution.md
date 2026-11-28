@@ -504,6 +504,13 @@ py -3 -B -m unittest discover -s scripts/tests -p test_targeted_test_runner.py -
 All build, packaging, deployment and CI-planner script tests run with
 `py -3 -B -m unittest discover -s scripts/tests` (Linux: `python3 -B ...`); each
 test module can also run on its own (`py -3 -B scripts/tests/test_deploy_build.py`).
+On Windows, where most of them wait for PowerShell to start, CI and validation run them
+with `py -3 -B scripts/run-script-tests.py` instead: each module runs as `unittest
+discover -p <module>` would run it, in a process of its own, with up to eight modules
+(at most one per CPU) at a time, and the tests of a module still one after another
+(`--jobs N` sets the number). Each module's report is printed whole when it ends, then a
+summary; the run fails when a module fails or runs no test. Linux CI keeps the single
+`unittest discover` run.
 Windows script tests that run PowerShell helpers use PowerShell 7 when it is installed
 and Windows PowerShell 5.1 otherwise. On Windows, CI also runs the PowerShell
 deployment, registration, build-deployment retirement and shortcut checks

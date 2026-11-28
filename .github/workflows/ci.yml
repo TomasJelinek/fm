@@ -561,7 +561,13 @@ jobs:
           build-cache: "true"
       - name: Format
         run: cargo fmt --all -- --check
+      # On Windows most of these tests wait for PowerShell to start, so the modules run
+      # side by side, each in a process of its own (scripts/run-script-tests.py).
       - name: Build script and packaging tests
+        if: runner.os == 'Windows'
+        run: python -B scripts/run-script-tests.py
+      - name: Build script and packaging tests
+        if: runner.os == 'Linux'
         run: python -B -m unittest discover -s scripts/tests -v
       - name: Shared image decoder native helper tests
         run: python -B -m unittest discover -s plugins/image-decoder/native/tests -v

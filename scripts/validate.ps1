@@ -616,7 +616,8 @@ try {
             Library = 'midnight_filesystem_network.dll'; Manifest = 'plugin.windows.toml' }; Body = $filesystemBody }
     Add-Step @{ Id = 'test-install'; Job = 'scripts-and-lint'; Title = 'Private test installation'; Local = { Install-TestPackages } }
     Add-Step @{ Id = 'script-tests'; Job = 'scripts-and-lint'; Title = 'Build script and packaging tests'; Needs = @('test-install'); Body = {
-        & $Python -B -m unittest discover -s scripts/tests -v
+        # A module per process, several at once: most of these tests wait for PowerShell.
+        & $Python -B scripts/run-script-tests.py
         if ($LASTEXITCODE -ne 0) { throw 'Script tests failed' }
     } }
     Add-Step @{ Id = 'decoder-native-tests'; Job = 'scripts-and-lint'; Title = 'Shared image decoder native helper tests'; Body = {

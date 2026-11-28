@@ -252,7 +252,8 @@ class ValidationPlanTests(unittest.TestCase):
         for script, text in (("validate.sh", self.bash), ("validate.ps1", self.powershell)):
             with self.subTest(script=script):
                 self.assertIn("scripts/ci-workspace-tests.py --keep-test-artifacts --no-fail-fast", text)
-                self.assertIn("-m unittest discover -s scripts/tests -v", text)
+                self.assertIn("-m unittest discover -s scripts/tests -v" if script == "validate.sh"
+                              else "-B scripts/run-script-tests.py", text)
                 self.assertIn(FILESYSTEM_API_TESTS, text)
                 self.assertNotIn("--retire-successful-test-artifacts", text)
                 for check in ("cargo fmt", "clippy", "check-source-size"):
