@@ -18,7 +18,7 @@ use windows_sys::Win32::{
     },
     System::Time::{
         DYNAMIC_TIME_ZONE_INFORMATION, FileTimeToSystemTime, GetDynamicTimeZoneInformation,
-        SystemTimeToTzSpecificLocalTimeEx, TIME_ZONE_ID_INVALID,
+        SystemTimeToFileTime, SystemTimeToTzSpecificLocalTimeEx, TIME_ZONE_ID_INVALID,
     },
 };
 
@@ -197,47 +197,129 @@ impl WindowsLocale {
     }
 
     fn format(&self, local: &SYSTEMTIME) -> io::Result<LocalizedDateTime> {
-        let date = wide_output(|buffer, capacity| {
-            // SAFETY: captured terminated locale/format strings and local SYSTEMTIME stay
-            // alive; wide_output supplies a bounded writable buffer. No override-disabling flag.
-            unsafe {
-                GetDateFormatEx(
-                    self.name.as_ptr(),
-                    0,
-                    local,
-                    self.date_pattern.as_ptr(),
-                    buffer,
-                    capacity,
-                    ptr::null(),
-                )
-            }
-        })?;
-        let time = wide_output(|buffer, capacity| {
-            // SAFETY: same owned input/buffer lifetimes as date formatting above.
-            unsafe {
-                GetTimeFormatEx(
-                    self.name.as_ptr(),
-                    0,
-                    local,
-                    self.time_pattern.as_ptr(),
-                    buffer,
-                    capacity,
-                )
-            }
-        })?;
         Ok(LocalizedDateTime {
-            date: text(&date)?,
-            time: text(&time)?,
+            date: self.date(local)?,
+            time: self.time(local)?,
         })
+    }
+
+    fn date(&self, local: &SYSTEMTIME) -> io::Result<String> {
+        wide_output_with(
+            |buffer, capacity| {
+                // SAFETY: captured terminated locale/format strings and local SYSTEMTIME stay
+                // alive; wide_output supplies a bounded writable buffer. No override-disabling flag.
+                unsafe {
+                    GetDateFormatEx(
+                        self.name.as_ptr(),
+                        0,
+                        local,
+                        self.date_pattern.as_ptr(),
+                        buffer,
+                        capacity,
+                        ptr::null(),
+                    )
+                }
+            },
+            text,
+        )
+    }
+
+    fn time(&self, local: &SYSTEMTIME) -> io::Result<String> {
+        wide_output_with(
+            |buffer, capacity| {
+                // SAFETY: same owned input/buffer lifetimes as date formatting above.
+                unsafe {
+                    GetTimeFormatEx(
+                        self.name.as_ptr(),
+                        0,
+                        local,
+                        self.time_pattern.as_ptr(),
+                        buffer,
+                        capacity,
+                    )
+                }
+            },
+            text,
+        )
     }
 }
 
-pub(crate) fn modified(time: SystemTime) -> Option<LocalizedDateTime> {
-    snapshot().ok()?.format(&local_system_time(time)?).ok()
+/// Texts of recently formatted dates or times by their calendar fields: a bounded,
+/// direct-mapped cache (a value replaces the one in its slot). Failures are not kept.
+struct RecentTexts {
+    slots: Vec<Option<(u64, String)>>,
 }
 
-fn local_system_time(time: SystemTime) -> Option<SYSTEMTIME> {
+impl RecentTexts {
+    /// Slots per cache, a power of two: a few hundred distinct dates or times in a
+    /// folder stay resident, and a cache never holds more than this many short texts.
+    const SLOTS: usize = 512;
+
+    fn new() -> Self {
+        Self {
+            slots: vec![None; Self::SLOTS],
+        }
+    }
+
+    fn text(
+        &mut self,
+        key: u64,
+        format: impl FnOnce() -> io::Result<String>,
+    ) -> io::Result<String> {
+        // Fibonacci hashing spreads neighbouring days and seconds over the slots.
+        let slot = (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - Self::SLOTS.trailing_zeros()))
+            as usize;
+        if let Some((kept, text)) = &self.slots[slot]
+            && *kept == key
+        {
+            return Ok(text.clone());
+        }
+        let text = format()?;
+        self.slots[slot] = Some((key, text.clone()));
+        Ok(text)
+    }
+}
+
+/// The calendar fields that GetDateFormatEx formats (the day of week follows the date).
+fn date_key(local: &SYSTEMTIME) -> u64 {
+    u64::from(local.wYear) << 48
+        | u64::from(local.wMonth) << 32
+        | u64::from(local.wDay) << 16
+        | u64::from(local.wDayOfWeek)
+}
+
+/// The clock fields that GetTimeFormatEx formats; it has no millisecond pattern.
+fn time_key(local: &SYSTEMTIME) -> u64 {
+    u64::from(local.wHour) << 32 | u64::from(local.wMinute) << 16 | u64::from(local.wSecond)
+}
+
+thread_local! {
+    /// Per worker thread, so formatting never waits for a lock: dates, then times.
+    static RECENT: std::cell::RefCell<(RecentTexts, RecentTexts)> =
+        std::cell::RefCell::new((RecentTexts::new(), RecentTexts::new()));
+}
+
+/// A listing formats every row's modification time, and the rows of a folder share
+/// most dates and many times: the text of a recent date or time is reused, so each
+/// distinct value calls NLS once per worker thread. The captured locale snapshot never
+/// changes in a process, so a reused text equals what a new call returns.
+pub(crate) fn modified(time: SystemTime) -> Option<LocalizedDateTime> {
     let locale = snapshot().ok()?;
+    let local = local_system_time(time)?;
+    RECENT.with(|recent| {
+        let mut recent = recent.borrow_mut();
+        let (dates, times) = &mut *recent;
+        Some(LocalizedDateTime {
+            date: dates.text(date_key(&local), || locale.date(&local)).ok()?,
+            time: times.text(time_key(&local), || locale.time(&local)).ok()?,
+        })
+    })
+}
+
+/// FILETIME ticks (100 ns) in a day.
+const TICKS_PER_DAY: u64 = 864_000_000_000;
+
+fn local_system_time(time: SystemTime) -> Option<SYSTEMTIME> {
     // FILETIME is an unsigned count of 100 ns ticks since 1601, not a floating-point timestamp.
     let ticks = match time.duration_since(UNIX_EPOCH) {
         Ok(value) => i128::try_from(value.as_nanos()).ok()? / 100,
@@ -245,20 +327,91 @@ fn local_system_time(time: SystemTime) -> Option<SYSTEMTIME> {
     }
     .checked_add(116_444_736_000_000_000)?;
     let ticks = u64::try_from(ticks).ok()?;
+    let offset = DAY_OFFSETS.with(|offsets| offsets.borrow_mut().offset(ticks / TICKS_PER_DAY));
+    if let Some(local) = offset.and_then(|offset| ticks.checked_add_signed(offset)) {
+        return calendar(local);
+    }
+    native_local_time(ticks)
+}
+
+/// The calendar fields of FILETIME `ticks`, without a time zone.
+fn calendar(ticks: u64) -> Option<SYSTEMTIME> {
     let filetime = FILETIME {
         dwLowDateTime: ticks as u32,
         dwHighDateTime: (ticks >> 32) as u32,
     };
-    let mut utc = SYSTEMTIME::default();
+    let mut fields = SYSTEMTIME::default();
+    // SAFETY: both pointers refer to live correctly typed structures; the API rejects
+    // values outside its representable range.
+    (unsafe { FileTimeToSystemTime(&filetime, &mut fields) } != 0).then_some(fields)
+}
+
+/// Local calendar fields of the UTC FILETIME `ticks` by the captured time zone's rules.
+fn native_local_time(ticks: u64) -> Option<SYSTEMTIME> {
+    let locale = snapshot().ok()?;
+    let utc = calendar(ticks)?;
     let mut local = SYSTEMTIME::default();
     // SAFETY: all pointers refer to live correctly typed structures; native APIs reject dates
     // outside their representable calendar range without affecting the sorting timestamp.
-    if unsafe { FileTimeToSystemTime(&filetime, &mut utc) } == 0
-        || unsafe { SystemTimeToTzSpecificLocalTimeEx(&locale.timezone, &utc, &mut local) } == 0
-    {
+    if unsafe { SystemTimeToTzSpecificLocalTimeEx(&locale.timezone, &utc, &mut local) } == 0 {
         return None;
     }
     Some(local)
+}
+
+/// Local minus UTC FILETIME ticks at the UTC instant `ticks` (a whole millisecond).
+fn native_offset(ticks: u64) -> Option<i64> {
+    let local = native_local_time(ticks)?;
+    let mut filetime = FILETIME::default();
+    // SAFETY: both pointers refer to live correctly typed structures.
+    if unsafe { SystemTimeToFileTime(&local, &mut filetime) } == 0 {
+        return None;
+    }
+    let local = u64::from(filetime.dwHighDateTime) << 32 | u64::from(filetime.dwLowDateTime);
+    i64::try_from(i128::from(local) - i128::from(ticks)).ok()
+}
+
+/// The time zone offsets of recent UTC days: converting a row's time to local
+/// calendar fields is then arithmetic, not a time zone conversion per row. A day is
+/// kept only when its first and last millisecond have the same offset, that is when no
+/// daylight saving transition falls inside it; rows of a transition day are converted
+/// natively one by one. Direct-mapped and bounded, per worker thread.
+struct DayOffsets {
+    slots: Vec<Option<(u64, Option<i64>)>>,
+}
+
+impl DayOffsets {
+    /// Slots, a power of two: three years of days fit with few collisions.
+    const SLOTS: usize = 2048;
+
+    fn new() -> Self {
+        Self {
+            slots: vec![None; Self::SLOTS],
+        }
+    }
+
+    fn offset(&mut self, day: u64) -> Option<i64> {
+        let slot = (day.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - Self::SLOTS.trailing_zeros()))
+            as usize;
+        if let Some((kept, offset)) = self.slots[slot]
+            && kept == day
+        {
+            return offset;
+        }
+        let offset = (|| {
+            let start = day.checked_mul(TICKS_PER_DAY)?;
+            let first = native_offset(start)?;
+            let last = native_offset(start.checked_add(TICKS_PER_DAY - 10_000)?)?;
+            (first == last).then_some(first)
+        })();
+        self.slots[slot] = Some((day, offset));
+        offset
+    }
+}
+
+thread_local! {
+    static DAY_OFFSETS: std::cell::RefCell<DayOffsets> =
+        std::cell::RefCell::new(DayOffsets::new());
 }
 
 fn locale_value(field: u32) -> io::Result<Vec<u16>> {
@@ -269,14 +422,23 @@ fn locale_value(field: u32) -> io::Result<Vec<u16>> {
     })
 }
 
-fn wide_output(mut call: impl FnMut(*mut u16, i32) -> i32) -> io::Result<Vec<u16>> {
+fn wide_output(call: impl FnMut(*mut u16, i32) -> i32) -> io::Result<Vec<u16>> {
+    wide_output_with(call, |wide| Ok(wide.to_vec()))
+}
+
+/// `wide_output` finished by `finish`, which reads the written units where they are:
+/// text formatted on the stack is converted without an intermediate UTF-16 copy.
+fn wide_output_with<T>(
+    mut call: impl FnMut(*mut u16, i32) -> i32,
+    finish: impl FnOnce(&[u16]) -> io::Result<T>,
+) -> io::Result<T> {
     // Dates, times and locale fields normally fit a small buffer: format once on the
     // stack (one NLS call per value on the listing hot path) and size-probe only when
     // the native call reports an insufficient buffer.
     let mut stack = [0u16; 128];
     let written = call(stack.as_mut_ptr(), stack.len() as i32);
     if written > 0 {
-        return Ok(stack[..written as usize].to_vec());
+        return finish(&stack[..written as usize]);
     }
     let error = io::Error::last_os_error();
     if error.raw_os_error() != Some(122) {
@@ -292,8 +454,7 @@ fn wide_output(mut call: impl FnMut(*mut u16, i32) -> i32) -> io::Result<Vec<u16
     if written <= 0 {
         return Err(io::Error::last_os_error());
     }
-    buffer.truncate(written as usize);
-    Ok(buffer)
+    finish(&buffer[..written as usize])
 }
 
 fn text(wide: &[u16]) -> io::Result<String> {
