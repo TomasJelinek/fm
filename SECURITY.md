@@ -888,10 +888,10 @@ for a bounded time, not one listing ([session record](docs/verification/2026-11-
   the root. Every later request must name the root or a folder below it through ordinary
   names only (the root's own components, then names without `.`, `..`, another drive,
   share or prefix); anything else is refused before it is opened. The helper then opens
-  the folder (following links, as navigation does; on Windows by its verbatim path, as a
-  directory on a disk, with identification-only quality of service so a pipe reached
-  through a link cannot impersonate it; on Linux with `O_DIRECTORY`, which never opens a
-  FIFO or device) and compares the opened handle's location with the root's: on Windows
+  the folder (following links, as navigation does; on Windows by its verbatim path, with
+  identification-only quality of service so a pipe reached through a link cannot
+  impersonate it, and as a directory (`FILE_DIRECTORY_FILE`) on a disk, so a file that a
+  request names is refused by its file system without being opened; on Linux with `O_DIRECTORY`, which never opens a FIFO or device) and compares the opened handle's location with the root's: on Windows
   the normalized final path in the NT namespace (`GetFinalPathNameByHandleW` with
   `VOLUME_NAME_NT`), which starts with the volume's device; on Linux the kernel's path of
   the descriptor (`/proc/self/fd`) and its mount (`mnt_id`). The folder must be the root

@@ -489,6 +489,56 @@ async fn a_link_that_leads_outside_the_authorized_folder_is_refused_and_offered_
     harness.shutdown().await;
 }
 
+/// A session belongs to the pane whose retry opened it: the other pane, navigating into the
+/// same folder or below it, is denied and offered its own authorization, never served
+/// through that session; and the authorizing pane keeps its session meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_other_pane_never_lists_through_a_pane_session() {
+    let mut harness = authorized(&[]).await;
+    let root = harness.root.clone();
+    for (navigation, path) in [(1, root.clone()), (2, root.join("child"))] {
+        harness
+            .commands
+            .send(Command::Navigate {
+                pane: PaneId::Right,
+                navigation: NavigationId(navigation),
+                path,
+                sort: SortSpec::default(),
+            })
+            .await
+            .unwrap();
+        loop {
+            match harness.next().await {
+                Event::ListingAuthorized {
+                    pane: PaneId::Right,
+                    ..
+                } => panic!("the right pane listed through the left pane's session"),
+                Event::ListingFinished {
+                    pane: PaneId::Right,
+                    ..
+                } => panic!("the right pane listed a denied folder"),
+                Event::DirectoryElevationAvailable {
+                    pane: PaneId::Right,
+                    navigation: offer,
+                    availability: ElevationAvailability::Available,
+                    ..
+                } if offer == NavigationId(navigation) => break,
+                _ => {}
+            }
+        }
+    }
+    {
+        let calls = harness.calls();
+        assert!(calls.listed.is_empty(), "{:?}", calls.listed);
+        assert_eq!(calls.opened, std::slice::from_ref(&root));
+        assert_eq!(calls.closed, 0, "the left pane keeps its session");
+    }
+    harness.navigate(3, &root.join("child")).await;
+    harness.authorized_rows(3).await;
+    assert_eq!(harness.calls().listed, [root.join("child")]);
+    harness.shutdown().await;
+}
+
 /// Rows listed through the session are a snapshot of a folder this process may not read:
 /// the pane's watch neither subscribes nor checks them, as for the retry's own rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

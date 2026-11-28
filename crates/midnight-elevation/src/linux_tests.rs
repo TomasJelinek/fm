@@ -548,6 +548,141 @@ fn a_mount_inside_the_authorized_folder_is_outside_it() {
     assert_eq!(reply.result.unwrap_err().kind, FailureKind::Outside);
 }
 
+/// Links that appear after the consent, the authorized folder exchanged for a link (by an
+/// account that can change its parent), and links through `/proc` to this process's own root,
+/// working folder and descriptors: the opened folder's kernel path and mount decide, so none
+/// of them leads outside.
+#[test]
+fn links_created_after_consent_cannot_lead_outside() {
+    let tree = tree();
+    let cancel = Cancellation::default();
+    let mut session = Session::default();
+    assert!(session.list(&encode_path(&tree.root), &cancel).session);
+    let base = tree.root.parent().unwrap().to_owned();
+    symlink(&tree.sibling, tree.root.join("late")).unwrap();
+    symlink("..", tree.root.join("child").join("up")).unwrap();
+    symlink("..", tree.root.join("parent")).unwrap();
+    symlink(
+        PathBuf::from("/proc/self/root").join(tree.sibling.strip_prefix("/").unwrap()),
+        tree.root.join("via-proc-root"),
+    )
+    .unwrap();
+    symlink(
+        PathBuf::from("/proc/thread-self/root").join(base.strip_prefix("/").unwrap()),
+        tree.root.join("via-thread-root"),
+    )
+    .unwrap();
+    symlink("/proc/self/cwd", tree.root.join("via-cwd")).unwrap();
+    symlink("/proc/self/fd/0", tree.root.join("via-fd")).unwrap();
+    for path in [
+        tree.root.join("late"),
+        tree.root.join("late").join("nested"),
+        tree.root.join("parent"),
+        tree.root.join("via-proc-root"),
+        tree.root.join("via-thread-root"),
+        tree.root.join("via-cwd"),
+    ] {
+        let failure = session
+            .list(&encode_path(&path), &cancel)
+            .result
+            .unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Outside, "{}", path.display());
+    }
+    // A descriptor link names no folder (standard input is no directory).
+    assert!(
+        session
+            .list(&encode_path(&tree.root.join("via-fd")), &cancel)
+            .result
+            .is_err()
+    );
+    // `child/up` is the authorized folder itself.
+    assert!(
+        session
+            .list(&encode_path(&tree.root.join("child").join("up")), &cancel)
+            .result
+            .is_ok()
+    );
+    // The authorized folder moved away and a link to the sibling put at its path.
+    let moved = base.join("moved");
+    fs::rename(&tree.root, &moved).unwrap();
+    symlink(&tree.sibling, &tree.root).unwrap();
+    for path in [tree.root.clone(), tree.root.join("nested")] {
+        let failure = session
+            .list(&encode_path(&path), &cancel)
+            .result
+            .unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Outside, "{}", path.display());
+    }
+    fs::remove_file(&tree.root).unwrap();
+    fs::rename(&moved, &tree.root).unwrap();
+}
+
+/// The kernel's path of a folder reached in another mount namespace (here through
+/// `/proc/PID/root` of a process in a namespace of its own) is spelled as in that namespace,
+/// so it can look like the authorized folder's own path; its mount is a different one, which
+/// keeps it outside. Skipped where unprivileged user namespaces are unavailable.
+#[test]
+fn a_folder_in_another_mount_namespace_is_outside_although_its_path_looks_inside() {
+    let tree = tree();
+    let Ok(mut child) = Command::new("unshare")
+        .args(["--user", "--map-root-user", "--mount", "sleep", "30"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        eprintln!("unshare is unavailable; skipped");
+        return;
+    };
+    struct Kill<'a>(&'a mut Child);
+    impl Drop for Kill<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let pid = child.id();
+    let mut child = Kill(&mut child);
+    let own = fs::read_link("/proc/self/ns/mnt").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if fs::read_link(format!("/proc/{pid}/ns/mnt")).is_ok_and(|ns| ns != own) {
+            break;
+        }
+        if Instant::now() >= deadline || child.0.try_wait().is_ok_and(|status| status.is_some()) {
+            eprintln!("no unprivileged mount namespace here; skipped");
+            return;
+        }
+        thread::sleep(TICK);
+    }
+    let foreign = PathBuf::from(format!("/proc/{pid}/root"))
+        .join(tree.root.strip_prefix("/").unwrap())
+        .join("child");
+    let Ok(directory) = open_directory(&foreign) else {
+        eprintln!("the namespace's folders are not reachable here; skipped");
+        return;
+    };
+    let location = directory.location().unwrap();
+    let mut session = Session::default();
+    let cancel = Cancellation::default();
+    assert!(session.list(&encode_path(&tree.root), &cancel).session);
+    let own_child = open_directory(&tree.root.join("child"))
+        .unwrap()
+        .location()
+        .unwrap();
+    assert_eq!(
+        location.path, own_child.path,
+        "the kernel spells it as inside"
+    );
+    assert_ne!(location.mount, own_child.mount);
+    symlink(&foreign, tree.root.join("foreign")).unwrap();
+    let failure = session
+        .list(&encode_path(&tree.root.join("foreign")), &cancel)
+        .result
+        .unwrap_err();
+    assert_eq!(failure.kind, FailureKind::Outside, "{}", failure.message);
+}
+
 #[test]
 fn a_failed_first_listing_establishes_no_session() {
     let base = tempfile::tempdir().unwrap();

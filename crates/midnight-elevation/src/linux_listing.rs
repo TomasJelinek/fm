@@ -29,8 +29,8 @@ pub(crate) struct Directory(OwnedFd);
 /// Where an opened folder is: the mount it is on and its path there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Location {
-    mount: u64,
-    path: PathBuf,
+    pub(super) mount: u64,
+    pub(super) path: PathBuf,
 }
 
 impl Location {

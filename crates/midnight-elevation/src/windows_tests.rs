@@ -282,6 +282,86 @@ fn elevated_client_grants_the_pipe_server_identification_only() {
     assert_eq!(level, SecurityIdentification);
 }
 
+/// A hostile requester's frames after the session was established: malformed or oversized
+/// frames end the helper, a frame that never completes ends it at the idle limit, and a
+/// request sent while a folder is listed ends the helper's process.
+#[test]
+fn hostile_frames_end_the_session_helper_in_bounded_time() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static TERMINATED: AtomicUsize = AtomicUsize::new(0);
+    let tree = tree();
+    let start = |idle: Duration| {
+        let (requester, helper_end) = connected(Duration::from_secs(30), Cancellation::default());
+        let helper = thread::spawn(move || {
+            let limits = Limits {
+                request: Duration::from_secs(30),
+                idle,
+                lifetime: Duration::from_secs(60),
+            };
+            let mut helper = PipeRequester {
+                io: helper_end,
+                peer: own_process(),
+                terminate: || {
+                    TERMINATED.fetch_add(1, Ordering::SeqCst);
+                },
+            };
+            let started = Instant::now();
+            helper::serve_session(&mut helper, started, started + limits.request, &limits)
+        });
+        (requester, helper)
+    };
+    let establish = |requester: &mut Channel| {
+        protocol::write_request(requester, &Request::List(encode_path(&tree.root))).unwrap();
+        assert!(protocol::read_reply(requester).unwrap().session);
+    };
+    let mut oversized = b"MELIST02".to_vec();
+    oversized.extend_from_slice(&(protocol::MAX_FRAME as u32 + 1).to_le_bytes());
+    let mut unknown = b"MELIST02".to_vec();
+    unknown.extend_from_slice(&1u32.to_le_bytes());
+    unknown.push(9);
+    for hostile in [
+        b"MELIST01\x01\0\0\0\x01".to_vec(),
+        b"XXXXXXXXXXXXXXXXXXXX".to_vec(),
+        oversized,
+        unknown,
+    ] {
+        let (mut requester, helper) = start(Duration::from_secs(30));
+        establish(&mut requester);
+        requester.write_all(&hostile).unwrap();
+        let error = helper.join().unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{hostile:?}");
+    }
+    // A path the helper cannot decode is refused; the session continues.
+    let (mut requester, helper) = start(Duration::from_secs(30));
+    establish(&mut requester);
+    for path in [vec![b'C'], vec![0, 0], Vec::new()] {
+        protocol::write_request(&mut requester, &Request::List(path)).unwrap();
+        let reply = protocol::read_reply(&mut requester).unwrap();
+        assert!(reply.session);
+        assert_eq!(reply.result.unwrap_err().kind, FailureKind::Other);
+    }
+    protocol::write_request(&mut requester, &Request::Close).unwrap();
+    helper.join().unwrap().unwrap();
+    // Half a frame, then silence: the helper ends at its idle limit.
+    let (mut requester, helper) = start(Duration::from_millis(300));
+    establish(&mut requester);
+    let started = Instant::now();
+    requester.write_all(b"MELIST02\xff\0\0\0partial").unwrap();
+    helper.join().unwrap().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(10));
+    // Two requests at once: the second arrives while the first is listed, which ends the
+    // helper's process (here: the test's terminate), and nothing more is served.
+    let before = TERMINATED.load(Ordering::SeqCst);
+    let (mut requester, helper) = start(Duration::from_secs(30));
+    establish(&mut requester);
+    let mut both = Vec::new();
+    protocol::write_request(&mut both, &Request::List(encode_path(&tree.root))).unwrap();
+    protocol::write_request(&mut both, &Request::List(encode_path(&tree.sibling))).unwrap();
+    requester.write_all(&both).unwrap();
+    assert!(helper.join().unwrap().is_err());
+    assert!(TERMINATED.load(Ordering::SeqCst) > before);
+}
+
 #[test]
 fn helper_rejects_untrusted_startup_arguments_before_connecting() {
     assert!(serve(&[]).is_err());
@@ -447,6 +527,187 @@ fn the_helper_lists_the_authorized_folder_and_its_subfolders_only() {
             path.display()
         );
     }
+}
+
+/// The names of `path`'s listing when it succeeds, for refusal checks that accept any
+/// failure.
+fn listed_names(session: &mut Session, path: &Path) -> Option<Vec<PathBuf>> {
+    let reply = session.list(&encode_path(path), &Cancellation::default());
+    assert!(
+        reply.session,
+        "{}: a refusal keeps the session",
+        path.display()
+    );
+    reply.result.ok().map(|entries| names(&entries))
+}
+
+/// What a requester could spell instead of an ordinary name below the authorized folder:
+/// other namespaces and prefixes, stream syntax, trailing dots and spaces, `..` hidden in a
+/// stream name and 8.3 short names. None of them lists anything outside the folder.
+#[test]
+fn unusual_spellings_never_list_outside_the_authorized_folder() {
+    let tree = tree();
+    let mut session = Session::default();
+    assert!(
+        session
+            .list(&encode_path(&tree.root), &Cancellation::default())
+            .session
+    );
+    let root = tree.root.to_str().unwrap().to_owned();
+    let base = tree.root.parent().unwrap();
+    let root_names = names(&listed(&tree.root));
+    let outside = [
+        PathBuf::from("authorized-sibling"),
+        PathBuf::from("nested"),
+        PathBuf::from("secret.txt"),
+    ];
+    let mut spellings: Vec<PathBuf> = [
+        format!(r"\\?\{root}\outside"),
+        format!(r"\??\{root}\outside"),
+        format!(r"\\.\{root}\outside"),
+        format!(r"\\?\GLOBALROOT\??\{root}\outside"),
+        format!(r"\\localhost\{}$\{}\outside", &root[..1], &root[3..]),
+        format!(r"{root}\outside::$INDEX_ALLOCATION"),
+        format!(r"{root}\outside:$I30:$INDEX_ALLOCATION"),
+        format!(r"{root}\outside:stream"),
+        format!(r"{root}\outside."),
+        format!(r"{root}\outside "),
+        format!(r"{root}\..::$INDEX_ALLOCATION"),
+        format!(r"{root}\...::$INDEX_ALLOCATION"),
+        format!(r"{root}\child\..::$INDEX_ALLOCATION\.."),
+        format!(r"{root}\child\..::$INDEX_ALLOCATION"),
+        format!(r"{root}\..."),
+        format!(r"{root}/outside/nested"),
+        format!(r"{root}\child/../../authorized-sibling"),
+        format!(r"{root}\outside\nested\.."),
+        format!(r"{root}\inside\..\..\authorized-sibling"),
+        format!(r"{root}\NUL"),
+        format!(r"{root}\CON\..\.."),
+    ]
+    .map(PathBuf::from)
+    .into();
+    // The 8.3 short name of the junction that leads outside, where the volume keeps them.
+    let long: Vec<u16> = tree
+        .root
+        .join("outside")
+        .as_os_str()
+        .encode_wide()
+        .chain([0])
+        .collect();
+    let mut short = vec![0u16; 1024];
+    // SAFETY: a terminated path and a writable buffer of the stated length.
+    let length = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(
+            long.as_ptr(),
+            short.as_mut_ptr(),
+            short.len() as u32,
+        )
+    } as usize;
+    if length > 0 && length < short.len() {
+        spellings.push(PathBuf::from(OsString::from_wide(&short[..length])));
+    }
+    for path in &spellings {
+        if let Some(listed) = listed_names(&mut session, path) {
+            for name in &outside {
+                assert!(
+                    !listed.contains(name),
+                    "{} listed {listed:?}",
+                    path.display()
+                );
+            }
+            assert!(
+                listed.is_empty()
+                    || listed == root_names
+                    || listed == [PathBuf::from("grandchild")],
+                "{} listed {listed:?}",
+                path.display()
+            );
+        }
+    }
+    // The base folder itself, by any of these spellings, is never listed.
+    assert!(listed_names(&mut session, base).is_none());
+}
+
+/// Links that appear after the consent: a junction created inside the folder, and the folder
+/// itself exchanged for a junction (by an account that can change its parent). The opened
+/// folder's final location decides, so both lead outside and are refused.
+#[test]
+fn junctions_created_after_consent_cannot_lead_outside() {
+    let tree = tree();
+    let mut session = Session::default();
+    assert!(
+        session
+            .list(&encode_path(&tree.root), &Cancellation::default())
+            .session
+    );
+    let base = tree.root.parent().unwrap().to_owned();
+    create_junction(&tree.root.join("late"), &tree.sibling).unwrap();
+    create_junction(&tree.root.join("child").join("up"), &base).unwrap();
+    create_junction(&tree.root.join("again"), &tree.root).unwrap();
+    for path in [
+        tree.root.join("late"),
+        tree.root.join("late").join("nested"),
+        tree.root.join("child").join("up"),
+        tree.root
+            .join("child")
+            .join("up")
+            .join("authorized-sibling"),
+    ] {
+        let failure = session
+            .list(&encode_path(&path), &Cancellation::default())
+            .result
+            .unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Outside, "{}", path.display());
+    }
+    // A junction to the folder itself stays inside it.
+    assert_eq!(
+        listed_names(&mut session, &tree.root.join("again").join("child")),
+        Some(vec![PathBuf::from("grandchild"), PathBuf::from("up")])
+    );
+    // The authorized folder moved away and a junction to the sibling put at its path.
+    let moved = base.join("moved");
+    fs::rename(&tree.root, &moved).unwrap();
+    create_junction(&tree.root, &tree.sibling).unwrap();
+    for path in [tree.root.clone(), tree.root.join("nested")] {
+        let failure = session
+            .list(&encode_path(&path), &Cancellation::default())
+            .result
+            .unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Outside, "{}", path.display());
+    }
+    fs::remove_dir(&tree.root).unwrap();
+    fs::rename(&moved, &tree.root).unwrap();
+}
+
+/// A request that names a file inside the authorized folder is refused without opening the
+/// file for its content: a file that another process holds without sharing its data stays
+/// out of the helper's reach, and the refusal says it is no folder.
+#[test]
+fn a_file_inside_the_folder_is_refused_without_opening_its_content() {
+    let tree = tree();
+    let mut session = Session::default();
+    assert!(
+        session
+            .list(&encode_path(&tree.root), &Cancellation::default())
+            .session
+    );
+    let file = tree.root.join("file.txt");
+    let _exclusive = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(&file)
+        .unwrap();
+    let failure = session
+        .list(&encode_path(&file), &Cancellation::default())
+        .result
+        .unwrap_err();
+    assert_eq!(failure.kind, FailureKind::Other);
+    assert!(
+        failure.message.contains("not a folder"),
+        "{}",
+        failure.message
+    );
 }
 
 #[test]

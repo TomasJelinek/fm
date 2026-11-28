@@ -18,16 +18,29 @@ use std::{
     path::{Component, Path, Prefix},
     ptr,
 };
-use windows_sys::Win32::{
-    Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE},
-    Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO,
-        FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, FileFullDirectoryInfo,
-        FileFullDirectoryRestartInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
-        GetFileType, GetFinalPathNameByHandleW, OPEN_EXISTING, SECURITY_IDENTIFICATION,
-        SECURITY_SQOS_PRESENT, SYNCHRONIZE, VOLUME_NAME_NT,
+use windows_sys::{
+    Wdk::{
+        Foundation::OBJECT_ATTRIBUTES,
+        Storage::FileSystem::{
+            FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_FOR_BACKUP_INTENT,
+            FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+        },
+    },
+    Win32::{
+        Foundation::{
+            ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
+            STATUS_NOT_A_DIRECTORY, UNICODE_STRING,
+        },
+        Security::{SECURITY_QUALITY_OF_SERVICE, SECURITY_STATIC_TRACKING, SecurityIdentification},
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_FULL_DIR_INFO, FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
+            FileFullDirectoryInfo, FileFullDirectoryRestartInfo, GetFileInformationByHandle,
+            GetFileInformationByHandleEx, GetFileType, GetFinalPathNameByHandleW, SYNCHRONIZE,
+            VOLUME_NAME_NT,
+        },
+        System::IO::IO_STATUS_BLOCK,
     },
 };
 
@@ -107,26 +120,69 @@ fn verbatim(path: &Path) -> io::Result<Vec<u16>> {
     Ok(wide)
 }
 
+fn not_a_folder() -> io::Error {
+    io::Error::new(io::ErrorKind::NotADirectory, "Listing path is not a folder")
+}
+
 /// Open the folder at `path` for listing. A pipe server reached through a link may only
 /// identify this process, never impersonate it; anything but a folder on a disk is refused.
+/// The open asks for a directory (`FILE_DIRECTORY_FILE`, as `O_DIRECTORY` on Linux): a file
+/// that a request names is refused by its file system without being opened, so it is never
+/// opened for its content, nor does the attempt meet another process's sharing.
 pub(crate) fn open_directory(path: &Path) -> io::Result<Directory> {
-    let name = verbatim(path)?;
-    // SAFETY: a terminated path; ownership is taken only after success.
-    let raw = unsafe {
-        CreateFileW(
-            name.as_ptr(),
+    let mut name = verbatim(path)?;
+    // `\\?\` becomes the NT namespace's `\??\`, which is what CreateFileW would open.
+    name[1] = u16::from(b'?');
+    name.pop();
+    let bytes =
+        u16::try_from(name.len() * 2).map_err(|_| protocol::invalid("Listing path is too long"))?;
+    let unicode = UNICODE_STRING {
+        Length: bytes,
+        MaximumLength: bytes,
+        Buffer: name.as_mut_ptr(),
+    };
+    let quality = SECURITY_QUALITY_OF_SERVICE {
+        Length: size_of::<SECURITY_QUALITY_OF_SERVICE>() as u32,
+        ImpersonationLevel: SecurityIdentification,
+        ContextTrackingMode: u8::from(SECURITY_STATIC_TRACKING),
+        EffectiveOnly: false,
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        ObjectName: &unicode,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityQualityOfService: &quality,
+        ..Default::default()
+    };
+    let mut raw = ptr::null_mut();
+    let mut status = IO_STATUS_BLOCK::default();
+    // SAFETY: the counted name, quality of service, attributes and outputs outlive this
+    // synchronous open; only success transfers ownership of `raw`.
+    let code = unsafe {
+        NtCreateFile(
+            &mut raw,
             FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            &attributes,
+            &mut status,
             ptr::null(),
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-            ptr::null_mut(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_OPEN_FOR_BACKUP_INTENT | FILE_SYNCHRONOUS_IO_NONALERT,
+            ptr::null(),
+            0,
         )
     };
-    if raw == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
+    if code == STATUS_NOT_A_DIRECTORY {
+        return Err(not_a_folder());
     }
-    // SAFETY: CreateFileW returned a new owned handle.
+    if code < 0 {
+        // SAFETY: pure conversion of the status the failed call returned.
+        return Err(io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(code) } as i32,
+        ));
+    }
+    // SAFETY: NtCreateFile returned a new owned handle.
     let directory = Directory(unsafe { OwnedHandle::from_raw_handle(raw) });
     // SAFETY: a live handle; the query has no other effect.
     if unsafe { GetFileType(directory.0.as_raw_handle()) } != FILE_TYPE_DISK {
@@ -138,10 +194,7 @@ pub(crate) fn open_directory(path: &Path) -> io::Result<Directory> {
         return Err(io::Error::last_os_error());
     }
     if information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "Listing path is not a folder",
-        ));
+        return Err(not_a_folder());
     }
     Ok(directory)
 }
