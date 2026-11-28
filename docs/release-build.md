@@ -194,7 +194,7 @@ plus a `SHA256SUMS` file and, from 0.5.1 on, its signature `SHA256SUMS.minisig`
 ([Signing the release](#signing-the-release)). Every release so far is a preview: [0.1.0](releases/0.1.0.md), [0.5.0](releases/0.5.0.md),
 [0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md), [0.5.3](releases/0.5.3.md),
 [0.5.4](releases/0.5.4.md), [0.6.0](releases/0.6.0.md), [0.6.1](releases/0.6.1.md),
-[0.6.2](releases/0.6.2.md) and [0.6.3](releases/0.6.3.md), the current one. Linux archives
+[0.6.2](releases/0.6.2.md), [0.6.3](releases/0.6.3.md) and [0.6.4](releases/0.6.4.md), the current one. Linux archives
 are built on Ubuntu 24.04; native Fedora, openSUSE and other desktop tests are pending
 (PLAT-02). The Windows executable and the MSI are unsigned (REL-03): the checksums
 establish download integrity, not code signing.

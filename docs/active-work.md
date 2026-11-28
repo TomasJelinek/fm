@@ -8,7 +8,13 @@ remain in the Git history (`git log -p -- docs/active-work.md`).
 
 ## Current checkpoint
 
-Main of 27 November 2026, after the [0.6.3 preview](releases/0.6.3.md), published that day
+Main of 28 November 2026, after the [0.6.4 preview](releases/0.6.4.md), published that day
+from `921a400b` (tag `v0.6.4`, with a signed `SHA256SUMS`;
+[release record](verification/2026-11-28-release-0.6.4.md)): one authorization for a
+folder and its subfolders, selection keys that include folders, FAT32, exFAT, CD/DVD and
+file-ID-less network volumes, an MSI that refuses a second scope, Windows binaries that
+need no Visual C++ runtime, and lowercase document names. The
+[0.6.3 preview](releases/0.6.3.md) was published on 27 November
 from `7ce68224` (tag `v0.6.3` on the `release-0.6.3` branch, with a signed `SHA256SUMS`;
 [release record](verification/2026-11-27-release-0.6.3.md)): the Windows installer
 installs again and updates itself, Dark is the default dark theme, a folder opened with
@@ -61,10 +67,9 @@ The documents describe this source.
   Windows acceptance run `20261125-092639` passed selection, Cancel, save, restart
   and Reset. A native Windows test checked the selected artwork for both title-bar
   and taskbar icons on first display and after switching. All 103 settings tests passed.
-- **Acceptance.** The last whole-suite runs are the 0.6.3 release runs: Linux 116 of 119
-  passed with no failure; Windows 113 passed, and its one failure, `viewers_scroll`
-  refusing a plugin manifest whose change time alone had moved, passed when run alone
-  ([release record](verification/2026-11-27-release-0.6.3.md)). The area records list every run,
+- **Acceptance.** The last whole-suite runs are the 0.6.4 release runs at `921a400b`:
+  Linux 116 of 119 and Windows 114 of 119 passed, with no failure
+  ([release record](verification/2026-11-28-release-0.6.4.md)). The area records list every run,
   each check's latest status, the open findings and the reruns still pending:
   [panels](developer/acceptance/panels.md), [transfers](developer/acceptance/transfers.md),
   [Find](developer/acceptance/find.md), [viewers](developer/acceptance/viewers.md),
@@ -72,9 +77,9 @@ The documents describe this source.
   [tools](developer/acceptance/tools.md), [journeys](developer/acceptance/journeys.md),
   [UI polish](developer/acceptance/ui-polish.md) and the
   [Windows run](developer/acceptance/windows.md).
-- **CI.** Hosted runs pass every job on Windows and Linux at `7ce68224` (the 0.6.3 tag),
+- **CI.** Hosted runs pass every job on Windows and Linux at `921a400b` (the 0.6.4 tag),
   including the MSI installation test in both scopes
-  ([release record](verification/2026-11-27-release-0.6.3.md#ci));
+  ([release record](verification/2026-11-28-release-0.6.4.md#ci));
   the CI time record is at `2b901122` ([CI time record](verification/2026-11-21-ci-time.md)).
 - **Not qualified.** Native and manual qualifications that automated runs cannot
   provide are listed under PLAT-02; macOS is PLAT-01.

@@ -169,7 +169,7 @@ checks.
   [0.5.1](docs/releases/0.5.1.md), [0.5.2](docs/releases/0.5.2.md),
   [0.5.3](docs/releases/0.5.3.md), [0.5.4](docs/releases/0.5.4.md),
   [0.6.0](docs/releases/0.6.0.md), [0.6.1](docs/releases/0.6.1.md),
-  [0.6.2](docs/releases/0.6.2.md) and [0.6.3](docs/releases/0.6.3.md).
+  [0.6.2](docs/releases/0.6.2.md), [0.6.3](docs/releases/0.6.3.md) and [0.6.4](docs/releases/0.6.4.md).
 - **Compatibility:** Windows 10 22H2 and Windows 11 on x64; Linux x86-64 with the
   Ubuntu 24.04 / glibc 2.39 baseline ([Platforms](#platforms)). Plugins built on the
   viewer SDK 0.1.0, 0.2.0 or 0.2.1 keep loading
