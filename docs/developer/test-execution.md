@@ -758,3 +758,59 @@ Standard variables that this page uses:
 | `RUSTC` | Names `rustc` for the user-command probe when it is not on `PATH`. |
 | `TEMP`, `TMP`, `TMPDIR` | Where tests create temporary folders; validation, the targeted runner and CI put them below `_build`. |
 | `LOCALAPPDATA` (Windows), `XDG_CACHE_HOME` (Linux) | Point them at a scratch folder for the idle wakeup probe. |
+
+### Manual measurements, probes and traces
+
+No CI job, validation step or script runs the ignored tests and examples below or sets
+their variables: they are measurements and native checks that a developer runs on
+demand, one at a time, usually in release with `--ignored --nocapture`. Each test's
+`#[ignore]` reason or the comment beside the variable gives its values and command. The
+variables that a test sets only for a child process it starts are not listed.
+
+| Source | Variables |
+| --- | --- |
+| `midnight-core` `tests/checksum_verification.rs`; `midnight-ui` `src/checksum_windows.rs` | `MIDNIGHT_CHECKSUM_ROWS` |
+| `midnight-compare-engine` `src/binary_tests.rs` | `MIDNIGHT_SCAN_MIB` |
+| `midnight-engine` `src/copy_cadence_measure_tests.rs` | `MIDNIGHT_MEASURE_SOURCE`, `MIDNIGHT_MEASURE_DESTINATION`, `MIDNIGHT_MEASURE_JOBS` |
+| `midnight-engine` `src/copy_small_files_measure_tests.rs` | `MIDNIGHT_MEASURE_ROOT`, `MIDNIGHT_MEASURE_RUNS` |
+| `midnight-engine` `src/copy_streamed_tests.rs` | `MIDNIGHT_STREAMED_DIR`, `MIDNIGHT_STREAMED_ITEMS`, `MIDNIGHT_STREAMED_INTENT`, `MIDNIGHT_STREAMED_MOVE_TO`, `MIDNIGHT_STREAMED_FOLDER`, `MIDNIGHT_STREAMED_SECONDS` |
+| `midnight-engine` `src/copy_timing_tests.rs` | `MIDNIGHT_TIMING_MOVES`, `MIDNIGHT_TIMING_FILES` |
+| `midnight-engine` `src/copy_unprotected_source_tests.rs` | `MIDNIGHT_TEST_UNQUALIFIED_ROOT` |
+| `midnight-engine` `src/checksum_worker_tests.rs` | `MIDNIGHT_CHECKSUM_LISTING_FILES` |
+| `midnight-engine` `src/comparison/native_bench_tests.rs` | `MIDNIGHT_COMPARE_BENCH_DIR` |
+| `midnight-engine` `src/providers/tree_probe_tests.rs` | `MIDNIGHT_OBSERVED_TIMING_DIR`, `MIDNIGHT_OBSERVED_TIMING_COLD` |
+| `midnight-engine` `src/archive_copy_tests.rs` | `MIDNIGHT_PERF_FILES` |
+| `midnight-engine` `tests/tree_refresh/` | `MIDNIGHT_TREE_TEST_PARENT`, `MIDNIGHT_TREE_TEST_CHILD` |
+| `midnight-explorer` `src/production_pool_repro.rs`, `src/production_pool_maximum_state.rs` | `MIDNIGHT_POOL_REPRO_WORK` |
+| `midnight-explorer` `src/native_archive_tests.rs`, `src/native_content_tests.rs` | `MIDNIGHT_ARCHIVE_TEST_SOURCE`, `MIDNIGHT_NATIVE_MEDIA_TEST_FILES` |
+| `midnight-explorer` `src/viewer_filesystem_tests.rs` | `MIDNIGHT_FIND_TEST_FILES` |
+| `midnight-explorer` `src/comparator_external_native_tests.rs` | `MIDNIGHT_NATIVE_COMPARE_WORK`, `MIDNIGHT_USER_COMMAND_PROBE` |
+| `midnight-explorer` `src/native_thumbnail_linux_tests.rs` | `MIDNIGHT_NATIVE_THUMBNAIL_PNG`, `MIDNIGHT_NATIVE_THUMBNAIL_CACHE` |
+| `midnight-explorer` `--ui-smoke-test` | `MIDNIGHT_UI_SMOKE_DWELL_MS` (how long the started window stays open) |
+| `midnight-explorer` `examples/archive_thumbnails.rs` | `MIDNIGHT_ARCHIVE_PROBE_DIRECT_DECODE` |
+| `midnight-native-filesystem-host` `src/network/installed_linux_tests.rs` | `MIDNIGHT_NETWORK_TEST_ALLOW_LAN` |
+| `midnight-platform-linux` `src/transfer_namespace_tests.rs` | `MIDNIGHT_CASEFOLD_TMPFS_TEST_DIR` |
+| `midnight-platform-linux` `src/mutation/tests.rs` | `MIDNIGHT_MODELESS_TEST_DIR` |
+| `midnight-platform-linux` `src/sort_keys_tests.rs` | `MIDNIGHT_COLLATION_TIMING_LOCALE` |
+| `midnight-platform-linux` `src/file_drag_drop_tests.rs` | `MIDNIGHT_DND_IDLE_MEASUREMENT` ([Isolated X11 tests](#isolated-x11-tests)) |
+| `midnight-platform-windows` `src/open_junction_tests.rs` | `MIDNIGHT_TEST_COMPATIBILITY_JUNCTION` |
+| `midnight-thumbnail-host` `tests/deployment.rs` | `MIDNIGHT_DEPLOYMENT_TEST_ROOT` |
+| `midnight-thumbnail-host` `tests/native_image.rs` | `MIDNIGHT_IMAGE_TEST_HELPER`, `MIDNIGHT_HANG_TEST_HELPER` |
+| `midnight-thumbnail-host` `tests/native_video.rs` | `MIDNIGHT_VIDEO_TEST_HELPER`, `MIDNIGHT_PLATFORM_VIDEO_TEST_HELPER`, `MIDNIGHT_PLATFORM_VIDEO_TEST_FIXTURES` |
+| `midnight-ui` `tests/busy_folder_native.rs` | `MIDNIGHT_BUSY_FILES`, `MIDNIGHT_BUSY_SECONDS` |
+| `midnight-ui` `tests/delete_latency_native.rs` | `MIDNIGHT_DELETE_ROUNDS` |
+| `midnight-ui` `tests/native_job_windows.rs` | `MIDNIGHT_MEASURE_JOBS` |
+| `midnight-viewer-engine` `src/office_preview_native_tests.rs` | `MIDNIGHT_OFFICE_VIEWER_TEST_APPLICATION`, `MIDNIGHT_OFFICE_NATIVE_TEST_REPORT` |
+| `midnight-viewer-engine` `src/pdf_scroll_probe_tests.rs` | `MIDNIGHT_PDF_SCROLL_FIXTURES` |
+| `midnight-viewer-engine` `examples/seek_latency.rs` | `MIDNIGHT_VIEWER_SEEK_SCALE` |
+| `midnight-viewer-ui` `src/raster_render_tests.rs` | `MIDNIGHT_RETAINED_RENDER_DIR` (writes the rendered images there) |
+| `midnight-viewer-ui` `tests/wrap_control.rs` | `MIDNIGHT_VIEWER_TOOLBAR_SCREENSHOTS` (writes the toolbar images there) |
+| `midnight-viewer-ui` `examples/open_latency.rs` | `MIDNIGHT_PROBE_PARENT`, `MIDNIGHT_PROBE_REPEAT`, `MIDNIGHT_PROBE_SETTLE_MS`, `MIDNIGHT_PROBE_PAUSE_MS`, `MIDNIGHT_PROBE_SCROLL_MS`, `MIDNIGHT_PROBE_NATIVE_CAPTURE` |
+| `midnight-viewer-ui` `examples/performance_probe.rs` | `MIDNIGHT_VIEWER_PROBE_EXPLICIT_RUNTIME`, `MIDNIGHT_VIEWER_PROBE_FOCUS_CLICK`, `MIDNIGHT_VIEWER_PROBE_MODE_INDEX`, `MIDNIGHT_VIEWER_PROBE_SIZE`, `MIDNIGHT_VIEWER_PROBE_START`, `MIDNIGHT_VIEWER_PROBE_UI_FAMILY`, `MIDNIGHT_VIEWER_PROBE_UI_SIZE`, `MIDNIGHT_VIEWER_PROBE_WHEEL_MS`, `MIDNIGHT_VIEWER_PROBE_SPATIAL_PROOF` |
+| `midnight-viewer-ui` `examples/html_performance.rs` | `MIDNIGHT_HTML_PROBE_TIMELINE`, `MIDNIGHT_HTML_PROBE_RENDER_MARKERS` |
+| `midnight-viewer-engine`, `midnight-viewer-render` (debug builds) | `MIDNIGHT_VIEWER_SCROLL_TRACE`, `MIDNIGHT_VIEWER_GLYPH_TRACE`: timing traces on stderr |
+| `plugins/midnight-fs-archive` `tests/performance.rs` | `MIDNIGHT_ARCHIVE_PERF_RUNS` |
+| `plugins/midnight-fs-archive` `tests/passwords.rs` | `MIDNIGHT_ARCHIVE_SHARE_ZIP` |
+| `plugins/midnight-viewer-html` `tests/native_browser.rs`, `tests/support/runtime_linux.rs` | `MIDNIGHT_HTML_SHOT_DIR`, `MIDNIGHT_HTML_SHOT_LABEL`, `MIDNIGHT_HTML_SHOT_SCRIPTS`, `MIDNIGHT_HTML_LINUX_EVIDENCE_DIR` |
+| `plugins/midnight-thumbnail-video` `tests/media_foundation.rs` | `MIDNIGHT_MF_FIXTURE_DIR` |
+| `plugins/midnight-viewer-markdown` (any build) | `MIDNIGHT_MARKDOWN_TRACE`: viewport request trace on stderr |
