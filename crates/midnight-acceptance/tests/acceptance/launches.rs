@@ -16,7 +16,7 @@ use std::{
 
 /// One launch the application asked for.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // The scenarios read the fields they check.
+#[allow(dead_code)] // Most fields are shown only through `Debug`, in failure messages.
 pub enum Launch {
     /// A Custom Command's program (`Config::user_commands`), started as configured.
     Program {

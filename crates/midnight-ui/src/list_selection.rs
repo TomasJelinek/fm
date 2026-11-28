@@ -78,7 +78,6 @@ impl ListSelection {
         self.cursor
     }
     /// The anchor's slot.
-    #[allow(dead_code, reason = "the checksum results use it; Find does not")]
     pub(crate) fn anchor(&self) -> Option<usize> {
         self.anchor
     }
@@ -137,7 +136,6 @@ impl ListSelection {
     }
     /// A row's identity changed (a listed file got its row): its mark, and the cursor
     /// and anchor on it, follow it.
-    #[allow(dead_code, reason = "the checksum results use it; Find does not")]
     pub(crate) fn rename(&mut self, from: usize, to: usize) {
         if self.set(from, false) {
             self.set(to, true);
@@ -149,12 +147,10 @@ impl ListSelection {
         }
     }
     /// Put the cursor on a row by its slot (None: no cursor), without changing marks.
-    #[allow(dead_code, reason = "the checksum results use it; Find does not")]
     pub(crate) fn set_cursor(&mut self, slot: Option<usize>) {
         self.cursor = slot;
     }
     /// Put the anchor on a row by its slot, without changing marks.
-    #[allow(dead_code, reason = "the checksum results use it; Find does not")]
     pub(crate) fn set_anchor(&mut self, slot: Option<usize>) {
         self.anchor = slot;
     }

@@ -69,14 +69,12 @@ pub fn click_with(window: &slint::Window, modifiers: &[Key], position: LogicalPo
     }
 }
 
-#[allow(dead_code)] // Extension API for scenarios that open rows by mouse.
 pub fn double_click_at(window: &slint::Window, position: LogicalPosition) {
     click_at(window, position);
     click_at(window, position);
 }
 
 /// Press at `from`, move in steps to `to`, release there.
-#[allow(dead_code)] // Extension API for drag-and-drop scenarios.
 pub fn drag(window: &slint::Window, from: LogicalPosition, to: LogicalPosition, steps: u32) {
     let button = PointerEventButton::Left;
     move_to(window, from);

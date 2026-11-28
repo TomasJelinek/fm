@@ -209,7 +209,6 @@ pub struct ScriptedPicker {
 
 impl ScriptedPicker {
     /// Queue the chooser's next answer (`None` is the user cancelling it).
-    #[allow(dead_code)] // For scenarios that pick a path other than the suggestion.
     pub fn answer(&self, path: Option<PathBuf>) {
         self.answers.lock().expect("picker answers").push_back(path);
     }
@@ -264,7 +263,6 @@ impl MemoryClipboard {
     }
 
     /// The text on the clipboard (Copy details, a copied path), if any.
-    #[allow(dead_code)] // For scenarios that check copied text by content.
     pub fn text(&self) -> Option<String> {
         self.text.lock().expect("clipboard text").clone()
     }

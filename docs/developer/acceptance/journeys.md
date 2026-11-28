@@ -80,14 +80,14 @@ names where the parts are checked on their own.
 | --- | --- | --- | --- |
 | J-1 | The fed list's status counts one omitted archive member in the plural: "1 archive members not shown" (`crates/midnight-ui/src/find_feed.rs`, `status`, formats `" · {} archive members not shown"` for every count). Found by reading the code; fixed in source on 21 November ("1 archive member not shown"). | `journeys_find_to_checksums` › the fed list's count of left-out members is grammatical | Fixed: PASS on Linux in run `20261121-144246` and on Windows in run 20261121-043913 ([Windows results](windows.md#results)) |
 
-Pending checks written (a failure of one reports `PENDING` instead of `FAIL`). Both
-behaviors were implemented on 20 November (d9cafd45); the harness still reports these
-checks as pending until they are promoted to ordinary checks:
+No journey has a pending check now (a failure of one would report `PENDING` instead of
+`FAIL`). The two that had one check behavior implemented on 20 November (d9cafd45) and
+are ordinary checks:
 
 - `journeys_concurrent_jobs`: a copy with "Wait for earlier transfers" off
   completes beside a paused one ("a job whose Wait for earlier transfers is off starts
   at once", as in the transfers record's T-J01). It held on Windows in run 20261121-042048
-  and on Linux in run `20261121-144246`: the mark can be removed.
+  and on Linux in run `20261121-144246`.
 - `journeys_pointer_only`'s quick drop is a strict check since 22 November: the journey
   holds the Slint clock (`App::hold_clock`, which the 0.4 s rule follows) so that the
   real time a synthetic drag takes does not count; before, the drag took 482–683 ms of

@@ -146,11 +146,6 @@ pub struct Options {
     pub strict_review: bool,
     /// Review every theme instead of the representative subset.
     pub all_themes: bool,
-    /// The opt-in stress sizes (the archive scenarios' 100,001-entry folder) instead of
-    /// the default ones. Staged children follow `MIDNIGHT_ACCEPTANCE_STRESS`, which the
-    /// runner scripts set for `--stress`.
-    #[allow(dead_code)] // Read by the scenarios that have a stress size.
-    pub stress: bool,
     pub list: bool,
     /// In a staged child process: when it must have reported (see `viewers_stage`).
     pub staged_deadline: Option<Instant>,
@@ -231,7 +226,6 @@ fn options() -> Result<Options, String> {
         keep_fixture: env_flag("MIDNIGHT_ACCEPTANCE_KEEP_FIXTURE"),
         strict_review: env_flag("MIDNIGHT_ACCEPTANCE_STRICT_REVIEW"),
         all_themes: env_flag("MIDNIGHT_ACCEPTANCE_ALL_THEMES"),
-        stress: env_flag("MIDNIGHT_ACCEPTANCE_STRESS"),
         list: false,
         staged_deadline,
     };
@@ -255,7 +249,8 @@ fn options() -> Result<Options, String> {
             "--keep-fixture" => options.keep_fixture = true,
             "--strict-review" => options.strict_review = true,
             "--all-themes" => options.all_themes = true,
-            "--stress" => options.stress = true,
+            // `viewers_stage::stress` reads the argument and `MIDNIGHT_ACCEPTANCE_STRESS`.
+            "--stress" => {}
             "--jobs" => jobs = Some(arguments.next().ok_or("--jobs needs a value")?),
             "--scale" => {
                 let value = arguments.next().ok_or("--scale needs a value")?;

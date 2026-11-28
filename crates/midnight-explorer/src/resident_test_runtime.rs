@@ -26,8 +26,6 @@ impl TestRuntime {
         self.spawner.clone()
     }
 
-    // The same helper is included by Compare-only and explicit-spare shutdown fixtures.
-    #[allow(dead_code)]
     pub(crate) fn track_spare(&mut self, spare: midnight_viewer_engine::ImageSpareRetirement) {
         self.spares.push(spare);
     }
@@ -77,8 +75,6 @@ impl TestRuntime {
         }
     }
 
-    // Only the shutdown fixture explicitly transfers runtime ownership through its phases.
-    #[allow(dead_code)]
     pub(crate) fn shutdown_timeout(mut self, timeout: Duration) {
         self.finish(timeout);
     }

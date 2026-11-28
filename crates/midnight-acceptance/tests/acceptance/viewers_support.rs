@@ -1555,7 +1555,6 @@ pub fn view_unlocking(
 
 /// A number format with a decimal comma and space-grouped thousands, as many regional
 /// settings have, for checks of typed numbers.
-#[allow(dead_code)] // For the typed zoom checks (V2) of the viewer scenarios.
 pub fn comma_locale() -> NumberLocale {
     NumberLocale {
         decimal_separator: ",".into(),
@@ -1570,7 +1569,6 @@ pub fn comma_locale() -> NumberLocale {
 /// then on. That read was answered long before (`App::start` waits for listings, which
 /// follow it), so it cannot replace this one later; Err when the presenter does not
 /// keep it.
-#[allow(dead_code)] // For the typed zoom checks (V2) of the viewer scenarios.
 pub fn use_number_locale(app: &mut App, locale: NumberLocale) -> Result<(), String> {
     app.presenter
         .borrow_mut()
