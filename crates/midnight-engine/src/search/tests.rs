@@ -553,6 +553,51 @@ fn duplicate_raw_paths_or_ids_cannot_create_an_ambiguous_selection_projection() 
     }
 }
 
+#[test]
+fn a_filtered_out_row_sharing_a_projected_identity_still_fails_the_projection() {
+    // The filter keeps "alpha" and leaves "beta" out; "beta" aliases alpha's id, then
+    // its path. Every row passing skips this check; one row left out keeps it.
+    for duplicate_id in [false, true] {
+        let mut request = request("", &["alpha", "beta"]);
+        request.filter = midnight_core::PanelFilter {
+            enabled: true,
+            expression: "a*".into(),
+            ..Default::default()
+        };
+        let source = Arc::make_mut(&mut request.source);
+        if duplicate_id {
+            source[1].id = source[0].id;
+        } else {
+            source[1].path = source[0].path.clone();
+        }
+        assert!(matches!(
+            compute(&request, None, &|| false, &|| false).0,
+            Computation::Failed(_)
+        ));
+    }
+    // Without the alias, the same filter projects alpha alone, every row unfiltered.
+    let mut request = request("", &["alpha", "beta"]);
+    request.filter = midnight_core::PanelFilter {
+        enabled: true,
+        expression: "a*".into(),
+        ..Default::default()
+    };
+    let result = ready(&request);
+    assert_eq!(result.filtered.len(), 1);
+    assert_eq!(result.filtered_index.by_id.get(&EntryId(1)), Some(&0));
+    request.filter = Default::default();
+    let result = ready(&request);
+    assert_eq!(result.filtered.len(), 2);
+    assert_eq!(result.filtered_index.by_id.get(&EntryId(2)), Some(&1));
+    assert_eq!(
+        result
+            .filtered_index
+            .by_path
+            .get(&PathBuf::from("folder").join("beta")),
+        Some(&EntryId(2))
+    );
+}
+
 /// `cargo test -p midnight-engine --lib measure_quick_search -- --ignored --nocapture`.
 /// Uncached revisions repeat the per-keystroke work of the former single pass.
 #[test]

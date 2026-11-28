@@ -313,8 +313,10 @@ fn project(
                 io::Error::new(io::ErrorKind::InvalidInput, error.message),
             ))
         })?;
-    let mut filtered = Vec::new();
-    let mut index = DirectoryIndex::default();
+    // Sized for every row, the common case (no filter, or one most rows pass):
+    // the maps grow at most once instead of doubling about 17 times.
+    let mut filtered = Vec::with_capacity(request.source.len());
+    let mut index = DirectoryIndex::with_capacity(request.source.len());
     for (source_row, entry) in request.source.iter().enumerate() {
         if source_row.is_multiple_of(CANCEL_INTERVAL) && obsolete() {
             return Err(Computation::Cancelled);
@@ -332,22 +334,33 @@ fn project(
     }
     // A projected id/path must not also refer to a filtered-out source row. Validate
     // against the source without allocating another full-directory identity map.
-    for (source_row, entry) in request.source.iter().enumerate() {
-        if source_row.is_multiple_of(CANCEL_INTERVAL) && obsolete() {
-            return Err(Computation::Cancelled);
+    // When every row passed, there is no filtered-out row: each push above proved
+    // its id and path unique, so each maps back to its own row and the pass is moot.
+    if filtered.len() != request.source.len() {
+        for (source_row, entry) in request.source.iter().enumerate() {
+            if source_row.is_multiple_of(CANCEL_INTERVAL) && obsolete() {
+                return Err(Computation::Cancelled);
+            }
+            if let Some(row) = index.by_id.get(&entry.id)
+                && filtered[*row].source_row != source_row
+            {
+                return Err(ambiguous_projection(request));
+            }
+            if let Some(path) = entry.native_path()
+                && let Some(id) = index.by_path.get(path)
+                && let Some(row) = index.by_id.get(id)
+                && filtered[*row].source_row != source_row
+            {
+                return Err(ambiguous_projection(request));
+            }
         }
-        if let Some(row) = index.by_id.get(&entry.id)
-            && filtered[*row].source_row != source_row
-        {
-            return Err(ambiguous_projection(request));
-        }
-        if let Some(path) = entry.native_path()
-            && let Some(id) = index.by_path.get(path)
-            && let Some(row) = index.by_id.get(id)
-            && filtered[*row].source_row != source_row
-        {
-            return Err(ambiguous_projection(request));
-        }
+    }
+    // A filter that left few rows returns the reserve it did not use.
+    if index.by_id.len() < index.by_id.capacity() / 2 {
+        index.by_id.shrink_to_fit();
+        index.by_path.shrink_to_fit();
+        index.file_sizes.shrink_to_fit();
+        index.directory_bits.shrink_to_fit();
     }
     Ok(Projection {
         source: Arc::downgrade(&request.source),
