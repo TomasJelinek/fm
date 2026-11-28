@@ -1,6 +1,6 @@
 # Feature status
 
-This page says what Midnight Explorer 0.6.4 implements in the current source, per
+This page says what Midnight Explorer 0.6.5 implements in the current source, per
 feature area and platform, which document describes each area, and where it is
 verified. Planned work and known limits are rows of the
 [implementation backlog](implementation-backlog.md), named here by their IDs. The

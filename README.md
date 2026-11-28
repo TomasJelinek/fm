@@ -7,7 +7,7 @@ comparison tools and checksums, and keeps every file name's Unicode intact. View
 filesystems and thumbnailers are separate plugin packages that run isolated from the
 application.
 
-Current version: **0.6.4**, a preview: features and plugin interfaces are still
+Current version: **0.6.5**, a preview: features and plugin interfaces are still
 changing, archives are read-only, the Windows executable and installer are unsigned and
 macOS is not implemented. [Feature status](docs/feature-status.md) lists the current
 limits.
@@ -99,7 +99,7 @@ also has `SHA256SUMS` and its signature `SHA256SUMS.minisig` to
 1. Start `midnight-explorer.exe` (Windows; the installer's Start menu entry does the
    same) or `./midnight-explorer` in a graphical session (Linux). Releases up to 0.5.0
    named the executable `me.exe` and `me`.
-2. Check that a window titled `Midnight Explorer 0.6.4 — File Manager` opens with two
+2. Check that a window titled `Midnight Explorer 0.6.5 — File Manager` opens with two
    panels listing folders. The application icon at the right end of the top toolbar
    opens **About**, which shows the version too.
 3. When the window does not open or the panels stay empty, see

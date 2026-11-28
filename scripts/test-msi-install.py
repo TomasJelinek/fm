@@ -73,7 +73,7 @@ TARGET = package_msi.TARGET
 OLDER_VERSION = "0.0.1"
 # Published per-user MSIs that a newer MSI must upgrade in place (before the dual-purpose
 # package; each is checked against its release's signed SHA256SUMS).
-PUBLISHED_MSIS = ("0.6.1", "0.6.2", "0.6.3")
+PUBLISHED_MSIS = ("0.6.1", "0.6.2", "0.6.3", "0.6.4")
 SHORTCUT = f"{PRODUCT}.lnk"
 SETTINGS_FOLDER = "Midnight Explorer"
 MARKER = "msi-install-test-marker.txt"

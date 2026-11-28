@@ -1,6 +1,6 @@
 # System requirements
 
-Applies to Midnight Explorer **0.6.4**. Build and run commands are in the user guide's
+Applies to Midnight Explorer **0.6.5**. Build and run commands are in the user guide's
 [Build and run](user-guide.md#build-and-run); problems at the first start are in
 [Troubleshooting](troubleshooting.md). Project terms are defined in the
 [glossary](glossary.md).

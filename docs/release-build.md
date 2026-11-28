@@ -229,7 +229,7 @@ Python 3.11 or later and its standard library. It neither builds nor publishes.
 The packager's tests run with `python -B -m unittest discover -s scripts/tests -v`, and
 CI's `scripts-and-lint` job runs them on Windows and Linux.
 
-Example after the Windows build and checks of 0.6.4, in PowerShell 7 at the repository
+Example after the Windows build and checks of 0.6.5, in PowerShell 7 at the repository
 root with Python installed. `$sysroot` holds the toolchain's sysroot, whose
 `share/doc/rust` folder `--rust-docs` names:
 
@@ -289,7 +289,7 @@ one JSON object in UTF-8, indented, ending with a newline.
 
 | Field | Type | Meaning | Example |
 | --- | --- | --- | --- |
-| `version` | string | The workspace version. | `"0.6.4"` |
+| `version` | string | The workspace version. | `"0.6.5"` |
 | `target` | string | The Rust target of the build. | `"x86_64-pc-windows-msvc"` |
 | `revision` | string | The packaged commit, the full 40-character Git revision. | |
 | `profile` | string | Always `"release"`. | `"release"` |
@@ -439,8 +439,8 @@ published release must have its corresponding source available: push the release
    for example after unpacking into `_build/release-check`:
 
    ```powershell
-   Expand-Archive _build/releases/v0.6.4/midnight-explorer-0.6.4-x86_64-pc-windows-msvc.zip -DestinationPath _build/release-check
-   $env:MIDNIGHT_THUMBNAILERS_TEST_PACKAGE = (Resolve-Path _build/release-check/midnight-explorer-0.6.4-x86_64-pc-windows-msvc/thumbnailers).Path
+   Expand-Archive _build/releases/v0.6.5/midnight-explorer-0.6.5-x86_64-pc-windows-msvc.zip -DestinationPath _build/release-check
+   $env:MIDNIGHT_THUMBNAILERS_TEST_PACKAGE = (Resolve-Path _build/release-check/midnight-explorer-0.6.5-x86_64-pc-windows-msvc/thumbnailers).Path
    ```
 
 8. Set `HOST_TEST_INSTALL_ROOT` to a new private folder, as
@@ -466,14 +466,14 @@ objects.
 with Python 3.11 or later and needs nothing else: it writes the database with the
 Windows Installer API (`msi.dll`) and the cabinet with `makecab.exe`, and checks it with
 `expand.exe`, all part of Windows ([installer tooling decision](dependency-policy.md#current-decisions)).
-It neither builds nor publishes. For 0.6.4, in PowerShell at the repository root:
+It neither builds nor publishes. For 0.6.5, in PowerShell at the repository root:
 
 ```powershell
 python -B scripts/package-msi.py build `
-    --zip _build/releases/v0.6.4/midnight-explorer-0.6.4-x86_64-pc-windows-msvc.zip
+    --zip _build/releases/v0.6.5/midnight-explorer-0.6.5-x86_64-pc-windows-msvc.zip
 python -B scripts/package-msi.py verify `
-    --msi _build/releases/v0.6.4/midnight-explorer-0.6.4-x86_64-pc-windows-msvc.msi `
-    --zip _build/releases/v0.6.4/midnight-explorer-0.6.4-x86_64-pc-windows-msvc.zip
+    --msi _build/releases/v0.6.5/midnight-explorer-0.6.5-x86_64-pc-windows-msvc.msi `
+    --zip _build/releases/v0.6.5/midnight-explorer-0.6.5-x86_64-pc-windows-msvc.zip
 ```
 
 `build` writes below the checkout's `_build` (`--output` names another folder there) and
@@ -692,7 +692,7 @@ and this run's plugin packages. Its commands, in order:
      `AdminUISequence` closing dialogs; ICE57 for the `StartMenuShortcut` component
      (per-user data, scope-dependent key path).
 4. `previous` downloads the published per-user MSIs older than the workspace version
-   (0.6.1, 0.6.2 and 0.6.3 for 0.6.4) and checks each against its release's signed
+   (0.6.1 to 0.6.4 for 0.6.5) and checks each against its release's signed
    `SHA256SUMS`.
 5. `run --disposable-machine --scenario scopes --scenario previous --ui-smoke` installs
    with `msiexec /qn /l*v`:
@@ -758,32 +758,32 @@ the thumbnailers and HTML viewer that a real release ZIP adds, and a ZIP made by
 The update check installs only releases whose `SHA256SUMS` is signed with the
 project's release key ([Updates](developer/updates.md#trust)). Sign on the owner's
 machine (Python 3.11 or later, standard library only), in PowerShell at the repository
-root, for 0.6.4:
+root, for 0.6.5:
 
-1. Put both archives and the MSI in one folder, `_build/releases/v0.6.4/`.
+1. Put both archives and the MSI in one folder, `_build/releases/v0.6.5/`.
 2. Set `MIDNIGHT_RELEASE_KEY` to the path of the secret key file
    ([Keys](developer/updates.md#keys)).
 3. Write `SHA256SUMS`:
 
    ```powershell
    python -B scripts/release-signing.py checksums `
-       _build/releases/v0.6.4/midnight-explorer-0.6.4-x86_64-pc-windows-msvc.zip `
-       _build/releases/v0.6.4/midnight-explorer-0.6.4-x86_64-pc-windows-msvc.msi `
-       _build/releases/v0.6.4/midnight-explorer-0.6.4-x86_64-unknown-linux-gnu.tar.gz
+       _build/releases/v0.6.5/midnight-explorer-0.6.5-x86_64-pc-windows-msvc.zip `
+       _build/releases/v0.6.5/midnight-explorer-0.6.5-x86_64-pc-windows-msvc.msi `
+       _build/releases/v0.6.5/midnight-explorer-0.6.5-x86_64-unknown-linux-gnu.tar.gz
    ```
 
 4. Sign it. `sign` asks for the key's password, writes `SHA256SUMS.minisig` and
    verifies it:
 
    ```powershell
-   python -B scripts/release-signing.py sign --version 0.6.4 `
-       --secret-key $env:MIDNIGHT_RELEASE_KEY _build/releases/v0.6.4/SHA256SUMS
+   python -B scripts/release-signing.py sign --version 0.6.5 `
+       --secret-key $env:MIDNIGHT_RELEASE_KEY _build/releases/v0.6.5/SHA256SUMS
    ```
 
 5. Verify the pair against the repository's public key:
 
    ```powershell
-   python -B scripts/release-signing.py verify --version 0.6.4 _build/releases/v0.6.4/SHA256SUMS
+   python -B scripts/release-signing.py verify --version 0.6.5 _build/releases/v0.6.5/SHA256SUMS
    ```
 
 6. Upload `SHA256SUMS` and `SHA256SUMS.minisig` with the archives and the MSI. The
@@ -792,13 +792,13 @@ root, for 0.6.4:
 `checksums` takes files of one folder only and refuses an existing `SHA256SUMS`
 (`--force` replaces it); `sign` likewise refuses an existing signature. `SHA256SUMS`
 has one ASCII line per file, sorted by file name: the file's SHA-256 in 64 lowercase
-hexadecimal digits, two spaces and the file name. For 0.6.4 its lines name, in order:
+hexadecimal digits, two spaces and the file name. For 0.6.5 its lines name, in order:
 
 | Line | File |
 | --- | --- |
-| 1 | `midnight-explorer-0.6.4-x86_64-pc-windows-msvc.msi` |
-| 2 | `midnight-explorer-0.6.4-x86_64-pc-windows-msvc.zip` |
-| 3 | `midnight-explorer-0.6.4-x86_64-unknown-linux-gnu.tar.gz` |
+| 1 | `midnight-explorer-0.6.5-x86_64-pc-windows-msvc.msi` |
+| 2 | `midnight-explorer-0.6.5-x86_64-pc-windows-msvc.zip` |
+| 3 | `midnight-explorer-0.6.5-x86_64-unknown-linux-gnu.tar.gz` |
 
 The application's updater uses its platform's archive line for an extracted
 copy and the MSI's line for an MSI installation; the MSI's line also

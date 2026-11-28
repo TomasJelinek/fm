@@ -69,7 +69,8 @@ class Logic(unittest.TestCase):
     def test_upgrades_from_the_published_msis_older_than_the_workspace(self):
         self.assertEqual(msi_test.previous_versions("0.6.2"), ["0.6.1"])
         self.assertEqual(msi_test.previous_versions("0.6.4"), ["0.6.1", "0.6.2", "0.6.3"])
-        self.assertEqual(msi_test.previous_versions("0.7.0"), ["0.6.1", "0.6.2", "0.6.3"])
+        self.assertEqual(msi_test.previous_versions("0.6.5"), ["0.6.1", "0.6.2", "0.6.3", "0.6.4"])
+        self.assertEqual(msi_test.previous_versions("0.7.0"), ["0.6.1", "0.6.2", "0.6.3", "0.6.4"])
         self.assertEqual(msi_test.previous_versions("0.6.1"), [])
         self.assertLess(msi_test.parse_version(msi_test.OLDER_VERSION), (0, 6, 1))
 
