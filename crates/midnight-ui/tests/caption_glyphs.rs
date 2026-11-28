@@ -71,23 +71,27 @@ type Occurrences = BTreeMap<char, Vec<String>>;
 #[test]
 fn every_shown_character_has_a_glyph_in_the_application_font() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let slint: Vec<PathBuf> = SLINT_FOLDERS
+        .iter()
+        .flat_map(|folder| files(&crates.join(folder), "slint"))
+        .collect();
+    let rust: Vec<PathBuf> = RUST_FOLDERS
+        .iter()
+        .flat_map(|folder| files(&crates.join(folder), "rs"))
+        .collect();
+    let mut texts = read_all(&[slint.as_slice(), rust.as_slice()].concat()).into_iter();
     let mut found = Occurrences::new();
-    for folder in SLINT_FOLDERS {
-        for file in files(&crates.join(folder), "slint") {
-            let source = std::fs::read_to_string(&file).unwrap();
-            record(&mut found, &crates, &file, slint_literals(&source));
-        }
+    for (file, source) in slint.iter().zip(texts.by_ref()) {
+        record(&mut found, &crates, file, slint_literals(&source.unwrap()));
     }
-    for folder in RUST_FOLDERS {
-        let rust = files(&crates.join(folder), "rs");
-        let included = included_by_tests(&rust);
-        for file in rust {
-            if test_only(&file) || included.contains(&file) {
-                continue;
-            }
-            let source = std::fs::read_to_string(&file).unwrap();
-            record(&mut found, &crates, &file, rust_literals(&source));
+    let rust: Vec<(PathBuf, std::io::Result<String>)> = rust.into_iter().zip(texts).collect();
+    let included = included_by_tests(&rust);
+    for (file, source) in &rust {
+        if test_only(file) || included.contains(file) {
+            continue;
         }
+        let source = source.as_ref().unwrap();
+        record(&mut found, &crates, file, rust_literals(source));
     }
     assert!(
         found.contains_key(&'…'),
@@ -201,6 +205,41 @@ fn files(folder: &Path, extension: &str) -> Vec<PathBuf> {
     found
 }
 
+/// Threads that read the sources: they mostly wait (see [`read_all`]).
+const READERS: usize = 16;
+
+/// The texts of `files`, in their order, read by [`READERS`] threads at once. The scan
+/// reads about 1,750 files. On Windows with real-time malware scanning, a file's first
+/// read after it was written (and at times later ones) waits for its scan, 20 to 30 ms
+/// a file, and files read at once are scanned at once: read one after another, the
+/// files took this test 23 to 49 s instead of 1 to 2 s (test speed pass, 2026-11-28).
+fn read_all(files: &[PathBuf]) -> Vec<std::io::Result<String>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let mut texts: Vec<_> = std::thread::scope(|scope| {
+        let readers: Vec<_> = (0..READERS)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut read = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(file) = files.get(index) else {
+                            break read;
+                        };
+                        read.push((index, std::fs::read_to_string(file)));
+                    }
+                })
+            })
+            .collect();
+        readers
+            .into_iter()
+            .flat_map(|reader| reader.join().unwrap())
+            .collect()
+    });
+    texts.sort_by_key(|(index, _)| *index);
+    texts.into_iter().map(|(_, text)| text).collect()
+}
+
 /// Test-only Rust files by the workspace's naming: `tests.rs`, `*_tests.rs`, test
 /// folders, fixtures and repros. Test modules inside other files are skipped by
 /// [`rust_literals`].
@@ -213,10 +252,12 @@ fn test_only(file: &Path) -> bool {
 
 /// Files that test-only files include as modules (`#[path = "…"] mod …;`), such as an
 /// opt-in measurement whose name says nothing of tests: they are test code too.
-fn included_by_tests(files: &[PathBuf]) -> std::collections::HashSet<PathBuf> {
+fn included_by_tests(
+    files: &[(PathBuf, std::io::Result<String>)],
+) -> std::collections::HashSet<PathBuf> {
     let mut included = std::collections::HashSet::new();
-    for file in files.iter().filter(|file| test_only(file)) {
-        let Ok(source) = std::fs::read_to_string(file) else {
+    for (file, source) in files.iter().filter(|(file, _)| test_only(file)) {
+        let Ok(source) = source else {
             continue;
         };
         let folder = file.parent().unwrap_or(Path::new(""));
