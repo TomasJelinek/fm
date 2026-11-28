@@ -98,6 +98,7 @@ fn file_id(file: &File) -> io::Result<Identity> {
     if let Some(reply) = crate::test_network_ids::response(file) {
         return match reply {
             crate::test_network_ids::Response::Unsupported => Err(io::Error::from_raw_os_error(50)),
+            crate::test_network_ids::Response::Fat => Err(io::Error::from_raw_os_error(87)),
             crate::test_network_ids::Response::AllZero
             | crate::test_network_ids::Response::ZeroIndex => identity_from_info(information),
             crate::test_network_ids::Response::AccessDenied => Err(io::Error::from_raw_os_error(5)),
@@ -151,6 +152,7 @@ pub(crate) fn legacy_identity(file: &File) -> io::Result<Identity> {
     #[cfg(feature = "test-fixtures")]
     let zero_index = match crate::test_network_ids::response(file) {
         Some(crate::test_network_ids::Response::ZeroIndex) => true,
+        Some(crate::test_network_ids::Response::Fat) => false,
         Some(_) => return Err(io::ErrorKind::Unsupported.into()),
         None => false,
     };

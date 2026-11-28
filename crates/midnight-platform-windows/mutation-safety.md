@@ -134,6 +134,10 @@ Since 0.6.4 a Copy source (and a checksum calculation's source) on a local FAT, 
 exFAT, CDFS or UDF volume is read as a network source without IDs: through the
 handles it keeps open (`reads_without_ids` in `transfer_network_identity.rs`). Move
 sources and Move destinations on one volume still require the 128-bit `FileIdInfo`.
+A Copy into a FAT or exFAT folder therefore identifies the folder's ancestors as such a
+source is identified, by the binding of its final path where a folder has no 128-bit ID,
+so a folder copied below itself on the same drive is refused as "destination is inside
+the source directory" (`Directory::ancestor_identity` in `transfer_destination.rs`).
 Windows also supports ordinary Copy sources and destinations on network shares
 that omit file IDs. See [Windows network Copy](../../docs/developer/transfers.md#windows-network-shares-without-file-ids)
 for its handle-sharing rules.

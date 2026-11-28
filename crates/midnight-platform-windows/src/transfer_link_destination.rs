@@ -121,6 +121,10 @@ pub(super) fn volume_facts(folder: &File) -> io::Result<(u32, u32, String)> {
         .iter()
         .position(|unit| *unit == 0)
         .unwrap_or(name.len());
+    #[cfg(feature = "test-fixtures")]
+    if super::test_network_ids::is_fat(folder) {
+        return Ok((serial, flags, "FAT32".to_owned()));
+    }
     Ok((serial, flags, String::from_utf16_lossy(&name[..length])))
 }
 

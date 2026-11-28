@@ -16,6 +16,9 @@ pub enum Response {
     /// An all-zero `FileIdInfo` ID and file index 0 for every entry, with the real volume
     /// serial number: the WebDAV redirector and SMB servers without file IDs.
     ZeroIndex,
+    /// A local FAT32 volume: no `FileIdInfo` (ERROR_INVALID_PARAMETER), the real file
+    /// index, not a network share, and the file system name `FAT32`.
+    Fat,
 }
 
 enum Entries {
@@ -83,7 +86,12 @@ pub(crate) fn response(file: &File) -> Option<Response> {
 }
 
 pub(crate) fn is_network(file: &File) -> bool {
-    matching_rule(file, |_, _| true).is_some()
+    matching_rule(file, |rule, _| !matches!(rule.response, Response::Fat)).is_some()
+}
+
+/// Whether `file` is on a simulated local FAT32 volume (`Response::Fat`).
+pub(crate) fn is_fat(file: &File) -> bool {
+    matching_rule(file, |rule, _| matches!(rule.response, Response::Fat)).is_some()
 }
 
 fn matching_rule(file: &File, matches: impl Fn(&Rule, &Path) -> bool) -> Option<Response> {

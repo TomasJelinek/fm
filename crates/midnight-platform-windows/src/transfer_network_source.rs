@@ -163,6 +163,50 @@ mod tests {
         assert_eq!(&data, b"read this");
     }
 
+    /// A folder on a local FAT32 volume is read like a share without IDs (`reads_without_ids`),
+    /// so its identity is a binding. A destination below it on the same volume must be
+    /// recognized by the same kind of identity, or Copy would copy the folder into itself.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn fat_folder_copy_rejects_its_own_descendant_as_destination() {
+        use crate::test_network_ids::{Response, Scope};
+        let temp = crate::test_fixtures::build_temp("fat-descendant-");
+        let stick = temp.path().join("stick");
+        let source = stick.join("source");
+        let child = source.join("child");
+        fs::create_dir_all(child.join("grandchild")).unwrap();
+        let _fat = Scope::new(&stick, Response::Fat).unwrap();
+        let provider = crate::WindowsFileSystem::new(None);
+        let cancel = Cancellation::default();
+        let held = provider.prepare_transfer_source(&source, &cancel).unwrap();
+        assert!(held.native_identity().is_none());
+        assert!(held.requires_copy_directory_guard());
+        let identity = held.entry().identity;
+        for path in [child.clone(), child.join("grandchild"), source.clone()] {
+            let target = provider
+                .prepare_transfer_destination(&path, &cancel)
+                .unwrap();
+            let error = target
+                .reject_source_ancestor(identity, &cancel)
+                .unwrap_err();
+            assert_eq!(
+                error.kind,
+                io::ErrorKind::InvalidInput,
+                "{path:?}: {error:?}"
+            );
+            let ancestors = target.ancestor_identities(&cancel).unwrap().unwrap();
+            assert!(ancestors.contains(&identity), "{path:?}");
+        }
+        // A sibling of the source on the same volume is no descendant.
+        let sibling = stick.join("sibling");
+        fs::create_dir(&sibling).unwrap();
+        provider
+            .prepare_transfer_destination(&sibling, &cancel)
+            .unwrap()
+            .reject_source_ancestor(identity, &cancel)
+            .unwrap();
+    }
+
     #[test]
     fn network_copy_holds_the_exact_source_through_read_retry_and_discovery() {
         let temp = crate::test_fixtures::build_temp("network-source-");

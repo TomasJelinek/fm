@@ -552,18 +552,17 @@ impl Directory {
     }
 
     fn ancestor_identity(&self, file: &File, path: &Path) -> Result<TransferIdentity, FsError> {
-        if self.ids.network() && !self.stable_ancestry {
+        // Each ancestor is identified as a Copy source there is: by its native 128-bit ID,
+        // or where it has none by the binding of a source read without IDs. On a FAT
+        // volume that is the binding (`reads_without_ids`), not the file index, or a folder
+        // copied below itself on the same stick would not be recognized; a directory mount
+        // can still lead from an NTFS ancestor, which keeps its native ID.
+        if (self.ids.network() && !self.stable_ancestry) || self.ids == CopyIds::Fat {
             match native::identity(file) {
                 Ok(id) => Ok(transfer_identity(id)),
                 Err(e) if native::unsupported(&e) => super::network_identity::binding(file, path),
                 Err(e) => Err(error(path, e)),
             }
-        } else if self.ids == CopyIds::Fat {
-            // A directory mount can lead from an NTFS ancestor to this FAT volume.
-            // Compare that ancestor using its native 128-bit identity.
-            native::local_identity(file)
-                .map(transfer_identity)
-                .map_err(|e| error(path, e))
         } else {
             identity(file, path)
         }
